@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ferritls-core",
+    "crates/ferritls-rustls",
+    "crates/ferritls-interop",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0 OR MIT"
+repository = "https://github.com/Hammerklavier-cn/ferritls"
+
+[workspace.dependencies]
+ferritls-core = { version = "0.1.0", path = "crates/ferritls-core" }
+ferritls-rustls = { version = "0.1.0", path = "crates/ferritls-rustls" }
+rustls = { version = "0.23", default-features = false, features = ["std"] }
+# 边界内依赖白名单仅此三者（见 docs/FIPS.md）。getrandom 自 M3/M5 起由
+# ferritls-core::entropy 使用；在此之前不得引入其他依赖。
+getrandom = "0.2"
+subtle = { version = "2", default-features = false }
+zeroize = { version = "1", default-features = false }
+
+[profile.release]
+lto = "thin"

@@ -1,0 +1,16 @@
+[package]
+name = "ferritls-interop"
+description = "Interop and end-to-end test harness for the ferritls rustls provider"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+
+[dev-dependencies]
+ferritls-core.workspace = true
+ferritls-rustls.workspace = true
+rustls.workspace = true

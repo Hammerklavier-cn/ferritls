@@ -1,0 +1,17 @@
+[package]
+name = "ferritls-rustls"
+description = "rustls CryptoProvider adapter backed by ferritls-core (pure Rust)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ferritls-core.workspace = true
+rustls.workspace = true
+
+[features]
+default = []
+# 转发到 ferritls-core 的批准模式门控（见 ferritls-core Cargo.toml 注释）。
+fips = ["ferritls-core/fips"]

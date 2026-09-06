@@ -1,0 +1,24 @@
+[package]
+name = "ferritls-core"
+description = "Pure-Rust cryptographic core for ferritls; designed as a FIPS 140-3 module boundary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# 依赖白名单（FIPS 边界约束，见 docs/FIPS.md）：
+# - subtle：常数时间原语（Quarkslab 对 dalek 系列的审计覆盖范围包含 subtle）
+# - zeroize：秘密零化
+# - getrandom：M3/M5 起由 entropy 模块使用（边界外熵源输入）
+[dependencies]
+subtle.workspace = true
+zeroize.workspace = true
+
+[features]
+default = []
+# 批准模式门控：仅暴露 FIPS 批准算法（AES-GCM/CCM、SHA-2、HMAC/HKDF、
+# RSA、ECDSA P-256/384），并强制 CTR-DRBG + 上电自检路径。
+# 注意：此 feature 不是“已通过 CMVP 认证”的声明——认证落地前 rustls 侧
+# 的 fips() 恒为 false（见 AGENTS.md 硬性规则 3）。
+fips = []
