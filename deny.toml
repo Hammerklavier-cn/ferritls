@@ -1,0 +1,32 @@
+# cargo-deny 配置。
+# 重点不是泛泛的供应链检查，而是守住 ferritls-core 的 FIPS 边界：
+# 任何进入边界内的新依赖都必须先更新 docs/FIPS.md 的白名单及审计依据。
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+
+[licenses]
+version = 2
+# rustls 生态的传递依赖基本都在这些宽松许可之内。
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "ISC",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "0BSD",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "simplest"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
