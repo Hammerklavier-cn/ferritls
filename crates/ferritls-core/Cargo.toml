@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../../README.md"
+keywords.workspace = true
+categories.workspace = true
 
 # 依赖白名单（FIPS 边界约束，见 docs/FIPS.md）：
 # - subtle：常数时间原语（Quarkslab 对 dalek 系列的审计覆盖范围包含 subtle）

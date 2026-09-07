@@ -12,6 +12,8 @@ edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/Hammerklavier-cn/ferritls"
+keywords = ["tls", "rustls", "cryptography", "crypto", "fips"]
+categories = ["cryptography", "network-programming"]
 
 [workspace.dependencies]
 ferritls-core = { version = "0.1.0", path = "crates/ferritls-core" }
