@@ -58,6 +58,7 @@ ferritls/
 │   └── ferritls-interop/    # 互操作/E2E 测试宿主（publish=false，依赖不受白名单约束）
 ├── docs/                    # ARCHITECTURE / FIPS / ROADMAP
 ├── .github/workflows/ci.yml # fmt / clippy(-D warnings) / 三平台 test / MSRV 1.75 / cargo-deny
+│                            #   / fuzz 冒烟 / tag 触发的 crates.io 自动发布
 └── deny.toml                # 许可 + 供应链约束
 ```
 
@@ -323,7 +324,10 @@ cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored
       缺陷）、rustls-ring 交叉互操作矩阵、webpki 真实证书链校验
       （修正 verify.rs 算法 ID 编码）、cargo-fuzz 六目标 + CI 冒烟、
       FIPS.md 升级 SP 800-140Br1 底稿、发布元数据 + dry-run 通过；
-      crates.io 实际发布与 tag 待维护者执行（发布顺序 core → rustls）
+      crates.io 发布已自动化：推 tag `v*`（或手动 dispatch 填 tag）
+      触发全量门禁后单次 `cargo publish`（cargo 1.90 起 workspace
+      一次发布 core → rustls；需仓库 secrets 配置
+      CARGO_REGISTRY_TOKEN）
 - [ ] M8：TLS 1.2 / QUIC / ML-KEM 混合 / intrinsics 后端
 
 **已知的实现级注记**（修订实现前必读）：

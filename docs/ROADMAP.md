@@ -84,7 +84,11 @@ RFC 8448 轨迹重放、cargo-fuzz 目标建立（DER/签名验证/AEAD）。
 - [x] crates.io 0.1.0 元数据齐备，`cargo publish --dry-run` 通过
       （rustls crate 的 dry-run 需 core 实际发布后才能通过——发布顺序
       core → rustls）
-- [ ] **crates.io 实际发布 + tag v0.1.0**（外向动作，待维护者执行）
+- [x] crates.io 发布自动化进 CI：推 tag `v*`（或手动 dispatch 填
+      tag）→ 全量门禁 → 单次 `cargo publish`（cargo 1.90 起 workspace
+      一次发布，core → rustls 拓扑序，验证用本地 overlay 无需等
+      索引传播）；前置：仓库 secrets 配置 CARGO_REGISTRY_TOKEN
+- [ ] **实际发布 v0.1.0**：配置 secret 后推 tag v0.1.0 即完成
 
 ## 已知问题 / 待开 issue
 

@@ -3,7 +3,14 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.1.0). Leave empty for CI only."
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -13,6 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -25,6 +34,8 @@ jobs:
         features: ["", "--features ferritls-core/fips", "--features ferritls-rustls/fips", "--all-features"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -39,6 +50,8 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
       # 注意：向量测试在实现落地前全部标记 #[ignore]，CI 默认只验证
       # “骨架编译通过 + 非 ignore 测试绿”。里程碑完成的定义之一是
@@ -54,6 +67,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
       - uses: dtolnay/rust-toolchain@nightly
       - uses: taiki-e/install-action@cargo-fuzz
       - name: Build fuzz targets
@@ -70,6 +85,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
       - uses: dtolnay/rust-toolchain@1.75.0
       - run: cargo check --workspace --all-targets
 
@@ -77,6 +94,48 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-deny
       - run: cargo deny check
+
+  # 发布（M7）：推 tag v*（或手动 dispatch 填 tag）→ 全量门禁 → 发布。
+  # 单次 `cargo publish` 即可：cargo 1.90（2025-09 stable）起支持
+  # workspace 一次性发布——按依赖拓扑排序（core → rustls）依次打包、
+  # 验证、上传，验证阶段经本地 registry overlay 解析同批发布的依赖，
+  # 无需等待 crates.io 索引传播（rust-lang/cargo#1169）。interop 为
+  # publish=false，自动跳过。前置：仓库 secrets 配置 CARGO_REGISTRY_TOKEN。
+  publish:
+    needs: [fmt, clippy, test, msrv, deny]
+    if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify tag matches crate version
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          VERSION="${TAG#v}"
+          echo "Tag: ${TAG} / version: ${VERSION}"
+          for crate in ferritls-core ferritls-rustls; do
+            CRATE_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r --arg c "$crate" '.packages[] | select(.name == $c) | .version')
+            echo "${crate}: ${CRATE_VERSION}"
+            if [ "${CRATE_VERSION}" != "${VERSION}" ]; then
+              echo "::error::${crate} version (${CRATE_VERSION}) does not match tag (${TAG})"
+              exit 1
+            fi
+          done
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        # 上传阶段非原子：若 core 已上传而 rustls 失败，重跑本 job 会因
+        # core 版本已存在而报错——此时改用 `cargo publish -p
+        # ferritls-rustls` 单发补齐即可。
+        run: cargo publish
