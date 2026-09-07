@@ -10,7 +10,6 @@ use common::assert_hex;
 use ferritls_core::sha2::{Sha256, Sha384, Sha512};
 
 #[test]
-#[ignore = "M1: 待 SHA-256 实现后启用（并对照 CAVP 原始文件核对）"]
 fn sha256_known_answers() {
     assert_hex(
         &Sha256::one_shot(b"abc"),
@@ -31,7 +30,6 @@ fn sha256_known_answers() {
 }
 
 #[test]
-#[ignore = "M1"]
 fn sha384_known_answers() {
     assert_hex(
         &Sha384::one_shot(b"abc"),
@@ -48,7 +46,6 @@ fn sha384_known_answers() {
 }
 
 #[test]
-#[ignore = "M1"]
 fn sha512_known_answers() {
     assert_hex(
         &Sha512::one_shot(b"abc"),
@@ -65,7 +62,6 @@ fn sha512_known_answers() {
 }
 
 #[test]
-#[ignore = "M1: 流式 update 与 one_shot 结果一致性（含非整块切分）"]
 fn sha2_streaming_consistency() {
     let data: Vec<u8> = (0u8..200).collect();
     let mut h = Sha256::new();

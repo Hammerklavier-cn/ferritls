@@ -9,7 +9,6 @@ use common::{assert_hex, hex};
 use ferritls_core::hkdf::{expand_sha256, extract_sha256};
 
 #[test]
-#[ignore = "M1: 待 HKDF 实现后启用（对照 RFC 5869 原文核对）"]
 fn hkdf_sha256_rfc5869_tc1() {
     let ikm = [0x0bu8; 22];
     let salt = hex("000102030405060708090a0b0c");
@@ -34,7 +33,6 @@ fn hkdf_sha256_rfc5869_tc1() {
 }
 
 #[test]
-#[ignore = "M1"]
 fn hkdf_sha256_rfc5869_tc2_long_inputs() {
     let ikm: Vec<u8> = (0x00..=0x4f).collect();
     let salt: Vec<u8> = (0x60..=0xaf).collect();
@@ -62,7 +60,6 @@ fn hkdf_sha256_rfc5869_tc2_long_inputs() {
 }
 
 #[test]
-#[ignore = "M1"]
 fn hkdf_sha256_rfc5869_tc3_empty_salt_info() {
     let ikm = [0x0bu8; 22];
     let prk = extract_sha256(&[], &ikm);

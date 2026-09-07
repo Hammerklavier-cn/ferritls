@@ -9,7 +9,6 @@ use common::assert_hex;
 use ferritls_core::hmac::HmacSha256;
 
 #[test]
-#[ignore = "M1: 待 HMAC 实现后启用（对照 RFC 4231 原文核对）"]
 fn hmac_sha256_rfc4231() {
     // Test Case 1: key = 0x0b × 20, data = "Hi There"
     let key = [0x0bu8; 20];
@@ -40,7 +39,6 @@ fn hmac_sha256_rfc4231() {
 }
 
 #[test]
-#[ignore = "M1: 常数时间验证路径 + 篡改标签必须失败"]
 fn hmac_verify_and_tamper() {
     let key = [0x0bu8; 20];
     let mut m = HmacSha256::new(&key);
