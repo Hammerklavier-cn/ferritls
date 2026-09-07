@@ -23,3 +23,8 @@ default = []
 # 注意：此 feature 不是“已通过 CMVP 认证”的声明——认证落地前 rustls 侧
 # 的 fips() 恒为 false（见 AGENTS.md 硬性规则 3）。
 fips = []
+
+# serde_json 仅用于测试向量解析（dev-dependencies 不受边界白名单约束，
+# 见 AGENTS.md §2 规则 2）。
+[dev-dependencies]
+serde_json = "1"
