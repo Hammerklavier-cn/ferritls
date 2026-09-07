@@ -1,7 +1,6 @@
+# 构建与 fuzzing 运行时产物。路径相对本目录（fuzz/）——曾误写成仓库根
+# 相对路径（fuzz/Cargo.lock 等），模式永不匹配，导致 Cargo.lock 误入库。
 /target
-
-# cargo-fuzz（独立 workspace）
-fuzz/target
-fuzz/Cargo.lock
-fuzz/artifacts
-fuzz/coverage
+/Cargo.lock
+/artifacts
+/coverage
