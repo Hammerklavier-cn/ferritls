@@ -5,13 +5,6 @@
 纯 Rust 的 [rustls](https://github.com/rustls/rustls) `CryptoProvider`
 密码后端：无 C、无汇编、无 `unsafe`，按 FIPS 140-3 模块边界组织。
 
-**状态：M0–M7 完成，0.1 就绪**——`ferritls-core` 全部密码原语落地，
-外部真值锚定：RFC/NIST/CAVP 官方向量、RFC 8448 §3 密钥调度全链、
-Wycheproof 对抗性向量 2349 用例；rustls 适配层与 rustls-ring 交叉
-互操作（3 套件 × 双方向）通过，webpki 真实证书链校验通过，
-cargo-fuzz 目标进 CI。crates.io 发布与 tag 见
-[路线图](docs/ROADMAP.md) M7（待维护者执行）。
-
 ## 为什么
 
 | 替代对象 | 痛点 | ferritls |

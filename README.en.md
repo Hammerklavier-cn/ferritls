@@ -6,15 +6,6 @@ A pure-Rust [rustls](https://github.com/rustls/rustls) `CryptoProvider`
 backend: no C, no assembly, no `unsafe`, organized as a FIPS 140-3
 cryptographic module boundary.
 
-**Status: M0–M7 complete, 0.1-ready** — every primitive in
-`ferritls-core` is implemented and anchored against external ground
-truth: official RFC/NIST/CAVP vectors, the full RFC 8448 §3 key-schedule
-traces, and 2,349 Wycheproof adversarial cases. The rustls adapter
-passes cross-interop with rustls-ring (3 suites × both directions) and
-webpki validation against real certificate chains; cargo-fuzz targets
-run in CI. For the crates.io release and tagging see
-[ROADMAP](docs/ROADMAP.md) M7 (pending maintainer action).
-
 ## Why
 
 | Instead of | Pain point | ferritls |
