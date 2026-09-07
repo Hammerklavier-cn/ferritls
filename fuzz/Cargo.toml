@@ -9,6 +9,21 @@ edition = "2024"
 [package.metadata]
 cargo-fuzz = true
 
+# 本地（Windows）验证须知——三层硬约束，均已实测：
+# 1. windows-gnu：rustc 不支持该目标的 ASan（"address sanitizer is not
+#    supported for this target"），且 libfuzzer-sys 的
+#    FuzzerExtFunctionsWindows.cpp 用 MSVC 专属 __pragma(comment(linker,
+#    "/alternatename:..."))，MinGW g++ 语法错误——双重死路。
+# 2. sanitizer none（任意 Windows 目标）：COFF 上 __start_/__stop___sancov_cntrs
+#    不由链接器合成，由 compiler-rt 的 sanitizer 运行时定义——无运行时即
+#    链接失败，此路不通（Linux 上链接器自动合成，无此问题）。
+# 3. windows-msvc + ASan（可行路径）：需 VS 安装"C++ AddressSanitizer"
+#    组件（clang_rt.asan*.lib），缺组件时报 LNK1104
+#    clang_rt.asan_dynamic_runtime_thunk-x86_64.lib。装好后：
+#    rustup default/ nightly 需 rust-src；cargo +nightly fuzz build
+#    --target x86_64-pc-windows-msvc。libFuzzer 官方口径：Windows 无
+#    ASan 不支持。CI 的 fuzz 门禁在 ubuntu 上不受以上影响。
+
 # 独立 workspace：不进入根 workspace（根 CI 门禁不编译本目录；
 # fuzz 专用依赖不受 ferritls-core 边界白名单约束）。
 [workspace]
