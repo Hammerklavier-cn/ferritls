@@ -239,7 +239,7 @@ fn kat_hkdf_sha256() -> Result<(), crate::Error> {
     let info: [u8; 10] = [0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9];
     let prk = crate::hkdf::extract_sha256(&salt, &ikm);
     let mut okm = [0u8; 42];
-    crate::hkdf::expand_sha256(&prk, &info, &mut okm);
+    crate::hkdf::expand_sha256(&prk, &info, &mut okm)?;
     if okm == expect {
         Ok(())
     } else {
@@ -289,7 +289,7 @@ fn kat_aes128_ccm() -> Result<(), crate::Error> {
     ];
     let ccm = crate::ccm::Aes128Ccm::new(&KEY);
     let pt = b"self-test ccm kat";
-    let sealed = ccm.seal(&NONCE, b"", pt);
+    let sealed = ccm.seal(&NONCE, b"", pt)?;
     let opened = ccm.open(&NONCE, b"", &sealed)?;
     if opened != pt {
         return Err(crate::Error::SelfTestFailed("aes128-ccm"));

@@ -484,7 +484,10 @@ impl MessageEncrypter for CcmEncrypter {
 
         let mut plain = msg.payload.to_vec();
         plain.push(msg.typ.to_array()[0]);
-        let sealed = self.ccm.seal(&nonce.0, &aad, &plain);
+        let sealed = self
+            .ccm
+            .seal(&nonce.0, &aad, &plain)
+            .map_err(|_| Error::EncryptError)?;
 
         let mut payload = PrefixedPayload::with_capacity(total_len);
         payload.extend_from_slice(&sealed);
