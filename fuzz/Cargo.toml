@@ -17,43 +17,45 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 ferritls-core = { path = "../crates/ferritls-core" }
 
+# bin 名一律 kebab-case（cargo 对 snake_case bin 名默认告警）；
+# fuzz_targets/ 下的源文件名保持 snake_case 不动。
 [[bin]]
-name = "parse_pkcs8"
+name = "parse-pkcs8"
 path = "fuzz_targets/parse_pkcs8.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "verify_ecdsa"
+name = "verify-ecdsa"
 path = "fuzz_targets/verify_ecdsa.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "verify_ed25519"
+name = "verify-ed25519"
 path = "fuzz_targets/verify_ed25519.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "verify_rsa"
+name = "verify-rsa"
 path = "fuzz_targets/verify_rsa.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "aead_open"
+name = "aead-open"
 path = "fuzz_targets/aead_open.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "ecdh_peer"
+name = "ecdh-peer"
 path = "fuzz_targets/ecdh_peer.rs"
 test = false
 doc = false

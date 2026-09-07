@@ -76,14 +76,19 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
+      # install-action 分发的 cargo-fuzz 是静态 musl 二进制，其内部默认
+      # target 即 x86_64-unknown-linux-musl；而 musl 默认 crt-static 与
+      # -Zsanitizer=address 在 rustc 层面不兼容（且该目标 std 未安装），
+      # 故对 build/run 显式钉住 gnu：宿主 std 已装、动态 glibc 与 ASan
+      # 兼容。
       - name: Build fuzz targets
-        run: cargo fuzz build -O
+        run: cargo fuzz build -O --target x86_64-unknown-linux-gnu
       # 每个 target 冒烟执行 60s / 50k 次，防止回归；持续 fuzz 由
       # OSS-Fuzz 或定期 job 承担（M8+）
       - name: Smoke run
         run: |
-          for t in parse_pkcs8 verify_ecdsa verify_ed25519 verify_rsa aead_open ecdh_peer; do
-            cargo fuzz run "$t" -- -max_total_time=60 -runs=50000
+          for t in parse-pkcs8 verify-ecdsa verify-ed25519 verify-rsa aead-open ecdh-peer; do
+            cargo fuzz run --target x86_64-unknown-linux-gnu "$t" -- -max_total_time=60 -runs=50000
           done
 
   deny:
