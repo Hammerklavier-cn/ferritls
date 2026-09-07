@@ -180,7 +180,13 @@ rustls（应用层）
   以秘密为条件的分支/提前返回；`if a == b` 式比较秘密。
 - subtle 的 `Choice` 是黑盒：不要 `unwrap_bool()` 后分支（debug 断言
   除外）。
-- GHASH 的 GF(2^128) 乘法用逐位移位-约减写法，拒绝 4/8 位查表加速。
+- 查表按索引的来源分两类判：**以秘密为索引**的查表绝对禁止（AES T 表
+  实现因此被禁，只许按位/掩码 S-box）；**索引只依赖公开数据、表内容
+  派生自秘密**的预计算表允许（GHASH 的 H 倍数 4-bit 表属此类：索引
+  是公开的 AAD/密文/长度字节，访存模式与秘密无关）。采用后一类表的
+  PR 必须在描述中给出"索引仅公开数据"的论证。
+  （P1 性能轮修订 2026-09：旧条目"GHASH 拒绝 4/8 位查表加速"把两类
+  混为一谈，按本条执行。）
 
 ### 5.2 各算法要点
 
@@ -223,9 +229,14 @@ targets 在 M6 建立，语料进 `fuzz/`），零 panic。
 
 - **先正确，后快**：向量全绿 + 常数时间审查通过之前，禁止任何
   “性能优化”提交（包括看似无害的循环展开）。
-- 优化的唯一入口是 `ferritls-core::ops` 的 trait 分发（模式见
-  `docs/ARCHITECTURE.md` §4）；公开 API 与 rustls 适配层不动。
+- 优化有两条入口：① **软件后端自身的重构**（稳定版、零 unsafe、
+  边界内——如 P1 性能轮的批量 XOR / H 倍数表 / 位切片 / 批处理形状
+  重排）属常规维护，不经 ops 分发，公开 API 与 rustls 适配层不动；
+  ② **新增硬件后端**的唯一入口是 `ferritls-core::ops` 的 trait 分发
+  （模式见 `docs/ARCHITECTURE.md` §4），以边界外独立 crate 存在。
 - 任何优化不得引入以秘密为条件的分支/访存（§5.1），PR 里要说明。
+- 性能 PR 三要件：全向量套件一行不改且绿 + 常数时间声明 + 基准
+  前后数字（`cargo run -p ferritls-interop --release --example perf`）。
 - 批准模式下后端固定为软件后端（边界稳定优先，见 `ops.rs` 文档）。
 
 ---
@@ -268,6 +279,7 @@ cargo test -p ferritls-core --features fips
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 cargo deny check                       # 需已安装 cargo-deny
+cargo run -p ferritls-interop --release --example perf # P1 性能基准（同机前后对比用）
 cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored 测试
 ```
 
@@ -328,6 +340,11 @@ cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored
       触发全量门禁后单次 `cargo publish`（cargo 1.90 起 workspace
       一次发布 core → rustls；需仓库 secrets 配置
       CARGO_REGISTRY_TOKEN）
+- [ ] P1 性能轮（进行中，2026-09 启动）：稳定版自动向量化重构——
+      AEAD 输出路径 bulk-XOR 化、GHASH H 倍数 4-bit 表（§5.1 判据
+      修订）、ChaCha20 四块批处理、bitsliced AES 加密方向、GCM 标签
+      比较常数时间化；零 unsafe / 零新依赖 / 零 feature 开关，
+      见 `docs/ROADMAP.md` P1 节
 - [ ] M8：TLS 1.2 / QUIC / ML-KEM 混合 / intrinsics 后端
 
 **已知的实现级注记**（修订实现前必读）：

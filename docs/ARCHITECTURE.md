@@ -82,7 +82,8 @@ pub trait AeadOps: Send + Sync {
 
 规则：
 
-1. 软件实现（`SoftwareBackend`）是默认且当前唯一的后端，常驻边界内。
+1. 软件实现是默认且当前唯一的后端，常驻边界内（即各模块内的具体
+   实现；ops 下不设注册结构，也**禁止预写** todo 存根——P1 已清除）。
 2. 硬件后端（AES-NI/SHA-ext/AVX512）是**边界外的独立 crate**，需要
    `unsafe`/intrinsics，经注册挂入；进程启动时探测一次（
    `is_x86_feature_detected!`），运行期不切换。
@@ -90,6 +91,9 @@ pub trait AeadOps: Send + Sync {
    后端入边界 = 重新走实验室审查，阶段 C 的决策）。
 4. 每个里程碑落地对应原语时**同步定义**其 Ops trait（避免事后重构），
    但禁止预写无实现的 trait 堆积。
+5. **软件后端自身的性能重构**（稳定版、零 unsafe、边界内，P1 性能轮）
+   不经 ops 分发——它就是对软件后端的维护，公开 API 不变；ops 分发
+   仅服务于未来边界外的硬件后端 crate（AGENTS §5.5）。
 
 ## 5. 错误处理
 
