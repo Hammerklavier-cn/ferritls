@@ -78,6 +78,9 @@ RFC 8448 轨迹重放、cargo-fuzz 目标建立（DER/签名验证/AEAD）。
       AlgorithmIdentifier 编码语义（SEQUENCE 内容，非完整 DER）
 - [x] cargo-fuzz 六目标 + 语料 + CI 冒烟（AGENTS §5.4 欠账清偿）
 - [x] docs/FIPS.md 升级为 SP 800-140Br1 安全策略底稿（§6）
+- [x] M4c：RSA 私钥运算乘法盲化落地（rᵉ 预盲 / r⁻¹ 去盲 + Garner
+      回绕修正常数时间化；变量时间 xgcd 论证与中间值零化；openssl
+      逐字节锚 + 盲化稳定性测试守护）
 - [x] crates.io 0.1.0 元数据齐备，`cargo publish --dry-run` 通过
       （rustls crate 的 dry-run 需 core 实际发布后才能通过——发布顺序
       core → rustls）
@@ -85,10 +88,6 @@ RFC 8448 轨迹重放、cargo-fuzz 目标建立（DER/签名验证/AEAD）。
 
 ## 已知问题 / 待开 issue
 
-- **TODO(M4c) RSA-CRT 私钥盲化**（AGENTS §5.2 允许后补）：本仓库无
-  gh CLI 会话，issue 待维护者在 GitHub 上创建（标题建议：
-  "RSA private-key blinding (M4c)"，正文引用 AGENTS.md §5.2 与
-  docs/FIPS.md §6.11）；在 issue 开立前此条目即为跟踪载体。
 - windows-gnu 工具链构建 ring 需要 ucrt64 工具链在 PATH 前列
   （mingw64 DLL 与 ucrt64 编译器混载会静默崩溃；CI 不受影响）。
 

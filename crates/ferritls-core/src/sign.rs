@@ -584,7 +584,7 @@ pub mod ed25519 {
 }
 
 // ---------------------------------------------------------------------------
-// RSA（M4b：固定宽度大数模幂 + CRT + PKCS#1 v1.5/PSS，RFC 8017）
+// RSA（M4b/M4c：固定宽度大数模幂 + CRT + 盲化 + PKCS#1 v1.5/PSS，RFC 8017）
 // ---------------------------------------------------------------------------
 
 /// RSA 签名/验证（RSASSA-PKCS1-v1_5 与 RSASSA-PSS，RFC 8017）。
@@ -593,9 +593,14 @@ pub mod ed25519 {
 ///
 /// 安全：
 /// - 私钥运算走 CRT（p/q 各自模幂，Garner 重组），指数位经掩码选择，
-///   对秘密指数常数时间（见 [`crate::rsabig`]）；
-/// - TODO(M4c)：私钥运算盲化尚未落地（AGENTS.md §5.2 允许 M4 后补，
-///   落地前不得声称抗时序侧信道硬化）；
+///   对秘密指数常数时间（见 [`crate::rsabig`]）；Garner 回绕修正为
+///   常数时间掩码选择；
+/// - 乘法盲化（Kocher，M4c）：每次签名取单次使用随机 r ∈ [1, n)
+///   （OS 熵 + 拒绝采样），先算 EM′ = EM·rᵉ mod n 的 CRT 私钥运算，
+///   再乘 r⁻¹ 去盲——CRT 内全部中间值随 r 随机化，秘密与观测
+///   时序/访存解耦；r⁻¹ 经变量时间 binary xgcd 求得，输入为单次
+///   随机值与公开模数，时序不泄露可利用信息（Go/OpenSSL 同实践，
+///   见 [`crate::rsabig::mod_inverse_odd`]）；r 与盲化中间值退出前零化；
 /// - 验证 padding 检查严格，一切失败归一化为
 ///   [`Error::VerificationFailed`](crate::Error::VerificationFailed)；
 /// - 模长 < 2048 位拒绝（[`MIN_MODULUS_LEN`]），> 4096 位拒绝
@@ -604,8 +609,13 @@ pub mod ed25519 {
 ///   dq < q、qInv < p、n/p/q 为奇数、e ≥ 3 且为奇数；不做素性检测
 ///   （密钥来源为本机信任输入，素性由密钥生成方保证）。
 pub mod rsa {
+    use crate::ct::zeroize::Zeroize;
     use crate::rsabig;
     use crate::sha2::{Sha256, Sha384, Sha512};
+
+    /// 盲化因子采样/求逆的最大尝试次数。每轮拒绝概率 ≤ 1/2
+    /// （n 顶位为 1），128 轮全部失败概率 ≤ 2⁻¹²⁸，视为熵源异常。
+    const BLIND_ATTEMPTS: usize = 128;
 
     /// 最短允许的模长字节数（2048 位）。
     pub const MIN_MODULUS_LEN: usize = 256;
@@ -618,6 +628,12 @@ pub mod rsa {
         n_len: usize,
         n_bytes: usize,
         em_mask: u8,
+        // 公开参数（盲化的预乘 rᵉ 与去盲 r⁻¹ 在 mod n 下进行）
+        n: Vec<u64>,
+        e: Vec<u64>,
+        e_bits: usize,
+        n0_n: u64,
+        r2_n: Vec<u64>,
         // 秘密参数（CRT）
         p: Vec<u64>,
         q: Vec<u64>,
@@ -737,11 +753,14 @@ pub mod rsa {
                 return Err(crate::Error::InvalidInput);
             }
 
-            // Montgomery 常数（CRT 侧）
+            // Montgomery 常数（CRT 侧 + 盲化用的 n 侧）
             let n0_p = rsabig::n0_inv(p[0]);
             let n0_q = rsabig::n0_inv(q[0]);
             let r2_p = rsabig::compute_r2(&p);
             let r2_q = rsabig::compute_r2(&q);
+            let n0_n = rsabig::n0_inv(n[0]);
+            let r2_n = rsabig::compute_r2(&n);
+            let e_bits = 64 - e[0].leading_zeros() as usize;
 
             // q·qInv ≡ 1 (mod p)
             let mut mq = vec![0u64; pl];
@@ -759,6 +778,11 @@ pub mod rsa {
                 n_len,
                 n_bytes,
                 em_mask,
+                n,
+                e,
+                e_bits,
+                n0_n,
+                r2_n,
                 p,
                 q,
                 dp,
@@ -772,18 +796,41 @@ pub mod rsa {
             })
         }
 
-        /// 对消息代表元 EM 私钥运算（CRT + Garner 重组），返回定长签名。
-        fn sign_em(&self, em: &[u8]) -> Result<Vec<u8>, crate::Error> {
-            debug_assert_eq!(em.len(), self.n_bytes);
+        /// 均匀采样 r ∈ [1, n)：OS 熵 + 拒绝采样（n 顶位为 1，每轮
+        /// 拒绝概率 ≤ 1/2）。任何失败路径上 `out` 与采样缓冲均已零化。
+        fn sample_blinding_factor(&self, out: &mut [u64]) -> Result<(), crate::Error> {
+            debug_assert_eq!(out.len(), self.n_len);
+            let mut buf = vec![0u8; self.n_bytes];
+            for _ in 0..BLIND_ATTEMPTS {
+                if let Err(e) = crate::entropy::fill(&mut buf) {
+                    buf.zeroize();
+                    out.zeroize();
+                    return Err(e);
+                }
+                rsabig::os2ip_be(&buf, out);
+                let zero = out.iter().all(|&w| w == 0);
+                if !zero && !rsabig::geq(out, &self.n) {
+                    buf.zeroize();
+                    return Ok(());
+                }
+            }
+            buf.zeroize();
+            out.zeroize();
+            Err(crate::Error::EntropyFailed)
+        }
+
+        /// CRT 私钥运算：m^d mod n（m 为普通形式 limbs 且 m < n，
+        /// 返回 n_len limbs）。本函数的输入应为**盲化后**的值——
+        /// 内部中间值（mp/mq/sp/sq/h 等）随盲化因子随机化；
+        /// 秘密中间缓冲退出前零化。
+        fn crt(&self, m: &[u64]) -> Vec<u64> {
             let l = self.pl;
             let nl = self.n_len;
 
-            let mut m = vec![0u64; nl];
-            rsabig::os2ip_be(em, &mut m);
             let mut mp = vec![0u64; l];
-            rsabig::reduce_limbs(&m, &self.p, &mut mp);
+            rsabig::reduce_limbs(m, &self.p, &mut mp);
             let mut mq = vec![0u64; l];
-            rsabig::reduce_limbs(&m, &self.q, &mut mq);
+            rsabig::reduce_limbs(m, &self.q, &mut mq);
 
             // sp = m^dp mod p、sq = m^dq mod q（Montgomery 域内完成）
             let mut sp = vec![0u64; l];
@@ -815,25 +862,32 @@ pub mod rsa {
                 );
                 rsabig::from_mont(&mut res, &self.q, self.n0_q);
                 sq.copy_from_slice(&res);
+                base.zeroize();
+                res.zeroize();
             }
 
             // Garner（qInv = q⁻¹ mod p）：h = (sp − sq)·qInv mod p；
-            // m = sq + q·h ≤ (q−1) + q(p−1) = n − 1 < n
+            // s′ = sq + q·h ≤ (q−1) + q(p−1) = n − 1 < n。
+            // 回绕修正无条件计算 diff + p，按借位掩码选取（常数时间；
+            // 借位为 1 时加法跨过 2^(64l) 恰一次，进位按同余定义丢弃，
+            // 结果落在 [0, p)）。
             let mut diff = vec![0u64; l];
             let borrow = rsabig::sub_limbs(&sp, &sq, &mut diff);
-            if borrow == 1 {
-                // (sp − sq) mod p = 回绕值 + p（mod 2^(64l)）：真实结果
-                // sp − sq + p ∈ (0, p)，加法恰好跨过 2^(64l) 一次，
-                // 进位按同余定义丢弃，结果落在 [0, p)。
+            let mut sum = vec![0u64; l];
+            {
                 let mut carry = 0u64;
-                for (dw, pw) in diff.iter_mut().zip(self.p.iter()) {
-                    let (v, c1) = dw.overflowing_add(*pw);
+                for ((dv, pv), sv) in diff.iter().zip(self.p.iter()).zip(sum.iter_mut()) {
+                    let (v, c1) = dv.overflowing_add(*pv);
                     let (v, c2) = v.overflowing_add(carry);
-                    *dw = v;
+                    *sv = v;
                     carry = (c1 as u64) | (c2 as u64);
                 }
-                debug_assert_eq!(carry, 1);
             }
+            let mut fixed = vec![0u64; l];
+            rsabig::select(borrow.wrapping_neg(), &sum, &diff, &mut fixed);
+            sum.zeroize();
+            diff.copy_from_slice(&fixed); // 修正后的 (sp − sq) mod p
+            fixed.zeroize();
             // h = diff·qInv mod p：diff 先入 Montgomery 域，与 raw qInv 相乘
             // 的结果即为 raw（mont(diff)·qInv·R⁻¹ = diff·qInv）
             let mut hm = vec![0u64; l];
@@ -845,12 +899,90 @@ pub mod rsa {
             qh.truncate(nl);
             let mut sqx = vec![0u64; nl];
             sqx[..l].copy_from_slice(&sq);
-            let mut mres = vec![0u64; nl];
-            rsabig::add_limbs(&sqx, &qh, &mut mres); // < n，无进位
+            let mut sres = vec![0u64; nl];
+            rsabig::add_limbs(&sqx, &qh, &mut sres); // < n，无进位
 
-            let mut sig = vec![0u8; self.n_bytes];
-            rsabig::i2osp_be(&mres, &mut sig);
-            Ok(sig)
+            for v in [
+                &mut mp, &mut mq, &mut sp, &mut sq, &mut diff, &mut hm, &mut h, &mut qh, &mut sqx,
+            ] {
+                v.zeroize();
+            }
+            sres
+        }
+
+        /// 对消息代表元 EM 私钥运算（乘法盲化 + CRT + Garner 重组），
+        /// 返回定长签名。
+        ///
+        /// 盲化（M4c）：单次随机 r ∈ [1, n)，s = (EM·rᵉ)^d·r⁻¹ mod n
+        /// ——盲化在数学上精确抵消，签名结果与无盲化实现逐字节一致
+        /// （PKCS#1 v1.5 的 openssl 逐字节锚定与 selftest KAT 即为
+        /// 盲化正确性的回归门）。
+        fn sign_em(&self, em: &[u8]) -> Result<Vec<u8>, crate::Error> {
+            debug_assert_eq!(em.len(), self.n_bytes);
+            let nl = self.n_len;
+
+            let mut m = vec![0u64; nl];
+            rsabig::os2ip_be(em, &mut m);
+
+            let mut r = vec![0u64; nl];
+            let mut rinv = vec![0u64; nl];
+            let mut re = vec![0u64; nl]; // rᵉ（Montgomery 域）
+            let mut t = vec![0u64; nl];
+            let mut t2 = vec![0u64; nl];
+            let mut sig = vec![0u64; nl];
+            let mut ok = false;
+            let mut err = None;
+            'blind: for _ in 0..BLIND_ATTEMPTS {
+                if let Err(e) = self.sample_blinding_factor(&mut r) {
+                    err = Some(e);
+                    break 'blind;
+                }
+                // gcd(r, n) ≠ 1：合法密钥（n = p·q，p/q 为大素数）下
+                // 概率 ~2⁻¹⁰²³；换 r 重试
+                match rsabig::mod_inverse_odd(&r, &self.n) {
+                    Some(inv) => rinv.copy_from_slice(&inv),
+                    None => continue,
+                }
+                // re = rᵉ mod n（e 为公开指数，mont_exp 对其常数时间）
+                rsabig::to_mont(&r, &self.r2_n, &self.n, self.n0_n, &mut t);
+                rsabig::mont_exp(
+                    &t,
+                    &self.e,
+                    self.e_bits,
+                    &self.n,
+                    self.n0_n,
+                    &self.r2_n,
+                    &mut re,
+                );
+                // m′ = m·rᵉ mod n
+                rsabig::to_mont(&m, &self.r2_n, &self.n, self.n0_n, &mut t);
+                rsabig::mont_mul(&t, &re, &self.n, self.n0_n, &mut t2);
+                rsabig::from_mont(&mut t2, &self.n, self.n0_n);
+                // s′ = CRT(m′)；s = s′·r⁻¹ mod n（去盲）
+                let mut s_blind = self.crt(&t2);
+                rsabig::to_mont(&s_blind, &self.r2_n, &self.n, self.n0_n, &mut t);
+                rsabig::to_mont(&rinv, &self.r2_n, &self.n, self.n0_n, &mut t2);
+                rsabig::mont_mul(&t, &t2, &self.n, self.n0_n, &mut sig);
+                rsabig::from_mont(&mut sig, &self.n, self.n0_n);
+                s_blind.zeroize();
+                ok = true;
+                break 'blind;
+            }
+            // 零化盲化因子与中间值（成功/失败路径统一覆盖）
+            for v in [&mut m, &mut r, &mut rinv, &mut re, &mut t, &mut t2] {
+                v.zeroize();
+            }
+            if let Some(e) = err {
+                return Err(e);
+            }
+            if !ok {
+                // 全部尝试的 r 均与 n 不互素：模数不是半素数（结构异常）
+                return Err(crate::Error::Unsupported);
+            }
+            let mut out = vec![0u8; self.n_bytes];
+            rsabig::i2osp_be(&sig, &mut out);
+            sig.zeroize();
+            Ok(out)
         }
 
         /// RSA-PSS 签名（salt 长度 = 哈希长度；TLS 1.3 使用）。
@@ -915,6 +1047,8 @@ pub mod rsa {
 
     impl Drop for SigningKey {
         fn drop(&mut self) {
+            // n/e 及其 Montgomery 常数（n0_n/r2_n）是公开钥分量，不零化；
+            // r2_p/r2_q/n0_p/n0_q 派生自秘密素数，随秘密一并零化。
             for v in [
                 &mut self.p,
                 &mut self.q,

@@ -245,6 +245,125 @@ pub(crate) fn sub_limbs(a: &[u64], b: &[u64], out: &mut [u64]) -> u64 {
     borrow
 }
 
+/// x 是否为 0（ limbs 全零）。
+fn is_zero(x: &[u64]) -> bool {
+    x.iter().all(|&w| w == 0)
+}
+
+/// x 是否为 1。
+fn is_one(x: &[u64]) -> bool {
+    x[0] == 1 && x[1..].iter().all(|&w| w == 0)
+}
+
+/// x ← x/2（x 为偶数，纯右移；LE limbs，高位 limb 的 LSB 移入
+/// 低位 limb 的 MSB）。
+fn shr1(x: &mut [u64]) {
+    let mut carry = 0u64;
+    for w in x.iter_mut().rev() {
+        let c = *w & 1;
+        *w = (*w >> 1) | (carry << 63);
+        carry = c;
+    }
+}
+
+/// x ← x/2 mod n（n 奇）。x 奇时以 (x+n)/2 实现；x+n 的溢出位
+/// 作为移入的最高位参与右移，结果保持 [0, n)。
+fn half_mod(x: &mut [u64], n: &[u64]) {
+    if x[0] & 1 == 0 {
+        shr1(x);
+        return;
+    }
+    let mut carry = 0u64;
+    for (w, nw) in x.iter_mut().zip(n.iter()) {
+        let (s, c1) = w.overflowing_add(*nw);
+        let (s, c2) = s.overflowing_add(carry);
+        *w = s;
+        carry = (c1 as u64) | (c2 as u64);
+    }
+    // carry（0/1）是 (x+n) 的第 64l 位；x+n 为偶数，移出位必为 0
+    let mut cin = carry;
+    for w in x.iter_mut().rev() {
+        let c = *w & 1;
+        *w = (*w >> 1) | (cin << 63);
+        cin = c;
+    }
+}
+
+/// x ← x−y mod n（x、y ∈ [0, n)；借位回绕 +n，进位按同余丢弃）。
+fn sub_mod(x: &mut [u64], y: &[u64], n: &[u64]) {
+    let mut tmp = vec![0u64; x.len()];
+    let borrow = sub_limbs(x, y, &mut tmp);
+    if borrow == 1 {
+        let mut carry = 0u64;
+        for (w, nw) in tmp.iter_mut().zip(n.iter()) {
+            let (s, c1) = w.overflowing_add(*nw);
+            let (s, c2) = s.overflowing_add(carry);
+            *w = s;
+            carry = (c1 as u64) | (c2 as u64);
+        }
+    }
+    x.copy_from_slice(&tmp);
+}
+
+/// a⁻¹ mod n（n 奇；binary extended GCD，HAC 14.61 变体）。
+///
+/// 不变式：u ≡ x1·a、v ≡ x2·a (mod n)，x1/x2 恒在 [0, n)；
+/// u 或 v 收敛到 1 时对应系数即逆元；收敛到 0（gcd > 1）返回
+/// `None`。
+///
+/// **变量时间**：仅允许用于单次使用的随机盲化因子与公开模数——
+/// 此类输入单次消费、从不输出，迭代耗时只携带关于单次随机值的
+/// 对数级信息，不可利用（Go `crypto/rsa` 与 OpenSSL `BN_BLINDING`
+/// 同实践）。禁止挪用于其他秘密值。
+pub(crate) fn mod_inverse_odd(a: &[u64], n: &[u64]) -> Option<Vec<u64>> {
+    let l = n.len();
+    debug_assert_eq!(a.len(), l);
+    if is_zero(a) {
+        return None; // gcd(0, n) = n ≠ 1
+    }
+
+    let mut u = a.to_vec();
+    let mut v = n.to_vec();
+    let mut x1 = vec![0u64; l];
+    let mut x2 = vec![0u64; l];
+    let mut scratch = vec![0u64; l];
+    x1[0] = 1;
+
+    // 迭代上限：binary GCD 每轮至少移除一个 2 的因子或做一次
+    // 缩小差值的减法，经典界 ~2·bitlen(n)；此处取 4·64·l + 64
+    // 覆盖病态输入（正常密钥远早于上限收敛）。
+    let limit = 4 * 64 * l + 64;
+    for _ in 0..limit {
+        if is_one(&u) {
+            return Some(x1);
+        }
+        if is_one(&v) {
+            return Some(x2);
+        }
+        if is_zero(&u) || is_zero(&v) {
+            return None; // gcd(a, n) > 1
+        }
+        while u[0] & 1 == 0 {
+            shr1(&mut u);
+            half_mod(&mut x1, n);
+        }
+        while v[0] & 1 == 0 {
+            shr1(&mut v);
+            half_mod(&mut x2, n);
+        }
+        if geq(&u, &v) {
+            sub_limbs(&u, &v, &mut scratch); // u ≥ v，无借位
+            std::mem::swap(&mut u, &mut scratch);
+            sub_mod(&mut x1, &x2, n);
+        } else {
+            sub_limbs(&v, &u, &mut scratch);
+            std::mem::swap(&mut v, &mut scratch);
+            sub_mod(&mut x2, &x1, n);
+        }
+    }
+    None // 理论不可达；防御性返回（视同 gcd > 1）
+}
+
 /// Montgomery 模幂：`out = base^exp mod n`（base 为 Montgomery 形式）。
 ///
 /// 平方-乘阶梯，指数位以掩码选择（对指数常数时间）。返回 Montgomery
@@ -273,4 +392,88 @@ pub(crate) fn mont_exp(
         select(mask, &tmp2[..l], &tmp[..l], &mut result[..l]);
     }
     out[..l].copy_from_slice(&result[..l]);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 数学自检：montgomery 域内 inv·a ≡ 1 (mod n)（真逆唯一，
+    /// 错误输出必被抓住——不需要外部向量）。
+    fn mont_product_is_one(a: &[u64], inv: &[u64], n: &[u64]) -> bool {
+        let l = n.len();
+        let n0 = n0_inv(n[0]);
+        let r2 = compute_r2(n);
+        let mut am = vec![0u64; l];
+        let mut im = vec![0u64; l];
+        to_mont(a, &r2, n, n0, &mut am);
+        to_mont(inv, &r2, n, n0, &mut im);
+        let mut t = vec![0u64; l];
+        mont_mul(&am, &im, n, n0, &mut t);
+        from_mont(&mut t, n, n0);
+        is_one(&t)
+    }
+
+    #[test]
+    fn inverse_small_values() {
+        // 3·4 = 12 ≡ 1 (mod 11)、10·10 = 100 ≡ 1 (mod 11)
+        assert_eq!(mod_inverse_odd(&[3], &[11]), Some(vec![4]));
+        assert_eq!(mod_inverse_odd(&[10], &[11]), Some(vec![10]));
+        assert_eq!(mod_inverse_odd(&[1], &[11]), Some(vec![1]));
+    }
+
+    #[test]
+    fn inverse_non_coprime_is_none() {
+        assert_eq!(mod_inverse_odd(&[0], &[11]), None);
+        assert_eq!(mod_inverse_odd(&[5], &[15]), None); // gcd 5
+        assert_eq!(mod_inverse_odd(&[6], &[9]), None); // gcd 3
+    }
+
+    #[test]
+    fn inverse_large_selfcheck() {
+        // 确定性伪随机大奇模数（splitmix64 展开；顶位置 1、最低位置 1），
+        // a 取同宽随机值经 reduce_limbs 归入 [0, n)。覆盖 2..=17 limbs
+        //（128..1088 位）。
+        //
+        // 注意：任意随机奇数 n 含小素因子（如 3）的概率不可忽略
+        //（P(3|n)=1/3），此时 None 是**正确**输出——真实 RSA 模数
+        //（两大素数之积）无此问题。故 None 仅跳过并以成功数下限
+        // 防御"恒 None"退化；非互素→None 的确定性用例见
+        // `inverse_non_coprime_is_none`。
+        let mut successes = 0usize;
+        for l in 2..=17usize {
+            for seed in 0..4u64 {
+                let mut state = seed ^ (l as u64) << 32;
+                let mut next = move || {
+                    state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
+                    let mut z = state;
+                    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+                    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+                    z ^ (z >> 31)
+                };
+                let mut n = vec![0u64; l];
+                for w in n.iter_mut() {
+                    *w = next();
+                }
+                n[l - 1] |= 1 << 63;
+                n[0] |= 1;
+                let mut a = vec![0u64; l];
+                for w in a.iter_mut() {
+                    *w = next();
+                }
+                a[l - 1] &= (1 << 63) - 1; // a < 2^(64(l-1)) < n
+                let mut r = vec![0u64; l];
+                reduce_limbs(&a, &n, &mut r);
+                if let Some(inv) = mod_inverse_odd(&r, &n) {
+                    assert!(
+                        mont_product_is_one(&r, &inv, &n),
+                        "inv·a ≢ 1 (mod n) for l={l} seed={seed}"
+                    );
+                    successes += 1;
+                }
+            }
+        }
+        // 成功概率 ≈ 1/ζ(2) ≈ 61%；64 例中至少一半给出逆元
+        assert!(successes >= 32, "too few coprime cases: {successes}/64");
+    }
 }

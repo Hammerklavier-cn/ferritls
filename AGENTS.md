@@ -196,7 +196,9 @@ rustls（应用层）
 - **ECDSA**：nonce 一律 RFC 6979 确定性（FIPS 186-5 允许）；签名验证
   中 `r`/`s` 为零或超阶必须拒绝。
 - **RSA**：解密/验证的 padding 检查严格且全部错误归一化为同一错误；
-  私钥运算加盲化（M4 可后补，但 issue 必须开）；模长 <2048 拒绝。
+  私钥运算乘法盲化（M4c 已落地：rᵉ 预盲 + r⁻¹ 去盲，r 单次随机、
+  中间值零化；r⁻¹ 的变量时间 xgcd 仅限单次随机输入）；模长 <2048
+  拒绝。
 - **ChaCha20-Poly1305**：注意 32 位计数器与 96 位 nonce 的 IETF 拼接；
   Poly1305 字组转整数的小端序。
 - **Ed25519**：RFC 8032 逐条实现，包括 SHA-512 两段式与 cofactor
@@ -309,8 +311,9 @@ cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored
 - [x] M4a：ECDSA P-256/384（RFC 6979 A.2.5/A.2.6）+ Ed25519
       （RFC 8032 TEST 1/2/3 + SHA(abc)）+ DER/PKCS#8/SEC1 解析
 - [x] M4b：RSA（CRT + Garner，固定宽度 Montgomery 模幂），
-      PKCS#1 v1.5 逐字节锚定 openssl、PSS 验证方向锚定；
-      盲化（AGENTS §5.2 允许后补）列为 TODO(M4c)
+      PKCS#1 v1.5 逐字节锚定 openssl、PSS 验证方向锚定
+- [x] M4c：RSA 私钥运算乘法盲化（rᵉ 预盲 / r⁻¹ 去盲 + Garner
+      回绕修正常数时间化；openssl 锚与盲化稳定性测试守护）
 - [x] M5：CTR-DRBG（SP 800-90A 无 DF，CAVP DRBGVS 向量）+
       上电自检 KAT 全集 + 失败注入测试
 - [x] M6：rustls 适配层全量实装（4 套件 × 3 KX 组 × 全验证算法），

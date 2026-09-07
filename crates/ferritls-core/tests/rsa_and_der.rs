@@ -1,8 +1,10 @@
-//! RSA 与 DER 解析测试（M4b）。
+//! RSA 与 DER 解析测试（M4b/M4c）。
 //!
 //! RSA 向量：本地 OpenSSL 3.2.4 生成的 2048 位测试密钥与签名
 //! （PKCS#1 v1.5 确定性签名逐字节锚定；PSS 为随机化签名，验证
-//! 方向锚定 openssl 产物 + 自洽往返）。Wycheproof
+//! 方向锚定 openssl 产物 + 自洽往返）。私钥运算含乘法盲化
+//! （M4c）：每次签名盲化因子全新随机，PKCS#1 v1.5 结果必须
+//! 逐字节不变——盲化稳定性测试直接锚定该性质。Wycheproof
 //! `rsa_signature_test.json` / `rsa_pss_signature_test.json` 全量
 //! 向量在 M6/M7 引入 `tests/vectors/`。DER 畸形输入：性质测试，
 //! cargo-fuzz 全覆盖在 M6 建立。
@@ -91,6 +93,27 @@ fn rsa_pss_openssl_verify_and_round_trip() {
         rsa::verify_pss(256, &hex(PUB_SPKI), MSG, &bad),
         Err(ferritls_core::Error::VerificationFailed)
     );
+}
+
+/// 盲化正确性（M4c）：每次签名盲化因子 r 全新随机，PKCS#1 v1.5
+/// 结果必须逐字节不变（盲化在数学上精确抵消）且与 openssl 锚一致。
+#[test]
+fn rsa_blinded_pkcs1v15_stable_across_random_blinds() {
+    let sk = rsa::SigningKey::from_pkcs8_der(&hex(KEY_PKCS8)).expect("parse key");
+    for _ in 0..8 {
+        let sig = sk.sign_pkcs1v15(256, MSG).expect("sign");
+        common::assert_hex(&sig, SIG_V15_SHA256, "blinded v1.5 sha256 signature");
+    }
+}
+
+/// PSS 全随机路径（随机 salt + 随机盲化因子）多次自洽往返。
+#[test]
+fn rsa_blinded_pss_round_trips() {
+    let sk = rsa::SigningKey::from_pkcs8_der(&hex(KEY_PKCS8)).expect("parse key");
+    for _ in 0..8 {
+        let sig = sk.sign_pss(384, MSG).expect("sign pss");
+        rsa::verify_pss(384, &hex(PUB_SPKI), MSG, &sig).expect("verify self pss");
+    }
 }
 
 #[test]

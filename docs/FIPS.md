@@ -182,6 +182,7 @@ FIPS 140-3（ISO/IEC 19790）对软件模块的核心要求与我们的对应物
 
 - 侧信道：常数时间纪律（AGENTS §5.1；比较/选择用 subtle，
   GHASH 逐位乘法，蒙哥马利阶梯固定模式，ECDSA 标量盲化，RSA
-  幂运算 scratch select）——软实现残余风险在 README 声明；
-  RSA-CRT 私钥盲化 TODO(M4c)。
+  幂运算 scratch select + Garner 回绕掩码选择）——软实现残余
+  风险在 README 声明；RSA 私钥运算乘法盲化已落地（M4c：单次
+  随机 r ∈ [1,n)，EM′ = EM·rᵉ 后 CRT，r⁻¹ 去盲，中间值零化）。
 - 攻击者可控输入不 panic：Wycheproof 2349 用例 + fuzz CI（M7）。

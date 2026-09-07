@@ -106,7 +106,7 @@ pub trait AeadOps: Send + Sync {
 | aes/gcm/ccm/chacha20poly1305 | 轮密钥、GHASH H、Poly1305 one-time key |
 | sha2/hmac | HMAC 内部 ipad/opad 状态（哈希状态本身非秘密，随实现判断） |
 | ecdh | 私钥标量、共享秘密 |
-| sign | ECDSA 标量与 nonce、RSA CRT 参数、Ed25519 种子 |
+| sign | ECDSA 标量与 nonce、RSA CRT 参数与盲化因子、Ed25519 种子 |
 | drbg | V、Key |
 | 适配层 | `Active*` 结构里的 core 私钥（core 类型自带 ZeroizeOnDrop 即覆盖） |
 
