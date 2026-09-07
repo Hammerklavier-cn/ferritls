@@ -8,21 +8,30 @@
 
 | 测试文件 | 官方来源 | 核对方式 |
 |---|---|---|
-| `sha2.rs` | FIPS 180-4 示例 + NIST SHAVS（Short/Long/Monte Carlo 子集） | 官方 .rsp 逐字段核对 |
-| `hmac.rs` | RFC 4231 测试用例 1–2 | 逐字节核对 |
+| `sha2.rs` | FIPS 180-4 示例（"abc"/双块/百万字节 'a'）+ SHAVS 风格填充边界（55–129 字节 13 个转折长度） | 官方示例值逐字节核对；边界长度摘要经 python hashlib 与 OpenSSL 3.2.4 `dgst` 双工具交叉核对（2026-09-07） |
+| `hmac.rs` | RFC 4231 测试用例 1–3 + TC6/TC7（131 字节超块长密钥，SHA-256/384/512 六值） | 逐字节核对（TC6/7 摘要折行片段与计算值精确匹配，另经 `openssl dgst -mac hmac` 独立复算） |
 | `hkdf.rs` | RFC 5869 Appendix A（TC1–TC3） | 逐字节核对 |
-| `aes_gcm.rs` | NIST GCMVS（原始文件核对后内联） | .rsp 的 key/iv/pt/aad/ct/tag 逐字段 |
+| `aes_gcm.rs` | NIST GCMVS（原始文件核对后内联）+ McGrew–Viega 附录 B 边界用例（TC2–TC4 全零密钥/明文、54 字节 AAD 空明文） | .rsp 逐字段；TC2 期望值与官方原文一致，其余由经 TC1/TC5/TC16 官方锚值校验的独立参照实现生成（2026-09-07） |
 | `chacha20poly1305.rs` | RFC 8439 §2.4.2 / §A.5 | 逐字节核对 |
-| `ccm`（aes_gcm.rs 内） | NIST CCMVS（L=2/L=3 参数集） | .rsp 逐字段 |
+| `ccm.rs` | RFC 3610 §8 官方分组向量**不含 M=16**：M=16 期望值由 python-cryptography（OpenSSL 后端）AESCCM 生成，该生成器先与 RFC 3610 §8 Packet Vector #1（M=8/L=2/含 AAD）官方原文逐字节核对通过（2026-09-07） | 生成器对官方文件逐字节锚定后派生 |
 | `x25519.rs` | RFC 7748 §6.1 + §5.2 迭代测试 | 逐字节核对；迭代轮转方向经独立大整数实现验证 |
 | `p256.rs` / `p384.rs`（ECDH） | RFC/标准 KAT + Wycheproof 锚点 | 双来源交叉 |
 | `p256.rs` / `p384.rs`（ECDSA） | RFC 6979 A.2.5（P-256/SHA-256）、A.2.6（P-384/SHA-384） | 逐字节核对（含 DER 定长编码细节） |
-| `ed25519.rs` | RFC 8032 §7（TEST1–TEST3、SHA(abc)） | 逐字节核对 |
+| `ed25519.rs` | RFC 8032 §7（TEST1–TEST3、SHA(abc)、TEST 1024） | TEST 1024 消息/签名于 2026-09-07 从 RFC 原文提取；签名另经 python-cryptography 与 OpenSSL 3.2.4 两个独立实现复算一致 |
 | `rsa_and_der.rs` | openssl CLI 交叉生成的自签材料 + NIST CAVP RSA 子集 | openssl 验证器互验 |
 | `drbg.rs` | NIST DRBGVS（AES-256-CTR，无 DF；Instantiate→Reseed→Generate×2 官方流程） | .rsp + .txt 中间值（Key/V）核对 |
 | `selftest.rs` | 上表 KAT 的汇编（实现一致性，无独立官方来源） | — |
 | `schedule_rfc8448.rs` | RFC 8448 §3 官方轨迹 | **程序化提取**（tools/extract_rfc8448.py，脚本内含 Python 独立复算比对） |
 | `wycheproof.rs` | C2SP/wycheproof testvectors_v1（裁剪入库） | 文件级入库，见 tests/vectors/README.md |
+
+## 2026-09-07 修订说明
+
+- CCM 行修正：早前表格声称的 NIST CCMVS 向量并未实际引入（CAVP 公开集
+  无 M=16 参数集），本次以"官方向量校验过的独立参照实现"链路补齐，
+  并暴露/修复了 CCM 四处规范偏差（B0 Adata 位、AAD 段独立补齐、
+  CTR 计数器宽度、长度域静默截断），见 `tests/ccm.rs`。
+- 新增 GCM 边界、HMAC 超长密钥、SHA-2 填充边界、Ed25519 TEST 1024、
+  HKDF 前缀性质/超长拒绝等测试（非向量类自洽性质测试不入表）。
 
 ## 再核对指引
 
