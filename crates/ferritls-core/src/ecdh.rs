@@ -770,4 +770,36 @@ mod tests {
             assert_eq!(y.to_raw(), y_exp, "{k}G y");
         }
     }
+
+    /// 已知边界缺陷记录（暂不修）：`mul_point_pub` 的 (R0, R1) 阶梯在
+    /// **k ≥ n 的标量**下存在例外路径——k = n+2 时最后一位的前缀
+    /// k' = (n+1)/2 使 d0 = 2k'·G = +G，madd 公式在 h=0 且 r=0 时给出
+    /// 无穷远，而真值应为 2G（bit=1 选择了被污染的 sum）。
+    ///
+    /// 生产路径不受影响，可证明：ECDSA 验证传入的 u1/u2 恒 < n
+    /// （parse_sig 强制 r/s < n，域乘自然归约），而 k < n 时 2k' ≡ ±1
+    /// (mod n) 仅在 k' = (n±1)/2 且 i = 0（即 k = n−1）可达，此时
+    /// 真值确为无穷远、公式结果正确。签名/密钥生成经 blind() 的
+    /// d' = d + r·n 虽 > n，但触发需随机盲化因子命中 ~2⁻²⁵⁶ 概率前缀，
+    /// 实际不可达。
+    ///
+    /// 本测试**断言当前行为**（无穷远）以钉住该缺陷：若将来修复阶梯
+    /// 例外处理，此断言会失败并提醒同步更新为断言 2G 的正确值。
+    #[test]
+    #[ignore = "已知边界缺陷记录：k ≥ n 时 mul_point_pub 阶梯例外路径（生产路径可证明不受影响）"]
+    fn p256_mul_point_pub_scalar_ge_n_exception_documented() {
+        // n + 2（n = P-256 群阶）
+        let k = [
+            0xf3b9cac2fc632553u64,
+            0xbce6faada7179e84,
+            0xffffffffffffffff,
+            0xffffffff00000000,
+        ];
+        let p = p256::mul_point_pub(&k, 256, &p256::gx(), &p256::gy());
+        // 正确结果应为 2G；当前实现因例外路径返回无穷远
+        assert!(
+            p.is_infinity(),
+            "documenting current broken behavior for k = n+2"
+        );
+    }
 }
