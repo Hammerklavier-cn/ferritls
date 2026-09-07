@@ -1,5 +1,7 @@
 # ferritls
 
+[简体中文](README.md) | [English](README.en.md)
+
 纯 Rust 的 [rustls](https://github.com/rustls/rustls) `CryptoProvider`
 密码后端：无 C、无汇编、无 `unsafe`，按 FIPS 140-3 模块边界组织。
 
