@@ -1,0 +1,55 @@
+[package]
+name = "ferritls-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+# 独立 workspace：不进入根 workspace（MSRV/CI 门禁不编译本目录；
+# fuzz 专用依赖不受 ferritls-core 边界白名单约束）。
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ferritls-core = { path = "../crates/ferritls-core" }
+
+[[bin]]
+name = "parse_pkcs8"
+path = "fuzz_targets/parse_pkcs8.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "verify_ecdsa"
+path = "fuzz_targets/verify_ecdsa.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "verify_ed25519"
+path = "fuzz_targets/verify_ed25519.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "verify_rsa"
+path = "fuzz_targets/verify_rsa.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "aead_open"
+path = "fuzz_targets/aead_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ecdh_peer"
+path = "fuzz_targets/ecdh_peer.rs"
+test = false
+doc = false
+bench = false

@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        features: ["", "--features ferritls-core/fips", "--features ferritls-rustls/fips"]
+        features: ["", "--features ferritls-core/fips", "--features ferritls-rustls/fips", "--all-features"]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -43,9 +43,28 @@ jobs:
       # 注意：向量测试在实现落地前全部标记 #[ignore]，CI 默认只验证
       # “骨架编译通过 + 非 ignore 测试绿”。里程碑完成的定义之一是
       # 对应测试移除 ignore 后仍绿（见 AGENTS.md 测试约定）。
+      # --all-features 拉起 interop 的 ring 交叉互操作与 webpki 链校验
+      # （ring 的 C 构建在三平台 runner 上均可直接编译）。
       - run: cargo test --workspace
+      - run: cargo test --workspace --all-features
       - run: cargo test -p ferritls-core --features fips
       - run: cargo test -p ferritls-rustls --features fips
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@cargo-fuzz
+      - name: Build fuzz targets
+        run: cargo fuzz build -O
+      # 每个 target 冒烟执行 60s / 50k 次，防止回归；持续 fuzz 由
+      # OSS-Fuzz 或定期 job 承担（M8+）
+      - name: Smoke run
+        run: |
+          for t in parse_pkcs8 verify_ecdsa verify_ed25519 verify_rsa aead_open ecdh_peer; do
+            cargo fuzz run "$t" -- -max_total_time=60 -runs=50000
+          done
 
   msrv:
     runs-on: ubuntu-latest

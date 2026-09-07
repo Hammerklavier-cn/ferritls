@@ -1,0 +1,7 @@
+/target
+
+# cargo-fuzz（独立 workspace）
+fuzz/target
+fuzz/Cargo.lock
+fuzz/artifacts
+fuzz/coverage
