@@ -20,13 +20,7 @@ pub fn extract_sha256(salt: &[u8], ikm: &[u8]) -> [u8; 32] {
 /// HKDF-Expand（SHA-256）：PRK + info → OKM（写入 `okm`，长度 ≤ 255×32）。
 pub fn expand_sha256(prk: &[u8], info: &[u8], okm: &mut [u8]) {
     let mut t = [0u8; 32];
-    expand_generic::<32, _>(
-        |key, data| HmacSha256::one_shot(key, data),
-        prk,
-        info,
-        &mut t,
-        okm,
-    );
+    expand_generic::<32, _>(HmacSha256::one_shot, prk, info, &mut t, okm);
 }
 
 /// HKDF-Extract（SHA-384）：IKM + salt → PRK（48 字节）。
@@ -38,13 +32,7 @@ pub fn extract_sha384(salt: &[u8], ikm: &[u8]) -> [u8; 48] {
 /// HKDF-Expand（SHA-384）：PRK + info → OKM（写入 `okm`，长度 ≤ 255×48）。
 pub fn expand_sha384(prk: &[u8], info: &[u8], okm: &mut [u8]) {
     let mut t = [0u8; 48];
-    expand_generic::<48, _>(
-        |key, data| HmacSha384::one_shot(key, data),
-        prk,
-        info,
-        &mut t,
-        okm,
-    );
+    expand_generic::<48, _>(HmacSha384::one_shot, prk, info, &mut t, okm);
 }
 
 fn expand_generic<const L: usize, F>(

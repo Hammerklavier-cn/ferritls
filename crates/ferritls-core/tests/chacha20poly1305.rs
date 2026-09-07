@@ -8,7 +8,6 @@ use common::{assert_hex, hex};
 use ferritls_core::chacha20poly1305::ChaCha20Poly1305;
 
 #[test]
-#[ignore = "M2: 待实现后启用（对照 RFC 8439 原文核对）"]
 fn chacha20poly1305_rfc8439_2_8_2() {
     let key = hex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f");
     let nonce = hex("070000004041424344454647");

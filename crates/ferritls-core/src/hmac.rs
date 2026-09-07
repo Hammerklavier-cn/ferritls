@@ -48,7 +48,7 @@ macro_rules! hmac_impl {
 
             /// 结束并输出标签。消耗 `self` 以清零内部密钥状态。
             pub fn finalize(mut self) -> [u8; $out] {
-                let inner = std::mem::replace(&mut self.inner, $hash::default());
+                let inner = std::mem::take(&mut self.inner);
                 let it = inner.finalize();
                 let mut outer = $hash::new();
                 outer.update(&self.opad);
@@ -60,7 +60,7 @@ macro_rules! hmac_impl {
             }
 
             /// 流式计算结束后常数时间验证给定标签。
-            pub fn verify(mut self, tag: &[u8]) -> Result<(), crate::Error> {
+            pub fn verify(self, tag: &[u8]) -> Result<(), crate::Error> {
                 let computed = self.finalize();
                 crate::ct::verify_tag(&computed, tag)
             }
