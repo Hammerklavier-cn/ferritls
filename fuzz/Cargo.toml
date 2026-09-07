@@ -4,6 +4,11 @@ version = "0.0.0"
 publish = false
 edition = "2024"
 
+# cargo-fuzz 识别 fuzz workspace 清单的标记（cargo fuzz init 的生成物；
+# 缺失时 `cargo fuzz build` 报 "does not look like a cargo-fuzz manifest"）。
+[package.metadata]
+cargo-fuzz = true
+
 # 独立 workspace：不进入根 workspace（根 CI 门禁不编译本目录；
 # fuzz 专用依赖不受 ferritls-core 边界白名单约束）。
 [workspace]

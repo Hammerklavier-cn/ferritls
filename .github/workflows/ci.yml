@@ -70,6 +70,9 @@ jobs:
         with:
           ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
       - uses: dtolnay/rust-toolchain@nightly
+        with:
+          # cargo fuzz build 经 -Zbuild-std 编译带插桩的 std，需要源码
+          components: rust-src
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-fuzz
