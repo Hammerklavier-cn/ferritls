@@ -57,7 +57,7 @@ ferritls/
 │   ├── ferritls-rustls/     # rustls CryptoProvider 适配层（边界外，无密码学）
 │   └── ferritls-interop/    # 互操作/E2E 测试宿主（publish=false，依赖不受白名单约束）
 ├── docs/                    # ARCHITECTURE / FIPS / ROADMAP
-├── .github/workflows/ci.yml # fmt / clippy(-D warnings) / 三平台 test / MSRV 1.75 / cargo-deny
+├── .github/workflows/ci.yml # fmt / clippy(-D warnings) / 三平台 test / cargo-deny
 │                            #   / fuzz 冒烟 / tag 触发的 crates.io 自动发布
 └── deny.toml                # 许可 + 供应链约束
 ```

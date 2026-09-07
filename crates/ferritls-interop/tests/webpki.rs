@@ -84,7 +84,7 @@ fn assert_handshake_ok(client_cfg: rustls::ClientConfig) {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::UnexpectedEof,
                             "eof",
-                        ))
+                        ));
                     }
                     Ok(n) => {
                         got += n;

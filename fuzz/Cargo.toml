@@ -2,9 +2,9 @@
 name = "ferritls-fuzz"
 version = "0.0.0"
 publish = false
-edition = "2021"
+edition = "2024"
 
-# 独立 workspace：不进入根 workspace（MSRV/CI 门禁不编译本目录；
+# 独立 workspace：不进入根 workspace（根 CI 门禁不编译本目录；
 # fuzz 专用依赖不受 ferritls-core 边界白名单约束）。
 [workspace]
 

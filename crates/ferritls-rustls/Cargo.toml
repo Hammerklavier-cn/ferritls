@@ -3,7 +3,6 @@ name = "ferritls-rustls"
 description = "rustls CryptoProvider adapter backed by ferritls-core (pure Rust)"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "../../README.md"

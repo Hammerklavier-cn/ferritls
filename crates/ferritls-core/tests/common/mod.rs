@@ -8,7 +8,7 @@
 /// 十六进制解码（忽略空白与换行，便于粘贴官方向量）。
 pub fn hex(s: &str) -> Vec<u8> {
     let clean: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    assert!(clean.len() % 2 == 0, "hex string has odd length");
+    assert!(clean.len().is_multiple_of(2), "hex string has odd length");
     (0..clean.len())
         .step_by(2)
         .map(|i| u8::from_str_radix(&clean[i..i + 2], 16).expect("valid hex digit"))

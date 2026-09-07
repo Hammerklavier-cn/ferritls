@@ -3,7 +3,6 @@ name = "ferritls-interop"
 description = "Interop and end-to-end test harness for the ferritls rustls provider"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false

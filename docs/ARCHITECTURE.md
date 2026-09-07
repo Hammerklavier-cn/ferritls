@@ -116,4 +116,5 @@ pub trait AeadOps: Send + Sync {
   跟踪补丁版（0.23 线内视为兼容）。
 - rustls 0.24 出 RC 后加 CI 跟踪 job（git-dependency），差异全部隔离在
   `ferritls-rustls`（AGENTS.md §4 的 0.24 预警清单）。
-- MSRV 1.75；提升 MSRV 需要评估 rustls 的 MSRV 再动。
+- edition 2024（编译需 Rust ≥ 1.85）；不设 MSRV 下限承诺，跟随 CI 的
+  当前 stable（依赖兼容性由 resolver 3 的 rust-version 感知兜底）。

@@ -16,7 +16,7 @@
 //! - 验证路径一切失败归一化为同一错误，不泄露失败阶段；
 //! - 私钥材料 ZeroizeOnDrop。
 
-use crate::fields::{Fp25519, Fp256Scalar, Fp384Scalar};
+use crate::fields::{Fp256Scalar, Fp384Scalar, Fp25519};
 use crate::sha2::Sha512;
 
 /// 最小长度 BE 整数的 DER INTEGER 编码。
@@ -250,7 +250,7 @@ macro_rules! ecdsa_curve {
 
 pub mod ecdsa {
     // 宏展开在模块作用域内需要可见的项
-    use super::{encode_der_sig, Fp256Scalar, Fp384Scalar};
+    use super::{Fp256Scalar, Fp384Scalar, encode_der_sig};
 
     ecdsa_curve!(
         p256,

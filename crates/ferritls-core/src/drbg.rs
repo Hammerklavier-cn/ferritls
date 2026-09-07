@@ -19,8 +19,8 @@
 //! 重复计数测试（RCT，C=3）与有界适应性比例测试（APT）。OS 噪声源
 //! （getrandom）的连续健康监测属边界外熵源的责任，此处为纵深防御。
 
-use crate::aes::Aes256;
 use crate::Error;
+use crate::aes::Aes256;
 
 /// seedlen：Key（32 字节）+ V（16 字节）。
 const SEEDLEN: usize = 48;

@@ -15,7 +15,7 @@
 //! 向量：RFC 7748 §6.1（tests/x25519.rs）；k·G 与 n·G 锚值由独立实现
 //! 交叉核对（ecdh 内嵌测试）；Wycheproof ECDH 在 M4 一并引入。
 
-use crate::fields::{Fp25519, Fp256, Fp256Scalar, Fp384, Fp384Scalar};
+use crate::fields::{Fp256, Fp256Scalar, Fp384, Fp384Scalar, Fp25519};
 
 /// 单字节 -> 掩码（全 1 / 全 0）。
 #[inline]

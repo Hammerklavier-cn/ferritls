@@ -1,5 +1,5 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "crates/ferritls-core",
     "crates/ferritls-rustls",
@@ -8,8 +8,7 @@ members = [
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.75"
+edition = "2024"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/Hammerklavier-cn/ferritls"
 keywords = ["tls", "rustls", "cryptography", "crypto", "fips"]

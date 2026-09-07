@@ -174,7 +174,7 @@ FIPS 140-3（ISO/IEC 19790）对软件模块的核心要求与我们的对应物
 ### 6.10 设计保证（§10）
 
 - 配置管理：git 单一 main 分支 + conventional commits + 锁定快照
-  （送审 tag）；CI（fmt/clippy/三平台 test/MSRV/deny）为提交门禁。
+  （送审 tag）；CI（fmt/clippy/三平台 test/deny）为提交门禁。
 - 文档：本文件 + ARCHITECTURE.md + AGENTS.md（含实现陷阱清单）。
 - 开发工具：cargo/rustc 锁定版本；无第三方构建脚本进入边界。
 

@@ -156,7 +156,7 @@ fn handshake_ping_pong(
                     return Err(io_err(std::io::Error::new(
                         std::io::ErrorKind::UnexpectedEof,
                         "eof",
-                    )))
+                    )));
                 }
                 Ok(n) => got += n,
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {

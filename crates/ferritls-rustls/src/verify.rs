@@ -18,9 +18,9 @@
 //! - RSA-PSS：公钥同 RSA；签名 = RSASSA-PSS OID + PSS 参数
 //!   （RFC 4055：hash/MGF1-SHA*/salt=哈希长）。
 
+use rustls::SignatureScheme;
 use rustls::crypto::WebPkiSupportedAlgorithms;
 use rustls::pki_types::{AlgorithmIdentifier, InvalidSignature, SignatureVerificationAlgorithm};
-use rustls::SignatureScheme;
 
 use ferritls_core::sign::{ecdsa, ed25519, rsa};
 

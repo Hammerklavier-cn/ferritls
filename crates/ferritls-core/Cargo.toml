@@ -3,7 +3,6 @@ name = "ferritls-core"
 description = "Pure-Rust cryptographic core for ferritls; designed as a FIPS 140-3 module boundary"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "../../README.md"

@@ -20,7 +20,7 @@
 
 - [x] 双许可（Apache-2.0 OR MIT）
 - [x] workspace 三 crate + 依赖白名单落地（workspace Cargo.toml）
-- [x] CI：fmt / clippy(-D warnings, 含 fips 矩阵) / 三平台 test / MSRV / deny
+- [x] CI：fmt / clippy(-D warnings, 含 fips 矩阵) / 三平台 test / deny
 - [x] ferritls-core 16 模块骨架（`todo!("Mx")`，签名即接口契约）
 - [x] 向量测试预置：sha2 / hmac / hkdf / aes_gcm / chacha20poly1305 /
       x25519 / p256 / ed25519 / drbg / selftest / rsa_and_der（全部
