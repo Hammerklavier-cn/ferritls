@@ -23,6 +23,10 @@
 - **测试面**：RFC/NIST/CAVP 官方向量、RFC 8448 密钥调度、Wycheproof
   2349 用例、rustls-ring 交叉互操作、webpki 证书链、cargo-fuzz 六目标
   （[向量溯源](docs/VECTOR-PROVENANCE.md)）
+- **性能**（P1 性能轮，默认生效，仍零 `unsafe`）：位切片 AES
+  （64 块/批）+ 分组 GHASH 表 + 批处理 ChaCha20——AES-GCM 记录层
+  较纯掩码基线提升约 19–21 倍，详见 [docs/ROADMAP.md](docs/ROADMAP.md)
+  P1 节
 
 ```rust
 let provider = ferritls_rustls::default_provider();

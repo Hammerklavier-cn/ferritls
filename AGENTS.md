@@ -340,15 +340,21 @@ cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored
       触发全量门禁后单次 `cargo publish`（cargo 1.90 起 workspace
       一次发布 core → rustls；需仓库 secrets 配置
       CARGO_REGISTRY_TOKEN）
-- [ ] P1 性能轮（进行中，2026-09 启动）：稳定版自动向量化重构——
-      AEAD 输出路径 bulk-XOR 化、GHASH H 倍数 4-bit 表（§5.1 判据
-      修订）、ChaCha20 四块批处理、bitsliced AES 加密方向、GCM 标签
-      比较常数时间化；零 unsafe / 零新依赖 / 零 feature 开关，
-      见 `docs/ROADMAP.md` P1 节
+- [x] P1 性能轮（完成 2026-09）：稳定版自动向量化重构——AEAD 输出
+      路径 bulk-XOR 化、GHASH 瞬态 H 倍数表（公开索引）、ChaCha20
+      四块批处理 + 流式 Poly1305、64-lane 位切片 AES 加密方向、GCM
+      标签比较常数时间化；零 unsafe / 零新依赖 / 零 feature 开关。
+      AES-128-GCM 2.7 → 52 MB/s（19×）、AES-256-GCM 2.0 → 41 MB/s
+      （21×）、ChaCha20-Poly1305 451 → 573 MB/s；数字与余留慢点见
+      `docs/ROADMAP.md` P1 节
 - [ ] M8：TLS 1.2 / QUIC / ML-KEM 混合 / intrinsics 后端
 
 **已知的实现级注记**（修订实现前必读）：
 
+- `aes.rs`（位切片，P1）：GF(2^8) 折叠约减严禁混入 GF(2^4) 的关系
+  （x⁴=x+1 属 GF(16)，在 AES 的 f 下 x⁴ 是规范表示）；乘法折叠必须
+  覆盖 x^9/x^11/x^13 全部奇次项——两类错误都实际踩过、由穷举测试
+  （65536 对 + 256 S-box 值）拦截；
 - `fields.rs::from_bytes_be_mod`：条件减 p 的"还原"分支是空操作
   （acc 从未被替换），曾被误写为 acc += p 造成全量污染；
 - `ecdh.rs::x25519_ladder`：u 坐标导入后必须 `from_raw` 进

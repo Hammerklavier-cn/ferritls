@@ -28,6 +28,11 @@ cryptographic module boundary.
   schedule, 2,349 Wycheproof cases, rustls-ring cross-interop, webpki
   certificate chains, six cargo-fuzz targets
   ([vector provenance](docs/VECTOR-PROVENANCE.md))
+- **Performance** (P1 round, on by default, still zero `unsafe`):
+  bitsliced AES (64 blocks/batch) + grouped GHASH tables + batched
+  ChaCha20 — roughly 19-21x faster AES-GCM record processing versus
+  the masked-scalar baseline; see the P1 section of
+  [docs/ROADMAP.md](docs/ROADMAP.md)
 
 ```rust
 let provider = ferritls_rustls::default_provider();

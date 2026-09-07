@@ -14,7 +14,7 @@
 | M5 | CTR-DRBG + 上电自检 + 零化审计 | 1–2 周 | **完成（2026-09）** |
 | M6 | rustls 集成 + 互操作矩阵 | 2 周 | **完成（2026-09）** |
 | M7 | 发布 0.1 + 批准模式打磨 + ACVP 预演 | 持续 | **完成（2026-09，发布动作待定）** |
-| P1 | 性能轮：稳定版自动向量化（默认生效） | 1–2 周 | **进行中（2026-09）** |
+| P1 | 性能轮：稳定版自动向量化（默认生效） | 1–2 周 | **完成（2026-09）** |
 | M8 | TLS 1.2 / QUIC / ML-KEM 混合 / intrinsics 后端 | 发布后 | 规划中 |
 
 ## M0 — 脚手架（已完成）
@@ -100,20 +100,23 @@ nightly）。本轮在 stable 上默认生效：零 `unsafe`、零新依赖、�
 之①）。位切片/转置/批处理的代码形状为将来 portable_simd 稳定后的
 `core::simd` 变体与 M8 intrinsics 后端 crate 复用而设计。
 
-- [ ] AEAD 输出路径 bulk-XOR 化：消灭 gcm/ccm/chacha20poly1305 中
+- [x] AEAD 输出路径 bulk-XOR 化：消灭 gcm/ccm/chacha20poly1305 中
       逐字节 `Vec::push` 的内循环（固定块 `zip` 形状，自动向量化）
-- [ ] GCM 标签比较常数时间化（gcm.rs 的 `!=` u128 比较 → ct 比较，
+- [x] GCM 标签比较常数时间化（gcm.rs 的 `!=` u128 比较 → ct 比较，
       与 ccm.rs 对齐；顺手修复的 §5.1 违规）
-- [ ] GHASH：逐位 gf128_mul → H 倍数 4-bit 表（公开索引判据，
-      AGENTS §5.1 修订；旧实现保留为测试 oracle，新增随机块等价性
-      测试）
-- [ ] ChaCha20：四块批处理转置布局（`[u32; 4]` 通道 × 16 状态字，
-      ARX 跨通道自动向量化；尾块标量回退）
-- [ ] bitsliced AES 加密方向：Käsper–Schwe 形式布尔电路（PR 附电路
-      来源与逐步设计说明）；供 GCM/CCM CTR 使用的批量加密入口；
-      单块路径（J0/H/CBC-MAC）保持现有掩码实现；解密方向不动
-      （GCM/CCM 只用加密方向）
-- [ ] 收尾：前后数字填入下表，AGENTS §9 状态更新
+- [x] GHASH：逐位 gf128_mul → **瞬态** H 倍数 4-bit 表（8 块分组
+      前向 Horner，公开索引判据，AGENTS §5.1 修订；旧实现保留为
+      测试 oracle + 随机块等价性测试；表用完零化，不常驻实例——
+      常驻 64 KiB/实例对多连接服务器不可接受）；顺带修复 h 未
+      Drop 零化的 §6 缺口
+- [x] ChaCha20：四块批处理转置布局（`[u32; 4]` 通道 × 16 状态字，
+      ARX 跨通道自动向量化；尾块标量回退）+ Poly1305 流式吸收
+      （消灭每记录一次全长拷贝）
+- [x] bitsliced AES 加密方向：64-lane u64 位平面布尔电路（GF(2^8)
+      多项式基 x^254 加法链 + 仿射；卷积乘/平面重排平方），供
+      GCM/CCM CTR 的批量入口 `encrypt_ctr_batch`；单块路径
+      （J0/H/CBC-MAC/密钥展开）保持掩码实现；解密方向不动
+- [x] 收尾：前后数字填入下表，AGENTS §9 状态更新
 
 每项独立 PR，出口条件：全向量套件 / Wycheproof 2349 / interop 矩阵
 **一行不改且全绿** + 常数时间声明 + 基准前后数字。基准命令：
@@ -122,22 +125,30 @@ nightly）。本轮在 stable 上默认生效：零 `unsafe`、零新依赖、�
 cargo run -p ferritls-interop --release --example perf
 ```
 
-### 基准数字（本地 x86_64 Linux，同机前后对比；PR 落地时更新）
+### 基准数字（本地 x86_64 Linux，同机前后对比；2026-09-08 完成）
 
-| 项目 | 基线 2026-09-08 | PR1 后 | PR2/3 后 | PR4 后 |
-|---|---|---|---|---|
-| AES-128-GCM seal 1 KiB | 2.68 MB/s | | | |
-| AES-128-GCM seal 16 KiB | 2.71 MB/s | | | |
-| AES-256-GCM seal 16 KiB | 1.95 MB/s | | | |
-| AES-128-CCM seal 16 KiB | 1.41 MB/s | | | |
-| ChaCha20-Poly1305 seal 16 KiB | 451 MB/s | | | |
-| SHA-256 16 KiB | 357 MB/s | | | |
-| AES-128 单块加密 | 2.72 MB/s | | | |
+| 项目 | 基线 | PR1 后 | PR2/3 后 | PR4 后 | 总提升 |
+|---|---|---|---|---|---|
+| AES-128-GCM seal 1 KiB | 2.68 MB/s | 2.65 | 2.68 | 34.2 | 12.8× |
+| AES-128-GCM seal 16 KiB | 2.71 MB/s | 2.69 | 2.80 | 52.1 | **19.2×** |
+| AES-256-GCM seal 16 KiB | 1.95 MB/s | 1.95 | 2.00 | 41.0 | **21.0×** |
+| AES-128-CCM seal 16 KiB | 1.41 MB/s | 1.41 | 1.39 | 2.74 | 1.9× |
+| ChaCha20-Poly1305 seal 16 KiB | 451 MB/s | 504 | 565 | 573 | 1.3× |
+| SHA-256 16 KiB | 357 MB/s | 363 | 370 | 370 | —（未动） |
+| AES-128 单块加密 | 2.72 MB/s | 2.77 | 2.86 | 2.86 | —（未动） |
 
-基线判读：AES 路径被掩码全扫描 S-box（~256 ops/字节/轮）主导，
-约 1100 cycles/byte——PR4 位切片是数量级项；GHASH 逐位乘法与
-逐字节 push 为次级项；ChaCha/SHA 已被 LLVM 优化到数百 MB/s，
-PR3 预期温和提升。
+### 完成时注记（2026-09）
+
+- 全程零 `unsafe`、零新依赖、零 feature 开关、公开 API 未变；
+  位切片/分组/转置代码形状为将来 `core::simd`（稳定后）与 M8
+  intrinsics 后端 crate 复用而设计。
+- **实测回退记录**：曾尝试以标量代数 S-box（x^254 链）替代掩码
+  全扫描，实测更慢（单块 -12%：LLVM 已把 256 项扫描向量化，而
+  加法链是长串行依赖），已回退——单块路径维持掩码扫描。
+- 已知余留慢点（后续候选）：CCM 的串行 CBC-MAC（单块掩码路径，
+  2.74 MB/s）；GCM 小记录的 J0/tag_base 两次单块加密；DRBG 仍逐
+  块加密（可平移 `encrypt_ctr_batch`）；Poly1305 串行吸收
+  （ChaCha 已不是瓶颈）；SHA-2 单流（M8 一并）。
 
 ## 已知问题 / 待开 issue
 
