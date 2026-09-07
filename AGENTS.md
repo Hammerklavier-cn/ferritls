@@ -146,6 +146,15 @@ rustls（应用层）
   `public_key_alg_id()` + `signature_alg_id()`；`fips()` 是提供默认
   `false` 的钩子（我们显式覆写为 `false` 以留注释）。`SignatureScheme`
   从 `rustls` 根导入，**不在** `rustls::pki_types` 的再导出里。
+  **算法 ID 字节语义（M7 实测修正）**：两个 `*_alg_id()` 返回
+  **AlgorithmIdentifier 的 SEQUENCE 内容**（内层 TLV 序列，**不带**外层
+  `30 xx` 头）——webpki 用 `der::expect_tag` 剥外层后逐字节比对；RSA
+  的 NULL 参数属于内容必须保留，PSS 则为 PSS OID + 参数。权威参照 =
+  pki-types `src/data/alg-*.der`（此前“完整 DER”的记录是误读，曾导致
+  verify.rs 全部 9 个算法无法通过 webpki 链校验，见 M7 webpki 测试）。
+  另：`with_single_cert` 会做密钥/证书 SPKI 匹配检查，仅当 key provider
+  的 `SigningKey::public_key()` 返回 `Some` 时触发（ring 会查、我们的
+  返回 None 跳过）。
 - `CryptoProvider::fips()` 是所有子 `fips()` 的合取；`ClientConfig::
   fips()`/`ServerConfig::fips()` 还会叠加协议配置。
 - rustls 0.24 预警：workspace 化（rustls-aws-lc-rs / rustls-ring 独立
