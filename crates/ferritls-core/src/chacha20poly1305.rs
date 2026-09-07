@@ -31,17 +31,20 @@ impl ChaCha20Poly1305 {
     /// 加密：返回 `密文 || 标签`。
     pub fn seal(&self, nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
         let poly_key = chacha20_block(&self.key, 0, nonce);
-        let mut ct = Vec::with_capacity(plaintext.len() + 16);
+        let mut ct = vec![0u8; plaintext.len() + Self::TAG_LEN];
+        let (body, tail) = ct.split_at_mut(plaintext.len());
         let mut counter = 1u32;
-        for chunk in plaintext.chunks(64) {
+        for (pt_chunk, ct_chunk) in plaintext.chunks(64).zip(body.chunks_mut(64)) {
             let ks = chacha20_block(&self.key, counter, nonce);
-            for (o, p) in chunk.iter().enumerate() {
-                ct.push(p ^ ks[o]);
+            // 固定 ≤64 字节的 zip 异或：LLVM 自动向量化
+            //（P1 性能轮；无秘密条件分支/访存）。
+            for (c, (p, k)) in ct_chunk.iter_mut().zip(pt_chunk.iter().zip(ks)) {
+                *c = p ^ k;
             }
             counter = counter.wrapping_add(1);
         }
-        let tag = poly1305_tag(&poly_key, aad, &ct);
-        ct.extend_from_slice(&tag);
+        let tag = poly1305_tag(&poly_key, aad, body);
+        tail.copy_from_slice(&tag);
         ct
     }
 
@@ -63,12 +66,12 @@ impl ChaCha20Poly1305 {
         let computed = poly1305_tag(&poly_key, aad, ct);
         crate::ct::verify_tag(&computed, tag)?;
 
-        let mut pt = Vec::with_capacity(ct.len());
+        let mut pt = vec![0u8; ct.len()];
         let mut counter = 1u32;
-        for chunk in ct.chunks(64) {
+        for (ct_chunk, pt_chunk) in ct.chunks(64).zip(pt.chunks_mut(64)) {
             let ks = chacha20_block(&self.key, counter, nonce);
-            for (o, c) in chunk.iter().enumerate() {
-                pt.push(c ^ ks[o]);
+            for (p, (c, k)) in pt_chunk.iter_mut().zip(ct_chunk.iter().zip(ks)) {
+                *p = c ^ k;
             }
             counter = counter.wrapping_add(1);
         }

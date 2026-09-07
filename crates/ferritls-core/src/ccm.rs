@@ -165,12 +165,14 @@ macro_rules! ccm_impl {
             }
 
             fn ctr_xor(&self, nonce: &[u8; $nonce_len], start: u32, data: &[u8]) -> Vec<u8> {
-                let mut out = Vec::with_capacity(data.len());
+                let mut out = vec![0u8; data.len()];
                 let mut counter = start;
-                for chunk in data.chunks(16) {
+                for (in_chunk, out_chunk) in data.chunks(16).zip(out.chunks_mut(16)) {
                     let ks = self.ctr_block(nonce, counter);
-                    for (o, b) in chunk.iter().enumerate() {
-                        out.push(b ^ ks[o]);
+                    // 固定 ≤16 字节的 zip 异或：LLVM 自动向量化
+                    //（P1 性能轮；无秘密条件分支/访存）。
+                    for (o, (b, k)) in out_chunk.iter_mut().zip(in_chunk.iter().zip(ks)) {
+                        *o = b ^ k;
                     }
                     counter = counter.wrapping_add(1);
                 }

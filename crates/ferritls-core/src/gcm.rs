@@ -49,19 +49,21 @@ macro_rules! gcm_impl {
                     u128::from_be_bytes(b)
                 };
 
+                let mut ct = vec![0u8; plaintext.len() + Self::TAG_LEN];
+                let (body, tail) = ct.split_at_mut(plaintext.len());
                 let mut ctr = inc32(j0);
-                let mut ct = Vec::with_capacity(plaintext.len() + 16);
-                for chunk in plaintext.chunks(16) {
+                for (pt_chunk, ct_chunk) in plaintext.chunks(16).zip(body.chunks_mut(16)) {
                     let ks = self.keystream(ctr);
-                    for (o, p) in chunk.iter().enumerate() {
-                        ct.push(p ^ ks[o]);
+                    // 固定 ≤16 字节的 zip 异或：LLVM 按目标向量宽度自动向量化
+                    //（P1 性能轮；无秘密条件分支/访存）。
+                    for (c, (p, k)) in ct_chunk.iter_mut().zip(pt_chunk.iter().zip(ks)) {
+                        *c = p ^ k;
                     }
                     ctr = inc32(ctr);
                 }
 
-                let s = self.ghash(aad, &ct);
-                let tag = tag_base ^ s;
-                ct.extend_from_slice(&tag.to_be_bytes());
+                let s = self.ghash(aad, body);
+                tail.copy_from_slice(&(tag_base ^ s).to_be_bytes());
                 ct
             }
 
@@ -78,7 +80,6 @@ macro_rules! gcm_impl {
                 }
                 let split = ct_and_tag.len() - 16;
                 let (ct, tag_bytes) = ct_and_tag.split_at(split);
-                let received = u128::from_be_bytes(tag_bytes.try_into().unwrap());
 
                 let j0 = block_j0(nonce);
                 let tag_base = {
@@ -87,16 +88,16 @@ macro_rules! gcm_impl {
                     u128::from_be_bytes(b)
                 };
                 let s = self.ghash(aad, ct);
-                if (tag_base ^ s) != received {
-                    return Err(crate::Error::VerificationFailed);
-                }
+                // 常数时间标签比较（与 ccm.rs/chacha20poly1305.rs 对齐，
+                // §5.1）：分支不得依赖秘密；先验后出的顺序不变。
+                crate::ct::verify_tag(&(tag_base ^ s).to_be_bytes(), tag_bytes)?;
 
+                let mut pt = vec![0u8; ct.len()];
                 let mut ctr = inc32(j0);
-                let mut pt = Vec::with_capacity(ct.len());
-                for chunk in ct.chunks(16) {
+                for (ct_chunk, pt_chunk) in ct.chunks(16).zip(pt.chunks_mut(16)) {
                     let ks = self.keystream(ctr);
-                    for (o, c) in chunk.iter().enumerate() {
-                        pt.push(c ^ ks[o]);
+                    for (p, (c, k)) in pt_chunk.iter_mut().zip(ct_chunk.iter().zip(ks)) {
+                        *p = c ^ k;
                     }
                     ctr = inc32(ctr);
                 }
