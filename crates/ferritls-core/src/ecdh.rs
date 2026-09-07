@@ -38,7 +38,8 @@ fn x25519_ladder(k: &[u8; 32], u: &[u8; 32]) -> [u8; 32] {
         let mut f = Fp25519(limbs);
         let cond = (Fp25519::geq_canonical(&f.0) as u64).wrapping_neg();
         f.cond_sub_p(cond);
-        f
+        // 进入 Montgomery 域——后续运算均为 Montgomery 语义
+        Fp25519::from_raw(f.0)
     };
 
     let a24 = Fp25519::from_raw([121665, 0, 0, 0]);
@@ -374,7 +375,7 @@ macro_rules! sw_curve {
             }
 
             /// 解析并校验对端公钥（未压缩 SEC1），返回仿射点。
-            fn parse_public(bytes: &[u8]) -> Result<(F, F), crate::Error> {
+            pub(crate) fn parse_public(bytes: &[u8]) -> Result<(F, F), crate::Error> {
                 if bytes.len() != PUBLIC_KEY_LEN || bytes[0] != 0x04 {
                     return Err(crate::Error::InvalidInput);
                 }
@@ -531,6 +532,36 @@ macro_rules! sw_curve {
             #[allow(dead_code)]
             pub(crate) fn to_affine_pub(p: &Jac) -> (F, F) {
                 to_affine(p)
+            }
+
+            /// M4 复用：两仿射点相加（ECDSA 验证 u1G + u2Q；公开数据，
+            /// 可变时间；相等点走仿射倍点，互逆点返回无穷远错误）。
+            #[allow(dead_code)]
+            pub(crate) fn add_points_affine_pub(
+                p1: &(F, F),
+                p2: &(F, F),
+            ) -> Result<(F, F), crate::Error> {
+                let (x1, y1) = *p1;
+                let (x2, y2) = *p2;
+                if x1 == x2 {
+                    if y1 == y2 {
+                        // 仿射倍点：λ = (3x² + a) / (2y)，a = −3
+                        let x2m = x1.square();
+                        let num = x2m.add(&x2m).add(&x2m).sub(&F::three());
+                        let den = y1.add(&y1);
+                        let lam = num.mul(&den.invert());
+                        let x3 = lam.square().sub(&x1).sub(&x1);
+                        let y3 = lam.mul(&x1.sub(&x3)).sub(&y1);
+                        return Ok((x3, y3));
+                    }
+                    return Err(crate::Error::VerificationFailed); // 无穷远
+                }
+                // 一般弦切公式
+                let h = x2.sub(&x1);
+                let lam = y2.sub(&y1).mul(&h.invert());
+                let x3 = lam.square().sub(&x1).sub(&x2);
+                let y3 = lam.mul(&x1.sub(&x3)).sub(&y1);
+                Ok((x3, y3))
             }
         }
     };

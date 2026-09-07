@@ -332,16 +332,48 @@ macro_rules! fp_field {
                             borrow = (b1 as u64) | (b2 as u64);
                             j += 1;
                         }
+                        // value = acc + carry·2^(64n) ≥ p ⟺ carry=1 或 acc ≥ p
+                        //（acc − p 无借位）。仅此时用 tmp = value − p 替换；
+                        // 否则 acc 本就正确（tmp 只是人质，勿写回）。
                         let (_, under) = carry.overflowing_sub(borrow);
-                        if under {
-                            // acc < p：还原
-                            let mut j = 0;
-                            while j < $n {
-                                acc[j] = acc[j].wrapping_add(Self::P[j]).wrapping_add(0);
-                                j += 1;
-                            }
-                        } else {
+                        if !under {
                             acc = tmp;
+                        }
+                    }
+                }
+                Self::from_raw(acc)
+            }
+
+            /// 小端字节导入（按位归约到 mod p）。
+            #[allow(dead_code)]
+            pub fn from_bytes_le_mod(bytes: &[u8]) -> Self {
+                let mut acc = [0u64; $n]; // 普通形式，恒 < p
+                for &byte in bytes.iter().rev() {
+                    for bit in (0..8).rev() {
+                        let mut carry = 0u64;
+                        let mut j = 0;
+                        while j < $n {
+                            let c = acc[j] >> 63;
+                            acc[j] = (acc[j] << 1) | carry;
+                            carry = c;
+                            j += 1;
+                        }
+                        acc[0] |= u64::from((byte >> bit) & 1);
+                        let mut borrow = 0u64;
+                        let mut tmp = [0u64; $n];
+                        let mut j = 0;
+                        while j < $n {
+                            let (v, b1) = acc[j].overflowing_sub(Self::P[j]);
+                            let (v, b2) = v.overflowing_sub(borrow);
+                            tmp[j] = v;
+                            borrow = (b1 as u64) | (b2 as u64);
+                            j += 1;
+                        }
+                        let ge = (Self::geq_canonical(&acc) && borrow == 0) as u64;
+                        let mut j = 0;
+                        while j < $n {
+                            acc[j] = acc[j] ^ ((acc[j] ^ tmp[j]) & ge.wrapping_neg());
+                            j += 1;
                         }
                     }
                 }
@@ -480,6 +512,19 @@ fp_field!(
         0x7fffffffffffffff,
     ],
     "Curve25519 基域 GF(2^255 − 19)。"
+);
+
+// Ed25519 标量域 GF(L)，L = 2^252 + 27742317777372353535851937790883648493。
+fp_field!(
+    Fp25519ScalarL,
+    4,
+    [
+        0x5812631a5cf5d3ed,
+        0x14def9dea2f79cd6,
+        0x0000000000000000,
+        0x1000000000000000,
+    ],
+    "Ed25519 标量域 GF(L)。"
 );
 
 #[cfg(test)]
