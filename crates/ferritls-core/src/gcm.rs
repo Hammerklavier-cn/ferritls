@@ -13,7 +13,7 @@
 //!
 //! 向量：McGrew–Viega TC5/TC16（`tests/aes_gcm.rs`）+ FIPS-197 AES KAT。
 
-use crate::aes::{Aes128, Aes256};
+use crate::aes::{Aes128, Aes256, CTR_BATCH_BLOCKS};
 
 macro_rules! gcm_impl {
     ($name:ident, $aes:ident, $keylen:literal, $doc:expr) => {
@@ -55,16 +55,7 @@ macro_rules! gcm_impl {
 
                 let mut ct = vec![0u8; plaintext.len() + Self::TAG_LEN];
                 let (body, tail) = ct.split_at_mut(plaintext.len());
-                let mut ctr = inc32(j0);
-                for (pt_chunk, ct_chunk) in plaintext.chunks(16).zip(body.chunks_mut(16)) {
-                    let ks = self.keystream(ctr);
-                    // 固定 ≤16 字节的 zip 异或：LLVM 按目标向量宽度自动向量化
-                    //（P1 性能轮；无秘密条件分支/访存）。
-                    for (c, (p, k)) in ct_chunk.iter_mut().zip(pt_chunk.iter().zip(ks)) {
-                        *c = p ^ k;
-                    }
-                    ctr = inc32(ctr);
-                }
+                self.ctr_xor(j0, plaintext, body);
 
                 let s = self.ghash(aad, body);
                 tail.copy_from_slice(&(tag_base ^ s).to_be_bytes());
@@ -97,21 +88,28 @@ macro_rules! gcm_impl {
                 crate::ct::verify_tag(&(tag_base ^ s).to_be_bytes(), tag_bytes)?;
 
                 let mut pt = vec![0u8; ct.len()];
-                let mut ctr = inc32(j0);
-                for (ct_chunk, pt_chunk) in ct.chunks(16).zip(pt.chunks_mut(16)) {
-                    let ks = self.keystream(ctr);
-                    for (p, (c, k)) in pt_chunk.iter_mut().zip(ct_chunk.iter().zip(ks)) {
-                        *p = c ^ k;
-                    }
-                    ctr = inc32(ctr);
-                }
+                self.ctr_xor(j0, ct, &mut pt);
                 Ok(pt)
             }
 
-            fn keystream(&self, ctr: u128) -> [u8; 16] {
-                let mut b = ctr.to_be_bytes();
-                self.aes.encrypt_block(&mut b);
-                b
+            /// CTR 密钥流异或（P1 位切片批量路径）：每批 [`CTR_BATCH_BLOCKS`]
+            /// 块经 [`encrypt_ctr_batch`](crate::aes::Aes128::encrypt_ctr_batch)
+            /// 生成密钥流后整批异或；计数器推进只依赖公开长度。
+            fn ctr_xor(&self, j0: u128, input: &[u8], out: &mut [u8]) {
+                let mut ctr = inc32(j0);
+                let mut ks = [0u8; CTR_BATCH_BLOCKS * 16];
+                for (in_chunk, out_chunk) in input
+                    .chunks(CTR_BATCH_BLOCKS * 16)
+                    .zip(out.chunks_mut(CTR_BATCH_BLOCKS * 16))
+                {
+                    let n = in_chunk.len().div_ceil(16);
+                    self.aes.encrypt_ctr_batch(ctr.to_be_bytes(), n, &mut ks);
+                    let ks_slice = &ks[..out_chunk.len()];
+                    for (o, (i, k)) in out_chunk.iter_mut().zip(in_chunk.iter().zip(ks_slice)) {
+                        *o = i ^ k;
+                    }
+                    ctr = (ctr & !0xFFFF_FFFFu128) | (ctr as u32).wrapping_add(n as u32) as u128;
+                }
             }
 
             /// GHASH：Aad(pad) || C(pad) || [len(aad)]64 || [len(ct)]64。

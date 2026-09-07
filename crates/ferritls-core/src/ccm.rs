@@ -148,33 +148,45 @@ macro_rules! ccm_impl {
                 t
             }
 
-            /// CTR 块：A_i = (L-1) || nonce || counter(L 字节 BE)。
-            fn ctr_block(&self, nonce: &[u8; $nonce_len], counter: u32) -> [u8; 16] {
+            /// 原始 CTR 块（未加密）：A_i = (L-1) || nonce || counter
+            ///（L 字节 BE）。L=3 时最大块号 ceil(2^24/16) < 2^20，u32
+            /// 足够且不可能回绕（L=2 时长度域限制明文 < 2^16 → 块号
+            /// < 2^12）。
+            fn ctr_raw(&self, nonce: &[u8; $nonce_len], counter: u32) -> [u8; 16] {
                 let mut block = [0u8; 16];
                 block[0] = Self::CTR_FLAGS;
                 block[1..1 + $nonce_len].copy_from_slice(nonce);
-                // 计数器占 L 字节（全宽写入）。L=3 时最大块号
-                // ceil(2^24/16) < 2^20，u32 足够且不可能回绕（L=2 时
-                // 长度域限制明文 < 2^16 → 块号 < 2^12）。
                 for i in 0..Self::LEN_BYTES {
                     block[16 - Self::LEN_BYTES + i] =
                         (counter >> (8 * (Self::LEN_BYTES - 1 - i))) as u8;
                 }
+                block
+            }
+
+            /// CTR 块（单块路径，S0 等使用）。
+            fn ctr_block(&self, nonce: &[u8; $nonce_len], counter: u32) -> [u8; 16] {
+                let mut block = self.ctr_raw(nonce, counter);
                 self.aes.encrypt_block(&mut block);
                 block
             }
 
+            /// CTR 密钥流异或（P1 位切片批量路径，同 gcm.rs）。
             fn ctr_xor(&self, nonce: &[u8; $nonce_len], start: u32, data: &[u8]) -> Vec<u8> {
                 let mut out = vec![0u8; data.len()];
                 let mut counter = start;
-                for (in_chunk, out_chunk) in data.chunks(16).zip(out.chunks_mut(16)) {
-                    let ks = self.ctr_block(nonce, counter);
-                    // 固定 ≤16 字节的 zip 异或：LLVM 自动向量化
-                    //（P1 性能轮；无秘密条件分支/访存）。
-                    for (o, (b, k)) in out_chunk.iter_mut().zip(in_chunk.iter().zip(ks)) {
+                let mut ks = [0u8; crate::aes::CTR_BATCH_BLOCKS * 16];
+                for (in_chunk, out_chunk) in data
+                    .chunks(crate::aes::CTR_BATCH_BLOCKS * 16)
+                    .zip(out.chunks_mut(crate::aes::CTR_BATCH_BLOCKS * 16))
+                {
+                    let n = in_chunk.len().div_ceil(16);
+                    self.aes
+                        .encrypt_ctr_batch(self.ctr_raw(nonce, counter), n, &mut ks);
+                    let ks_slice = &ks[..out_chunk.len()];
+                    for (o, (b, k)) in out_chunk.iter_mut().zip(in_chunk.iter().zip(ks_slice)) {
                         *o = b ^ k;
                     }
-                    counter = counter.wrapping_add(1);
+                    counter = counter.wrapping_add(n as u32);
                 }
                 out
             }
