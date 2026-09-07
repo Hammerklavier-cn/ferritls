@@ -456,6 +456,10 @@ mod tests {
         assert_eq!(sbox(0x01), 0x7c);
         assert_eq!(sbox(0x53), 0xed);
         assert_eq!(sbox(0xff), 0x16);
+        // P1：代数 sbox 与官方表逐值一致（穷举）。
+        for (x, &official) in SBOX.iter().enumerate() {
+            assert_eq!(sbox(x as u8), official, "sbox({x:#04x})");
+        }
         let mut seen = [false; 256];
         for x in 0..=255u8 {
             assert_eq!(inv_sbox(sbox(x)), x, "round trip at {x}");
