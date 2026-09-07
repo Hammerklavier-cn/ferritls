@@ -579,33 +579,306 @@ pub mod ed25519 {
 }
 
 // ---------------------------------------------------------------------------
-// RSA（M4b 落地：大数模幂 + CRT + PKCS#1 v1.5/PSS）
+// RSA（M4b：固定宽度大数模幂 + CRT + PKCS#1 v1.5/PSS，RFC 8017）
 // ---------------------------------------------------------------------------
 
-/// RSA 签名/验证（PKCS#1 v1.5 与 PSS，RFC 8017）。
+/// RSA 签名/验证（RSASSA-PKCS1-v1_5 与 RSASSA-PSS，RFC 8017）。
+///
+/// 批准状态：FIPS 批准（FIPS 186-5 RSASSA；TLS 1.3 首选 PSS）。
+///
+/// 安全：
+/// - 私钥运算走 CRT（p/q 各自模幂，Garner 重组），指数位经掩码选择，
+///   对秘密指数常数时间（见 [`crate::rsabig`]）；
+/// - TODO(M4c)：私钥运算盲化尚未落地（AGENTS.md §5.2 允许 M4 后补，
+///   落地前不得声称抗时序侧信道硬化）；
+/// - 验证 padding 检查严格，一切失败归一化为
+///   [`Error::VerificationFailed`](crate::Error::VerificationFailed)；
+/// - 模长 < 2048 位拒绝（[`MIN_MODULUS_LEN`]），> 4096 位拒绝
+///   （受 [`crate::rsabig::MAX_LIMBS`] 限制）；
+/// - 密钥装载做结构校验：p·q = n、q·qInv ≡ 1 (mod p)、dp < p、
+///   dq < q、qInv < p、n/p/q 为奇数、e ≥ 3 且为奇数；不做素性检测
+///   （密钥来源为本机信任输入，素性由密钥生成方保证）。
 pub mod rsa {
-    /// RSA 签名私钥（`ZeroizeOnDrop`；内部含 CRT 参数，运算加盲化）。
-    #[derive(Clone)]
-    pub struct SigningKey;
+    use crate::rsabig;
+    use crate::sha2::{Sha256, Sha384, Sha512};
 
     /// 最短允许的模长字节数（2048 位）。
     pub const MIN_MODULUS_LEN: usize = 256;
+    /// 最长支持的模长字节数（4096 位）。
+    pub const MAX_MODULUS_LEN: usize = rsabig::MAX_LIMBS * 8;
+
+    /// RSA 私钥（CRT 参数；`Drop` 零化秘密分量）。
+    #[derive(Clone)]
+    pub struct SigningKey {
+        n_len: usize,
+        n_bytes: usize,
+        em_mask: u8,
+        // 秘密参数（CRT）
+        p: Vec<u64>,
+        q: Vec<u64>,
+        dp: Vec<u64>,
+        dq: Vec<u64>,
+        qinv: Vec<u64>,
+        n0_p: u64,
+        r2_p: Vec<u64>,
+        n0_q: u64,
+        r2_q: Vec<u64>,
+        pl: usize,
+    }
 
     impl SigningKey {
         /// 本算法在 FIPS 140-3 下的批准状态。
         pub const APPROVAL: crate::Approval = crate::Approval::Approved;
 
-        /// 从 PKCS#8 DER（PKCS#1 RSA 私钥）解析。模长 < 2048 位返回
-        /// [`Error::Unsupported`](crate::Error::Unsupported)。
+        /// 从 PKCS#8 DER（内层 PKCS#1 RSAPrivateKey）解析。模长 < 2048 位
+        /// 返回 [`Error::Unsupported`](crate::Error::Unsupported)。
         pub fn from_pkcs8_der(der: &[u8]) -> Result<Self, crate::Error> {
-            let _ = der;
-            todo!("M4b")
+            match crate::der::parse_pkcs8_private_key(der)? {
+                crate::der::ParsedPrivateKey::RsaPkcs1(pkcs1) => Self::from_pkcs1_der(&pkcs1),
+                _ => Err(crate::Error::InvalidInput),
+            }
+        }
+
+        /// 解析 PKCS#1 RSAPrivateKey 并做结构一致性校验。
+        fn from_pkcs1_der(der: &[u8]) -> Result<Self, crate::Error> {
+            let (seq, rest) = crate::der::sequence(der)?;
+            if !rest.is_empty() {
+                return Err(crate::Error::InvalidInput);
+            }
+            let (version, rest) = crate::der::integer(seq)?;
+            if version.len() != 1 || version[0] != 0 {
+                return Err(crate::Error::InvalidInput);
+            }
+            // RSAPrivateKey ::= SEQUENCE { version, n, e, d, p, q,
+            //   d mod p-1, d mod q-1, qInv, otherPrimeInfos [0] OPTIONAL }
+            let (n_b, rest) = crate::der::integer(rest)?;
+            let (e_b, rest) = crate::der::integer(rest)?;
+            let (_d_b, rest) = crate::der::integer(rest)?; // CRT 路径不使用 d
+            let (p_b, rest) = crate::der::integer(rest)?;
+            let (q_b, rest) = crate::der::integer(rest)?;
+            let (dp_b, rest) = crate::der::integer(rest)?;
+            let (dq_b, rest) = crate::der::integer(rest)?;
+            let (qinv_b, rest) = crate::der::integer(rest)?;
+            // 多素数扩展不支持
+            if !rest.is_empty() {
+                return Err(crate::Error::InvalidInput);
+            }
+
+            // 模长范围
+            let n_bytes = n_b.len();
+            if n_bytes < MIN_MODULUS_LEN {
+                return Err(crate::Error::Unsupported);
+            }
+            if n_bytes > MAX_MODULUS_LEN {
+                return Err(crate::Error::InvalidInput);
+            }
+            let n_len = n_bytes.div_ceil(8);
+            let pl = n_len.div_ceil(2);
+            // EM 左端必须清零的位数 = 8·emLen − emBits（emBits = modBits − 1）
+            let n_bitlen = 8 * n_bytes - n_b[0].leading_zeros() as usize;
+            let em_left_bits = 8 * n_bytes + 1 - n_bitlen;
+            let em_mask: u8 = (0xffu32 >> em_left_bits) as u8;
+
+            let mut n = vec![0u64; n_len];
+            rsabig::os2ip_be(n_b, &mut n);
+            if n[0] & 1 == 0 {
+                return Err(crate::Error::InvalidInput); // n 必须为奇
+            }
+
+            // e：≤ 8 字节、奇数且 ≥ 3
+            if e_b.is_empty() || e_b.len() > 8 {
+                return Err(crate::Error::InvalidInput);
+            }
+            let mut e = vec![0u64; 1];
+            rsabig::os2ip_be(e_b, &mut e);
+            if e[0] < 3 || e[0] & 1 == 0 {
+                return Err(crate::Error::InvalidInput);
+            }
+
+            // p、q：≤ pl limbs、奇数
+            if p_b.len() > pl * 8 || q_b.len() > pl * 8 {
+                return Err(crate::Error::InvalidInput);
+            }
+            let mut p = vec![0u64; pl];
+            let mut q = vec![0u64; pl];
+            rsabig::os2ip_be(p_b, &mut p);
+            rsabig::os2ip_be(q_b, &mut q);
+            if p[0] & 1 == 0
+                || q[0] & 1 == 0
+                || p.iter().all(|&x| x == 0)
+                || q.iter().all(|&x| x == 0)
+            {
+                return Err(crate::Error::InvalidInput);
+            }
+
+            // dp < p、dq < q、qInv < p
+            if dp_b.len() > pl * 8 || dq_b.len() > pl * 8 || qinv_b.len() > pl * 8 {
+                return Err(crate::Error::InvalidInput);
+            }
+            let mut dp = vec![0u64; pl];
+            let mut dq = vec![0u64; pl];
+            let mut qinv = vec![0u64; pl];
+            rsabig::os2ip_be(dp_b, &mut dp);
+            rsabig::os2ip_be(dq_b, &mut dq);
+            rsabig::os2ip_be(qinv_b, &mut qinv);
+            if rsabig::geq(&dp, &p) || rsabig::geq(&dq, &q) || rsabig::geq(&qinv, &p) {
+                return Err(crate::Error::InvalidInput);
+            }
+
+            // p·q = n
+            let pq = rsabig::mul_full(&p, &q);
+            if pq[..n_len] != n[..] || pq[n_len..].iter().any(|&x| x != 0) {
+                return Err(crate::Error::InvalidInput);
+            }
+
+            // Montgomery 常数（CRT 侧）
+            let n0_p = rsabig::n0_inv(p[0]);
+            let n0_q = rsabig::n0_inv(q[0]);
+            let r2_p = rsabig::compute_r2(&p);
+            let r2_q = rsabig::compute_r2(&q);
+
+            // q·qInv ≡ 1 (mod p)
+            let mut mq = vec![0u64; pl];
+            let mut mqinv = vec![0u64; pl];
+            rsabig::to_mont(&q, &r2_p, &p, n0_p, &mut mq);
+            rsabig::to_mont(&qinv, &r2_p, &p, n0_p, &mut mqinv);
+            let mut chk = vec![0u64; pl];
+            rsabig::mont_mul(&mq, &mqinv, &p, n0_p, &mut chk);
+            rsabig::from_mont(&mut chk, &p, n0_p);
+            if chk[0] != 1 || chk[1..].iter().any(|&x| x != 0) {
+                return Err(crate::Error::InvalidInput);
+            }
+
+            Ok(Self {
+                n_len,
+                n_bytes,
+                em_mask,
+                p,
+                q,
+                dp,
+                dq,
+                qinv,
+                n0_p,
+                r2_p,
+                n0_q,
+                r2_q,
+                pl,
+            })
+        }
+
+        /// 对消息代表元 EM 私钥运算（CRT + Garner 重组），返回定长签名。
+        fn sign_em(&self, em: &[u8]) -> Result<Vec<u8>, crate::Error> {
+            debug_assert_eq!(em.len(), self.n_bytes);
+            let l = self.pl;
+            let nl = self.n_len;
+
+            let mut m = vec![0u64; nl];
+            rsabig::os2ip_be(em, &mut m);
+            let mut mp = vec![0u64; l];
+            rsabig::reduce_limbs(&m, &self.p, &mut mp);
+            let mut mq = vec![0u64; l];
+            rsabig::reduce_limbs(&m, &self.q, &mut mq);
+
+            // sp = m^dp mod p、sq = m^dq mod q（Montgomery 域内完成）
+            let mut sp = vec![0u64; l];
+            let mut sq = vec![0u64; l];
+            {
+                let mut base = vec![0u64; l];
+                let mut res = vec![0u64; l];
+                rsabig::to_mont(&mp, &self.r2_p, &self.p, self.n0_p, &mut base);
+                rsabig::mont_exp(
+                    &base,
+                    &self.dp,
+                    64 * l,
+                    &self.p,
+                    self.n0_p,
+                    &self.r2_p,
+                    &mut res,
+                );
+                rsabig::from_mont(&mut res, &self.p, self.n0_p);
+                sp.copy_from_slice(&res);
+                rsabig::to_mont(&mq, &self.r2_q, &self.q, self.n0_q, &mut base);
+                rsabig::mont_exp(
+                    &base,
+                    &self.dq,
+                    64 * l,
+                    &self.q,
+                    self.n0_q,
+                    &self.r2_q,
+                    &mut res,
+                );
+                rsabig::from_mont(&mut res, &self.q, self.n0_q);
+                sq.copy_from_slice(&res);
+            }
+
+            // Garner（qInv = q⁻¹ mod p）：h = (sp − sq)·qInv mod p；
+            // m = sq + q·h ≤ (q−1) + q(p−1) = n − 1 < n
+            let mut diff = vec![0u64; l];
+            let borrow = rsabig::sub_limbs(&sp, &sq, &mut diff);
+            if borrow == 1 {
+                // (sp − sq) mod p = 回绕值 + p（mod 2^(64l)）：真实结果
+                // sp − sq + p ∈ (0, p)，加法恰好跨过 2^(64l) 一次，
+                // 进位按同余定义丢弃，结果落在 [0, p)。
+                let mut carry = 0u64;
+                for (dw, pw) in diff.iter_mut().zip(self.p.iter()) {
+                    let (v, c1) = dw.overflowing_add(*pw);
+                    let (v, c2) = v.overflowing_add(carry);
+                    *dw = v;
+                    carry = (c1 as u64) | (c2 as u64);
+                }
+                debug_assert_eq!(carry, 1);
+            }
+            // h = diff·qInv mod p：diff 先入 Montgomery 域，与 raw qInv 相乘
+            // 的结果即为 raw（mont(diff)·qInv·R⁻¹ = diff·qInv）
+            let mut hm = vec![0u64; l];
+            rsabig::to_mont(&diff, &self.r2_p, &self.p, self.n0_p, &mut hm);
+            let mut h = vec![0u64; l];
+            rsabig::mont_mul(&hm, &self.qinv, &self.p, self.n0_p, &mut h);
+
+            let mut qh = rsabig::mul_full(&self.q, &h); // 2l limbs
+            qh.truncate(nl);
+            let mut sqx = vec![0u64; nl];
+            sqx[..l].copy_from_slice(&sq);
+            let mut mres = vec![0u64; nl];
+            rsabig::add_limbs(&sqx, &qh, &mut mres); // < n，无进位
+
+            let mut sig = vec![0u8; self.n_bytes];
+            rsabig::i2osp_be(&mres, &mut sig);
+            Ok(sig)
         }
 
         /// RSA-PSS 签名（salt 长度 = 哈希长度；TLS 1.3 使用）。
         pub fn sign_pss(&self, hash_bits: u16, message: &[u8]) -> Result<Vec<u8>, crate::Error> {
-            let _ = (hash_bits, message);
-            todo!("M4b")
+            let mhash = hash_msg(hash_bits, message)?;
+            let hlen = mhash.len();
+            let emlen = self.n_bytes;
+            // emLen ≥ hLen + sLen + 2（sLen = hLen）
+            if emlen < 2 * hlen + 2 {
+                return Err(crate::Error::InvalidInput);
+            }
+            let mut salt = vec![0u8; hlen];
+            crate::entropy::fill(&mut salt)?;
+            // M' = 0x00 × 8 || mHash || salt
+            let mut mprime = vec![0u8; 8 + 2 * hlen];
+            mprime[8..8 + hlen].copy_from_slice(&mhash);
+            mprime[8 + hlen..].copy_from_slice(&salt);
+            let h = hash_msg(hash_bits, &mprime)?;
+            // DB = PS(0x00 × (emLen − hLen − sLen − 2)) || 0x01 || salt
+            let dblen = emlen - hlen - 1;
+            let mut db = vec![0u8; dblen];
+            db[dblen - hlen - 1] = 0x01;
+            db[dblen - hlen..].copy_from_slice(&salt);
+            let mut dbmask = vec![0u8; dblen];
+            mgf1(hash_bits, &h, &mut dbmask)?;
+            for i in 0..dblen {
+                db[i] ^= dbmask[i];
+            }
+            db[0] &= self.em_mask;
+            let mut em = Vec::with_capacity(emlen);
+            em.extend_from_slice(&db);
+            em.extend_from_slice(&h);
+            em.push(0xbc);
+            self.sign_em(&em)
         }
 
         /// RSA PKCS#1 v1.5 签名（TLS 1.2 遗留套件与证书链验证使用）。
@@ -614,20 +887,237 @@ pub mod rsa {
             hash_bits: u16,
             message: &[u8],
         ) -> Result<Vec<u8>, crate::Error> {
-            let _ = (hash_bits, message);
-            todo!("M4b")
+            let mhash = hash_msg(hash_bits, message)?;
+            let prefix = digestinfo_prefix(hash_bits)?;
+            let tlen = prefix.len() + mhash.len();
+            let emlen = self.n_bytes;
+            if emlen < tlen + 11 {
+                return Err(crate::Error::InvalidInput);
+            }
+            let mut em = vec![0u8; emlen];
+            em[0] = 0x00;
+            em[1] = 0x01;
+            for b in em[2..emlen - tlen - 1].iter_mut() {
+                *b = 0xff;
+            }
+            em[emlen - tlen - 1] = 0x00;
+            em[emlen - tlen..emlen - mhash.len()].copy_from_slice(prefix);
+            em[emlen - mhash.len()..].copy_from_slice(&mhash);
+            self.sign_em(&em)
         }
     }
 
-    /// 验证 RSA-PSS 签名。公钥为 DER RSAPublicKey（SPKI 主体）。
+    impl Drop for SigningKey {
+        fn drop(&mut self) {
+            for v in [
+                &mut self.p,
+                &mut self.q,
+                &mut self.dp,
+                &mut self.dq,
+                &mut self.qinv,
+                &mut self.r2_p,
+                &mut self.r2_q,
+            ] {
+                for w in v.iter_mut() {
+                    *w = 0;
+                }
+            }
+            self.n0_p = 0;
+            self.n0_q = 0;
+        }
+    }
+
+    impl std::fmt::Debug for SigningKey {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("rsa::SigningKey")
+        }
+    }
+
+    /// RSA 公钥（验证用；全部为公开数据）。
+    struct RsaPublicKey {
+        n: Vec<u64>,
+        e: Vec<u64>,
+        n0_n: u64,
+        r2_n: Vec<u64>,
+        n_len: usize,
+        n_bytes: usize,
+        e_len: usize,
+        em_mask: u8,
+    }
+
+    impl RsaPublicKey {
+        /// 解析 SPKI（SubjectPublicKeyInfo）内的 RSAPublicKey。
+        fn from_spki_der(der: &[u8]) -> Result<Self, crate::Error> {
+            let (seq, rest) = crate::der::sequence(der)?;
+            if !rest.is_empty() {
+                return Err(crate::Error::InvalidInput);
+            }
+            let (alg, rest) = crate::der::sequence(seq)?;
+            let (oid, _params) = crate::der::object_identifier(alg)?;
+            if oid != crate::der::oid::RSA_ENCRYPTION {
+                return Err(crate::Error::InvalidInput);
+            }
+            let (keybits, rest) = crate::der::bit_string(rest)?;
+            if !rest.is_empty() {
+                return Err(crate::Error::InvalidInput);
+            }
+            let (keyseq, krest) = crate::der::sequence(keybits)?;
+            if !krest.is_empty() {
+                return Err(crate::Error::InvalidInput);
+            }
+            let (n_b, r) = crate::der::integer(keyseq)?;
+            let (e_b, erest) = crate::der::integer(r)?;
+            if !erest.is_empty() {
+                return Err(crate::Error::InvalidInput);
+            }
+            if n_b.len() < MIN_MODULUS_LEN || n_b.len() > MAX_MODULUS_LEN {
+                return Err(crate::Error::Unsupported);
+            }
+            if e_b.is_empty() || e_b.len() > 8 {
+                return Err(crate::Error::InvalidInput);
+            }
+            let n_len = n_b.len().div_ceil(8);
+            let n_bitlen = 8 * n_b.len() - n_b[0].leading_zeros() as usize;
+            let em_left_bits = 8 * n_b.len() + 1 - n_bitlen;
+            let mut n = vec![0u64; n_len];
+            rsabig::os2ip_be(n_b, &mut n);
+            if n[0] & 1 == 0 {
+                return Err(crate::Error::InvalidInput);
+            }
+            let mut e = vec![0u64; 1];
+            rsabig::os2ip_be(e_b, &mut e);
+            if e[0] < 3 || e[0] & 1 == 0 {
+                return Err(crate::Error::InvalidInput);
+            }
+            let n0_n = rsabig::n0_inv(n[0]);
+            let r2_n = rsabig::compute_r2(&n);
+            Ok(Self {
+                n,
+                e,
+                n0_n,
+                r2_n,
+                n_len,
+                n_bytes: n_b.len(),
+                e_len: 1,
+                em_mask: (0xffu32 >> em_left_bits) as u8,
+            })
+        }
+
+        /// s^e mod n，返回 I2OSP 定长编码（含签名长度与 s < n 校验）。
+        fn public_exponentiate(&self, signature: &[u8]) -> Result<Vec<u8>, crate::Error> {
+            if signature.len() != self.n_bytes {
+                return Err(crate::Error::InvalidInput);
+            }
+            let mut s = vec![0u64; self.n_len];
+            rsabig::os2ip_be(signature, &mut s);
+            if rsabig::geq(&s, &self.n) {
+                return Err(crate::Error::VerificationFailed);
+            }
+            let mut base = vec![0u64; self.n_len];
+            rsabig::to_mont(&s, &self.r2_n, &self.n, self.n0_n, &mut base);
+            let mut m = vec![0u64; self.n_len];
+            rsabig::mont_exp(
+                &base,
+                &self.e,
+                64 * self.e_len,
+                &self.n,
+                self.n0_n,
+                &self.r2_n,
+                &mut m,
+            );
+            rsabig::from_mont(&mut m, &self.n, self.n0_n);
+            let mut out = vec![0u8; self.n_bytes];
+            rsabig::i2osp_be(&m, &mut out);
+            Ok(out)
+        }
+    }
+
+    fn hash_msg(hash_bits: u16, message: &[u8]) -> Result<Vec<u8>, crate::Error> {
+        match hash_bits {
+            256 => Ok(Sha256::one_shot(message).to_vec()),
+            384 => Ok(Sha384::one_shot(message).to_vec()),
+            512 => Ok(Sha512::one_shot(message).to_vec()),
+            _ => Err(crate::Error::Unsupported),
+        }
+    }
+
+    /// DigestInfo 前缀（RFC 8017 §9.2 注 1）。
+    fn digestinfo_prefix(hash_bits: u16) -> Result<&'static [u8], crate::Error> {
+        match hash_bits {
+            256 => Ok(&[
+                0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,
+                0x01, 0x05, 0x00, 0x04, 0x20,
+            ]),
+            384 => Ok(&[
+                0x30, 0x41, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,
+                0x02, 0x05, 0x00, 0x04, 0x30,
+            ]),
+            512 => Ok(&[
+                0x30, 0x51, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02,
+                0x03, 0x05, 0x00, 0x04, 0x40,
+            ]),
+            _ => Err(crate::Error::Unsupported),
+        }
+    }
+
+    /// MGF1（RFC 8017 附录 B.2.1）。
+    fn mgf1(hash_bits: u16, seed: &[u8], mask: &mut [u8]) -> Result<(), crate::Error> {
+        let mut counter = 0u32;
+        let mut filled = 0usize;
+        while filled < mask.len() {
+            let mut input = Vec::with_capacity(seed.len() + 4);
+            input.extend_from_slice(seed);
+            input.extend_from_slice(&counter.to_be_bytes());
+            let h = hash_msg(hash_bits, &input)?;
+            let take = core::cmp::min(h.len(), mask.len() - filled);
+            mask[filled..filled + take].copy_from_slice(&h[..take]);
+            filled += take;
+            counter += 1;
+        }
+        Ok(())
+    }
+
+    /// 验证 RSA-PSS 签名。公钥为 DER SPKI（SubjectPublicKeyInfo）。
     pub fn verify_pss(
         hash_bits: u16,
         public_key_der: &[u8],
         message: &[u8],
         signature: &[u8],
     ) -> Result<(), crate::Error> {
-        let _ = (hash_bits, public_key_der, message, signature);
-        todo!("M4b")
+        let pk = RsaPublicKey::from_spki_der(public_key_der)?;
+        let em = pk.public_exponentiate(signature)?;
+        let mhash = hash_msg(hash_bits, message)?;
+        let hlen = mhash.len();
+        let emlen = em.len();
+        // 一切 padding 失败归一化为同一错误（不泄露失败阶段）
+        if emlen < 2 * hlen + 2 || em[emlen - 1] != 0xbc {
+            return Err(crate::Error::VerificationFailed);
+        }
+        if em[0] & !pk.em_mask != 0 {
+            return Err(crate::Error::VerificationFailed);
+        }
+        let h = &em[emlen - hlen - 1..emlen - 1];
+        let dblen = emlen - hlen - 1;
+        let mut db = em[..dblen].to_vec();
+        let mut dbmask = vec![0u8; dblen];
+        mgf1(hash_bits, h, &mut dbmask)?;
+        for i in 0..dblen {
+            db[i] ^= dbmask[i];
+        }
+        db[0] &= pk.em_mask;
+        let ps_len = dblen - hlen - 1;
+        if db[..ps_len].iter().any(|&b| b != 0) || db[ps_len] != 0x01 {
+            return Err(crate::Error::VerificationFailed);
+        }
+        let salt = &db[ps_len + 1..];
+        let mut mprime = vec![0u8; 8 + 2 * hlen];
+        mprime[8..8 + hlen].copy_from_slice(&mhash);
+        mprime[8 + hlen..].copy_from_slice(salt);
+        let h2 = hash_msg(hash_bits, &mprime)?;
+        if h2[..] != *h {
+            return Err(crate::Error::VerificationFailed);
+        }
+        Ok(())
     }
 
     /// 验证 RSA PKCS#1 v1.5 签名（严格 padding 检查，防 Bleichenbacher）。
@@ -637,7 +1127,28 @@ pub mod rsa {
         message: &[u8],
         signature: &[u8],
     ) -> Result<(), crate::Error> {
-        let _ = (hash_bits, public_key_der, message, signature);
-        todo!("M4b")
+        let pk = RsaPublicKey::from_spki_der(public_key_der)?;
+        let em = pk.public_exponentiate(signature)?;
+        let mhash = hash_msg(hash_bits, message)?;
+        let prefix = digestinfo_prefix(hash_bits)?;
+        let tlen = prefix.len() + mhash.len();
+        let emlen = em.len();
+        if emlen < tlen + 11 {
+            return Err(crate::Error::VerificationFailed);
+        }
+        // 逐字节重构期望 EM 并全等比较（拒绝非规范 0xFF 串等一切变体）
+        let mut expected = vec![0u8; emlen];
+        expected[0] = 0x00;
+        expected[1] = 0x01;
+        for b in expected[2..emlen - tlen - 1].iter_mut() {
+            *b = 0xff;
+        }
+        expected[emlen - tlen - 1] = 0x00;
+        expected[emlen - tlen..emlen - mhash.len()].copy_from_slice(prefix);
+        expected[emlen - mhash.len()..].copy_from_slice(&mhash);
+        if em != expected {
+            return Err(crate::Error::VerificationFailed);
+        }
+        Ok(())
     }
 }

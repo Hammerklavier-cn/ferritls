@@ -167,12 +167,9 @@ pub fn parse_pkcs8_private_key(der: &[u8]) -> Result<ParsedPrivateKey, Error> {
         return Ok(ParsedPrivateKey::Ed25519(seed.to_vec()));
     }
     if oid == oid::RSA_ENCRYPTION {
-        // 内层 OCTET STRING = PKCS#1 RSAPrivateKey DER
-        let (pkcs1, inner_rest) = octet_string(key_bytes)?;
-        if !inner_rest.is_empty() {
-            return Err(Error::InvalidInput);
-        }
-        return Ok(ParsedPrivateKey::RsaPkcs1(pkcs1.to_vec()));
+        // privateKey OCTET STRING 的内容即 PKCS#1 RSAPrivateKey DER
+        //（RSA 不再包一层 OCTET STRING；Ed25519 才是双层包裹）
+        return Ok(ParsedPrivateKey::RsaPkcs1(key_bytes.to_vec()));
     }
     if oid == oid::EC_PUBLIC_KEY {
         // parameters = namedCurve OID
