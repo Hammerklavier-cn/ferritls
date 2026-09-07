@@ -42,8 +42,8 @@ pub fn read_tlv(input: &[u8]) -> Result<(u8, &[u8], &[u8]), Error> {
         for k in 0..n {
             len = (len << 8) | input[2 + k] as usize;
         }
-        // 非最短编码拒绝（首字节为 0）
-        if input[2] == 0 {
+        // 非最短编码拒绝（首字节为 0；或长度 < 0x80 却用了长形式）
+        if input[2] == 0 || len < 0x80 {
             return Err(Error::InvalidInput);
         }
         (len, 2 + n)
@@ -92,6 +92,7 @@ pub fn object_identifier(input: &[u8]) -> Result<(&[u8], &[u8]), Error> {
 }
 
 /// INTEGER：去除符号前导零后的绝对值字节（正数）。
+/// 解析 INTEGER 内容（DER 最短编码）。
 pub fn integer(input: &[u8]) -> Result<(&[u8], &[u8]), Error> {
     let (content, rest) = expect(0x02, input)?;
     if content.is_empty() {
@@ -101,7 +102,12 @@ pub fn integer(input: &[u8]) -> Result<(&[u8], &[u8]), Error> {
     if content[0] & 0x80 != 0 {
         return Err(Error::InvalidInput);
     }
-    // 去除多余前导零
+    // DER 最短编码：前导 0x00 只允许出现一次且仅在次字节高位为 1 时
+    // （"prepending 0's" 类攻击即利用宽容解析器）
+    if content.len() >= 2 && content[0] == 0 && content[1] & 0x80 == 0 {
+        return Err(Error::InvalidInput);
+    }
+    // 去除唯一合法的前导零
     let mut s = 0;
     while s + 1 < content.len() && content[s] == 0 {
         s += 1;

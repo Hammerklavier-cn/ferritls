@@ -408,9 +408,14 @@ pub mod ed25519 {
         } else {
             return Err(crate::Error::VerificationFailed);
         }
-        // 符号修正：比较仿射 x 的规范奇偶（to_raw 先出 Montgomery 形式）
+        // 符号修正：比较仿射 x 的规范奇偶（to_raw 先出 Montgomery 形式）。
+        // RFC 8032 §5.1.3：奇偶必须与符号位一致——x=0 且 sign=1 无法通过
+        // 取负满足（-0 = 0，奇偶仍为 0），必须拒绝解码。
         let neg = ((x.to_raw()[0] ^ u64::from(sign)) & 1).wrapping_neg();
         x = Fp25519::select(neg, &x.neg(), &x);
+        if (x.to_raw()[0] ^ u64::from(sign)) & 1 == 1 {
+            return Err(crate::Error::VerificationFailed);
+        }
         Ok(Point {
             x,
             y,
