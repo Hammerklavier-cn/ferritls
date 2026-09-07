@@ -218,7 +218,12 @@ fn run_handshake(
             Err(e) => return Err(e.into()),
         }
     }
-    server.join().map_err(|e| format!("server thread: {e:?}"))?;
+    // 服务器线程的 Err 必须传播（此前被静默丢弃掩盖了真实失败）
+    match server.join() {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(format!("server thread: {e}").into()),
+        Err(e) => return Err(format!("server thread panicked: {e:?}").into()),
+    }
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
 

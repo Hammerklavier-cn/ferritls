@@ -3,8 +3,10 @@
 纯 Rust 的 [rustls](https://github.com/rustls/rustls) `CryptoProvider`
 密码后端：无 C、无汇编、无 `unsafe`，按 FIPS 140-3 模块边界组织。
 
-**状态：M0 骨架**——接口与测试向量已定型，密码学实现按
-[路线图](docs/ROADMAP.md) 逐步落地（当前尚不可用于真实 TLS 连接）。
+**状态：M0–M6 完成**——`ferritls-core` 全部密码原语落地（RFC/NIST/CAVP
+官方向量测试绿），rustls `CryptoProvider` 适配层接线完成，端到端 TLS 1.3
+握手（内存内矩阵）通过。发布 0.1 前的收尾项（RFC 8448 轨迹、Wycheproof
+全量、webpki 链校验测试）见 [路线图](docs/ROADMAP.md) M7。
 
 ## 为什么
 
@@ -13,19 +15,19 @@
 | rustls-rustcrypto | 停更（2024-04 最后发版，README 挂"禁止生产使用"） | 活跃维护，接口锁定 rustls 0.23 |
 | aws-lc-rs | C/汇编、cmake、编译慢、绑定 AWS-LC | 纯 Rust，`cargo build` 即得，边界全可审 |
 
-## 计划能力（M6 后）
+## 能力
 
 - **TLS 1.3 套件**：`TLS_AES_128_GCM_SHA256`、`TLS_AES_256_GCM_SHA384`、
   `TLS_CHACHA20_POLY1305_SHA256`、`TLS_AES_128_CCM_SHA256`
 - **密钥交换**：X25519、secp256r1、secp384r1
 - **签名/验证**：ECDSA P-256/384、RSA-PSS/PKCS#1（SHA-256/384/512）、Ed25519
 - **批准模式**（`fips` feature）：仅 NIST 批准算法 + SP 800-90A
-  CTR-DRBG + 上电自检
+  CTR-DRBG（每次生成混入 OS 熵）+ 上电自检 KAT
 
-```rust,ignore
-// M6 后：
+```rust
 let provider = ferritls_rustls::default_provider();
 provider.install_default()?;
+// 之后 ClientConfig::builder() / ServerConfig::builder() 默认使用它。
 ```
 
 ## FIPS 140-3 声明

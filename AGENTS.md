@@ -287,14 +287,44 @@ cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored
 
 ---
 
-## 9. 当前状态（2026-09，M0 完成）
+## 9. 当前状态（2026-09，M0–M6 完成）
 
 - [x] 双许可（Apache-2.0 OR MIT）、workspace、CI、cargo-deny
-- [x] ferritls-core 全模块骨架（签名定稿，`todo!("Mx")`）
-- [x] 向量测试预置（9 个文件，全部 `#[ignore]` 待实现）
-- [x] ferritls-rustls trait 骨架（rustls 0.23.43 接口编译期锁定）
-- [x] ferritls-interop 占位 + 验收矩阵文档
-- [ ] M1：SHA-2 + HMAC + HKDF（入口：`src/sha2.rs` 等的 `todo!("M1")`，
-      完成后 unignore `tests/{sha2,hmac,hkdf}.rs`）
+- [x] ferritls-core 全模块实现（无 `todo!()` 残留）
+- [x] M1：SHA-2 + HMAC + HKDF（RFC/官方向量绿）
+- [x] M2：AES-GCM / CCM（含 TLS nonce-12/L-3 参数集）/ ChaCha20-Poly1305
+- [x] M3：X25519（RFC 7748 §5.2/§6.1）+ P-256/384 ECDH（外部锚值）
+- [x] M4a：ECDSA P-256/384（RFC 6979 A.2.5/A.2.6）+ Ed25519
+      （RFC 8032 TEST 1/2/3 + SHA(abc)）+ DER/PKCS#8/SEC1 解析
+- [x] M4b：RSA（CRT + Garner，固定宽度 Montgomery 模幂），
+      PKCS#1 v1.5 逐字节锚定 openssl、PSS 验证方向锚定；
+      盲化（AGENTS §5.2 允许后补）列为 TODO(M4c)
+- [x] M5：CTR-DRBG（SP 800-90A 无 DF，CAVP DRBGVS 向量）+
+      上电自检 KAT 全集 + 失败注入测试
+- [x] M6：rustls 适配层全量实装（4 套件 × 3 KX 组 × 全验证算法），
+      interop 内存握手矩阵（含 fips_mode_provider 矩阵）绿
+- [ ] M7：RFC 8448 轨迹重放、webpki 全链校验 dev-dep 测试、
+      Wycheproof 全量、crates.io 发布 0.1
+- [ ] M8：TLS 1.2 / QUIC / ML-KEM 混合 / intrinsics 后端
 
-下一步实现者（人或代理）请从 M1 开始，动手前重读 §5.1 与 §6.2。
+**已知的实现级注记**（修订实现前必读）：
+
+- `fields.rs::from_bytes_be_mod`：条件减 p 的"还原"分支是空操作
+  （acc 从未被替换），曾被误写为 acc += p 造成全量污染；
+- `ecdh.rs::x25519_ladder`：u 坐标导入后必须 `from_raw` 进
+  Montgomery 域（曾漏掉 → 全错一个 R 因子）；
+- `sign.rs`（Ed25519）：`compress()` 仿射转换是 X/Z、Y/Z
+  （非 Jacobian 的 Z²/Z³），符号位取 `to_raw()` 后的规范奇偶；
+- `sign.rs`（ECDSA）：RFC 6979 步骤 d–g 共两次 K 重构（0x00 与
+  0x01 分隔符各一次，第二次必须用更新后的 V）；候选 k 与 n 比较
+  而非取模；模数 n 的 BE 字节直接取 `S::P`（严禁 from_raw——
+  模数 mod 自身为 0）；
+- `sign.rs`（RSA Garner）：`h = (sp − sq)·qInv mod p` 需先将 diff
+  转入 Montgomery 域再乘 raw qInv；`diff + p` 的回绕进位恰出现
+  一次且必须丢弃；
+- `drbg.rs`（无 DF）：seed_material 按 seedlen 异或折叠（非截断）；
+  Generate 末次 Update 无条件执行（AI 空则 0^seedlen）；
+  官方流程 = Instantiate → Reseed → Generate → Generate。
+
+下一步实现者（人或代理）请从 M7 开始（RFC 8448 / Wycheproof /
+发布准备），动手前重读 §5 与上述注记。

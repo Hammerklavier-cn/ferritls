@@ -1,7 +1,7 @@
-//! 适配层 API 形状测试。
+//! 适配层 API 形状测试（M6/M7）。
 //!
-//! `suite_inventory_matches_docs` 现在即可运行（纯清单断言，防止套件
-//! 清单与文档漂移）；其余在 M6 接线后启用。
+//! 清单断言防止套件/组清单与文档漂移；provider smoke 覆盖两个出厂
+//! 配置的构成与 `fips()` 语义（认证前恒 false）。
 
 #[test]
 fn suite_inventory_matches_docs() {
@@ -37,7 +37,6 @@ fn default_provider_smoke() {
 }
 
 #[test]
-#[ignore = "M6: fips_mode_provider 接线后启用（M7）"]
 fn fips_mode_provider_smoke() {
     let p = ferritls_rustls::fips_mode_provider();
     // 批准模式也必须为 false：批准模式 ≠ 已认证。
