@@ -17,10 +17,18 @@ pub fn extract_sha256(salt: &[u8], ikm: &[u8]) -> [u8; 32] {
     HmacSha256::one_shot(s, ikm)
 }
 
-/// HKDF-Expand（SHA-256）：PRK + info → OKM（写入 `okm`，长度 ≤ 255×32）。
-pub fn expand_sha256(prk: &[u8], info: &[u8], okm: &mut [u8]) {
+/// HKDF-Expand（SHA-256）：PRK + info → OKM（写入 `okm`）。
+///
+/// RFC 5869 §2.3：OKM 长度不得超过 255×HashLen，超限返回
+/// [`Error::InvalidInput`](crate::Error)——Expand 计数器只有 8 位，
+/// 绝不能回绕后产出错误密钥材料。
+pub fn expand_sha256(prk: &[u8], info: &[u8], okm: &mut [u8]) -> Result<(), crate::Error> {
+    if okm.len() > 255 * 32 {
+        return Err(crate::Error::InvalidInput);
+    }
     let mut t = [0u8; 32];
     expand_generic::<32, _>(HmacSha256::one_shot, prk, info, &mut t, okm);
+    Ok(())
 }
 
 /// HKDF-Extract（SHA-384）：IKM + salt → PRK（48 字节）。
@@ -29,10 +37,16 @@ pub fn extract_sha384(salt: &[u8], ikm: &[u8]) -> [u8; 48] {
     HmacSha384::one_shot(s, ikm)
 }
 
-/// HKDF-Expand（SHA-384）：PRK + info → OKM（写入 `okm`，长度 ≤ 255×48）。
-pub fn expand_sha384(prk: &[u8], info: &[u8], okm: &mut [u8]) {
+/// HKDF-Expand（SHA-384）：PRK + info → OKM（写入 `okm`）。
+///
+/// 长度限制同 [`expand_sha256`]（255×48）。
+pub fn expand_sha384(prk: &[u8], info: &[u8], okm: &mut [u8]) -> Result<(), crate::Error> {
+    if okm.len() > 255 * 48 {
+        return Err(crate::Error::InvalidInput);
+    }
     let mut t = [0u8; 48];
     expand_generic::<48, _>(HmacSha384::one_shot, prk, info, &mut t, okm);
+    Ok(())
 }
 
 fn expand_generic<const L: usize, F>(

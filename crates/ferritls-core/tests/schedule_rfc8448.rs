@@ -128,7 +128,7 @@ fn expand_label(prk: &[u8], label: &str, context_hash: &[u8], out_len: usize) ->
     info.push(context_hash.len() as u8);
     info.extend_from_slice(context_hash);
     let mut okm = vec![0u8; out_len];
-    hkdf::expand_sha256(prk, &info, &mut okm);
+    hkdf::expand_sha256(prk, &info, &mut okm).expect("RFC 8448 label lengths are valid");
     okm
 }
 
