@@ -33,16 +33,7 @@ impl ChaCha20Poly1305 {
         let poly_key = chacha20_block(&self.key, 0, nonce);
         let mut ct = vec![0u8; plaintext.len() + Self::TAG_LEN];
         let (body, tail) = ct.split_at_mut(plaintext.len());
-        let mut counter = 1u32;
-        for (pt_chunk, ct_chunk) in plaintext.chunks(64).zip(body.chunks_mut(64)) {
-            let ks = chacha20_block(&self.key, counter, nonce);
-            // 固定 ≤64 字节的 zip 异或：LLVM 自动向量化
-            //（P1 性能轮；无秘密条件分支/访存）。
-            for (c, (p, k)) in ct_chunk.iter_mut().zip(pt_chunk.iter().zip(ks)) {
-                *c = p ^ k;
-            }
-            counter = counter.wrapping_add(1);
-        }
+        keystream_xor(&self.key, nonce, plaintext, body);
         let tag = poly1305_tag(&poly_key, aad, body);
         tail.copy_from_slice(&tag);
         ct
@@ -67,14 +58,7 @@ impl ChaCha20Poly1305 {
         crate::ct::verify_tag(&computed, tag)?;
 
         let mut pt = vec![0u8; ct.len()];
-        let mut counter = 1u32;
-        for (ct_chunk, pt_chunk) in ct.chunks(64).zip(pt.chunks_mut(64)) {
-            let ks = chacha20_block(&self.key, counter, nonce);
-            for (p, (c, k)) in pt_chunk.iter_mut().zip(ct_chunk.iter().zip(ks)) {
-                *p = c ^ k;
-            }
-            counter = counter.wrapping_add(1);
-        }
+        keystream_xor(&self.key, nonce, ct, &mut pt);
         Ok(pt)
     }
 }
@@ -88,6 +72,33 @@ impl Drop for ChaCha20Poly1305 {
 impl std::fmt::Debug for ChaCha20Poly1305 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ChaCha20Poly1305")
+    }
+}
+
+/// 密钥流异或（P1 性能轮）：按 256 字节步进用四块批量
+/// [`chacha20_blocks4`]（转置布局，ARX 跨 4 通道自动向量化），尾段
+/// （<256 字节）回退逐块标量 [`chacha20_block`]。无秘密条件分支/访存
+/// （counter 与长度均为公开值）。
+fn keystream_xor(key: &[u8; 32], nonce: &[u8; 12], input: &[u8], out: &mut [u8]) {
+    debug_assert_eq!(input.len(), out.len());
+    let mut counter = 1u32;
+    let mut ks = [0u8; 256];
+    for (in_chunk, out_chunk) in input.chunks(256).zip(out.chunks_mut(256)) {
+        if in_chunk.len() == 256 {
+            chacha20_blocks4(key, counter, nonce, &mut ks);
+            for (o, (i, k)) in out_chunk.iter_mut().zip(in_chunk.iter().zip(ks)) {
+                *o = i ^ k;
+            }
+            counter = counter.wrapping_add(4);
+        } else {
+            for (ic, oc) in in_chunk.chunks(64).zip(out_chunk.chunks_mut(64)) {
+                let ksb = chacha20_block(key, counter, nonce);
+                for (o, (i, k)) in oc.iter_mut().zip(ic.iter().zip(ksb)) {
+                    *o = i ^ k;
+                }
+                counter = counter.wrapping_add(1);
+            }
+        }
     }
 }
 
@@ -141,27 +152,96 @@ fn qr(w: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
     w[b] = w[b].rotate_left(7);
 }
 
+/// ChaCha20 四块批量（P1 性能轮）：一次计算 counter..counter+3 的
+/// 256 字节密钥流。状态为转置布局 `[u32; 4]`——每个状态字持有 4 个
+/// 块的对应字，ARX 运算跨通道执行，LLVM 按目标向量宽度自动向量化
+///（SSE2/AVX2，编译期决定，无 target_feature 探测）。计数器回绕按
+/// wrapping 语义与标量路径一致。
+fn chacha20_blocks4(key: &[u8; 32], counter: u32, nonce: &[u8; 12], out: &mut [u8; 256]) {
+    let mut w = [[0u32; 4]; 16];
+    w[0] = [0x6170_7865; 4];
+    w[1] = [0x3320_646e; 4];
+    w[2] = [0x7962_2d32; 4];
+    w[3] = [0x6b20_6574; 4];
+    for i in 0..8 {
+        let k = u32::from_le_bytes(key[i * 4..i * 4 + 4].try_into().unwrap());
+        w[4 + i] = [k; 4];
+    }
+    w[12] = [
+        counter,
+        counter.wrapping_add(1),
+        counter.wrapping_add(2),
+        counter.wrapping_add(3),
+    ];
+    for i in 0..3 {
+        let n = u32::from_le_bytes(nonce[i * 4..i * 4 + 4].try_into().unwrap());
+        w[13 + i] = [n; 4];
+    }
+    let init = w;
+
+    for _ in 0..10 {
+        // 列轮
+        qr4(&mut w, 0, 4, 8, 12);
+        qr4(&mut w, 1, 5, 9, 13);
+        qr4(&mut w, 2, 6, 10, 14);
+        qr4(&mut w, 3, 7, 11, 15);
+        // 对角轮
+        qr4(&mut w, 0, 5, 10, 15);
+        qr4(&mut w, 1, 6, 11, 12);
+        qr4(&mut w, 2, 7, 8, 13);
+        qr4(&mut w, 3, 4, 9, 14);
+    }
+    for blk in 0..4 {
+        for i in 0..16 {
+            let word = w[i][blk].wrapping_add(init[i][blk]);
+            out[blk * 64 + i * 4..blk * 64 + i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+    }
+}
+
+/// 四通道四分之一轮。显式定长下标同步推进 4 个通道数组——这是
+/// LLVM 自动向量化所依赖的形状，改写为迭代器形式会 obscures 该意图。
+#[allow(clippy::needless_range_loop)]
+fn qr4(w: &mut [[u32; 4]; 16], a: usize, b: usize, c: usize, d: usize) {
+    let (mut wa, mut wb, mut wc, mut wd) = (w[a], w[b], w[c], w[d]);
+    for l in 0..4 {
+        wa[l] = wa[l].wrapping_add(wb[l]);
+        wd[l] ^= wa[l];
+        wd[l] = wd[l].rotate_left(16);
+        wc[l] = wc[l].wrapping_add(wd[l]);
+        wb[l] ^= wc[l];
+        wb[l] = wb[l].rotate_left(12);
+        wa[l] = wa[l].wrapping_add(wb[l]);
+        wd[l] ^= wa[l];
+        wd[l] = wd[l].rotate_left(8);
+        wc[l] = wc[l].wrapping_add(wd[l]);
+        wb[l] ^= wc[l];
+        wb[l] = wb[l].rotate_left(7);
+    }
+    w[a] = wa;
+    w[b] = wb;
+    w[c] = wc;
+    w[d] = wd;
+}
+
 /// Poly1305 一次性密钥 → 16 字节 MAC。
 /// MAC 输入（RFC 8439 §2.8）为一个整体字节串：
 /// AAD || pad16(AAD) || CT || pad16(CT) || len(AAD)_LE64 || len(CT)_LE64。
-/// pad16 后的 AAD/CT 是完整块；只有整串的**最末**不足 16 字节部分
-/// 才用 0x01 充当 2^128 位标记。
+/// pad16 为零填充（整串恰在块边界结束，无 0x01 部分块标记）。
+/// P1：流式吸收 AAD/CT，不再物化整体拷贝（原实现每条记录多一次
+/// 全长 Vec 分配+拷贝）。
 fn poly1305_tag(poly_key: &[u8; 64], aad: &[u8], ct: &[u8]) -> [u8; 16] {
     let mut k = [0u8; 32];
     k.copy_from_slice(&poly_key[..32]);
     let mut st = Poly1305::new(&k);
     k.fill(0);
 
-    let mut data = Vec::with_capacity(aad.len() + ct.len() + 48);
-    data.extend_from_slice(aad);
-    data.resize(data.len().next_multiple_of(16), 0);
-    let ct_start = data.len();
-    data.extend_from_slice(ct);
-    data.resize(data.len().next_multiple_of(16), 0);
-    data.extend_from_slice(&(aad.len() as u64).to_le_bytes());
-    data.extend_from_slice(&(ct.len() as u64).to_le_bytes());
-    let _ = ct_start;
-    st.absorb_segment(&data);
+    st.absorb_zeropadded(aad);
+    st.absorb_zeropadded(ct);
+    let mut len_block = [0u8; 16];
+    len_block[..8].copy_from_slice(&(aad.len() as u64).to_le_bytes());
+    len_block[8..].copy_from_slice(&(ct.len() as u64).to_le_bytes());
+    st.absorb_full(&len_block);
     st.finish()
 }
 
@@ -191,6 +271,9 @@ impl Poly1305 {
 
     /// 吸收一段数据：完整块带 hibit，末尾不足 16 字节的块在数据后
     /// 追加 0x01 再补零（hibit 位置由 0x01 字节承担）。
+    ///（独立消息语义；AEAD 路径用 [`Self::absorb_zeropadded`]，
+    /// 保留给 RFC 8439 §2.5.2 单测使用。）
+    #[cfg(test)]
     fn absorb_segment(&mut self, mut data: &[u8]) {
         while data.len() >= 16 {
             let mut block = [0u8; 16];
@@ -206,6 +289,23 @@ impl Poly1305 {
         }
     }
 
+    /// 吸收一段零填充到 16 字节边界的数据（AEAD MAC 输入的 AAD/CT 段
+    /// 语义：末块补零、hibit 置位；空段不贡献任何块）。
+    fn absorb_zeropadded(&mut self, mut data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        while data.len() > 16 {
+            let mut block = [0u8; 16];
+            block.copy_from_slice(&data[..16]);
+            self.absorb_full(&block);
+            data = &data[16..];
+        }
+        let mut block = [0u8; 16];
+        block[..data.len()].copy_from_slice(data);
+        self.absorb_full(&block);
+    }
+
     /// 完整 16 字节块（hibit = 2^128 位）。
     fn absorb_full(&mut self, block: &[u8; 16]) {
         let le32 = |b: &[u8]| u32::from_le_bytes(b.try_into().unwrap());
@@ -218,6 +318,7 @@ impl Poly1305 {
     }
 
     /// 末尾部分块（数据后已有 0x01，无额外 hibit）。
+    #[cfg(test)]
     fn absorb_partial(&mut self, block: &[u8; 16]) {
         let le32 = |b: &[u8]| u32::from_le_bytes(b.try_into().unwrap());
         self.h[0] += u64::from(le32(&block[0..4])) & 0x3ffffff;
@@ -342,5 +443,80 @@ mod tests {
             0xcb, 0xd0, 0x83, 0xe8, 0xa2, 0x50, 0x3c, 0x4e,
         ];
         assert_eq!(ks, expect);
+    }
+
+    #[test]
+    fn blocks4_matches_scalar_and_rfc_anchor() {
+        let key = [
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+            0x1c, 0x1d, 0x1e, 0x1f,
+        ];
+        let nonce = [
+            0x00, 0x00, 0x00, 0x09, 0x00, 0x00, 0x00, 0x4a, 0x00, 0x00, 0x00, 0x00,
+        ];
+        // 批量路径 = 标量路径按 counter 拼接（含计数器回绕点）。
+        for start in [0u32, 1, 42, 0x7fff_fffd, 0xffff_fffe] {
+            let mut batched = [0u8; 256];
+            chacha20_blocks4(&key, start, &nonce, &mut batched);
+            let mut expect = [0u8; 256];
+            for i in 0..4u32 {
+                let b = chacha20_block(&key, start.wrapping_add(i), &nonce);
+                expect[i as usize * 64..(i as usize + 1) * 64].copy_from_slice(&b);
+            }
+            assert_eq!(batched, expect, "counter={start}");
+        }
+        // RFC 8439 §2.4.2 密钥流的第 1 块 = §2.3.2 单块向量（同
+        // key/nonce/counter=1）：批量的首块锚定官方字节，其余块由上面的
+        // 标量等价覆盖（标量路径已由 §2.3.2 向量锚定）。
+        let mut out = [0u8; 256];
+        chacha20_blocks4(&key, 1, &nonce, &mut out);
+        assert_eq!(
+            &out[..64],
+            &[
+                0x10, 0xf1, 0xe7, 0xe4, 0xd1, 0x3b, 0x59, 0x15, 0x50, 0x0f, 0xdd, 0x1f, 0xa3, 0x20,
+                0x71, 0xc4, 0xc7, 0xd1, 0xf4, 0xc7, 0x33, 0xc0, 0x68, 0x03, 0x04, 0x22, 0xaa, 0x9a,
+                0xc3, 0xd4, 0x6c, 0x4e, 0xd2, 0x82, 0x64, 0x46, 0x07, 0x9f, 0xaa, 0x09, 0x14, 0xc2,
+                0xd7, 0x05, 0xd9, 0x8b, 0x02, 0xa2, 0xb5, 0x12, 0x9c, 0xd1, 0xde, 0x16, 0x4e, 0xb9,
+                0xcb, 0xd0, 0x83, 0xe8, 0xa2, 0x50, 0x3c, 0x4e,
+            ][..]
+        );
+    }
+
+    #[test]
+    fn keystream_xor_matches_scalar_all_shapes() {
+        let mut seed = 0x9E37_79B9u32;
+        let mut key = [0u8; 32];
+        for b in key.iter_mut() {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            *b = seed as u8;
+        }
+        let nonce = [3u8; 12];
+        let mut data = vec![0u8; 1024];
+        for b in data.iter_mut() {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            *b = seed as u8;
+        }
+        // 覆盖批量/标量边界：0、<64、=64、255/256/257、511/512/513、1024。
+        for len in [0usize, 1, 63, 64, 65, 255, 256, 257, 511, 512, 513, 1024] {
+            let input = &data[..len];
+            let mut fast = vec![0u8; len];
+            keystream_xor(&key, &nonce, input, &mut fast);
+            // 参考实现：counter 从 1 起（与 keystream_xor 一致）
+            let mut expect = vec![0u8; len];
+            let mut counter = 1u32;
+            for (ic, oc) in input.chunks(64).zip(expect.chunks_mut(64)) {
+                let ks = chacha20_block(&key, counter, &nonce);
+                for (o, (i, k)) in oc.iter_mut().zip(ic.iter().zip(ks)) {
+                    *o = i ^ k;
+                }
+                counter = counter.wrapping_add(1);
+            }
+            assert_eq!(fast, expect, "len={len}");
+        }
     }
 }
