@@ -370,12 +370,14 @@ pub mod ed25519 {
                 w.copy_from_slice(&y_bytes[j * 8..j * 8 + 8]);
                 limbs[j] = u64::from_le_bytes(w);
             }
-            let mut f = Fp25519(limbs);
-            let cond = (Fp25519::geq_canonical(&f.0) as u64).wrapping_neg();
-            f.cond_sub_p(cond);
+            // 非规范编码拒绝（RFC 8032 §5.1.3 步骤 2/3；与 dalek 严格
+            // 模式一致）：y ∈ [p, 2^255) 不是合法编码，宽容归约会给同一
+            // 签名/公钥留下第二种编码（malleability 面）。
+            if Fp25519::geq_canonical(&limbs) {
+                return Err(crate::Error::VerificationFailed);
+            }
             // 统一转换到 Montgomery 形式（后续运算均为 Montgomery 域）
-            f = Fp25519::from_raw(f.0);
-            f
+            Fp25519::from_raw(limbs)
         };
         // x² = (y² − 1) / (d·y² + 1)，RFC 8032 §5.1.3 恢复配方
         let d = curve_d();
@@ -1290,5 +1292,59 @@ pub mod rsa {
             return Err(crate::Error::VerificationFailed);
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 非规范压缩编码必须拒绝（RFC 8032 §5.1.3）：y ∈ [p, 2^255) 的
+    /// 32 字节编码不是合法点编码。此前实现会对 y 条件减 p 后静默接受，
+    /// 给同一验证结果留下第二种签名/公钥编码（malleability 面）。
+    #[test]
+    fn ed25519_decompress_rejects_noncanonical_y() {
+        // y' = p（2^255 − 19）：LE 字节 = ed ff…ff 7f
+        let mut b = [0xffu8; 32];
+        b[0] = 0xed;
+        b[31] = 0x7f;
+        assert!(
+            matches!(
+                ed25519::decompress(&b),
+                Err(crate::Error::VerificationFailed)
+            ),
+            "y == p must be rejected"
+        );
+        // y' = p + 18 = 2^255 − 1（该区间最大值）
+        let mut b2 = [0xffu8; 32];
+        b2[31] = 0x7f;
+        assert!(ed25519::decompress(&b2).is_err());
+        // 区间内其余值同样拒绝
+        let mut b3 = [0xffu8; 32];
+        b3[0] = 0xf0;
+        b3[31] = 0x7f;
+        assert!(ed25519::decompress(&b3).is_err());
+    }
+
+    /// 严格化不得误伤：恒等元 (0,1) 的规范编码（y=1，x 偶）必须仍可
+    /// 解码——验证方程允许 R = 恒等元。
+    #[test]
+    fn ed25519_decompress_accepts_canonical_identity() {
+        let mut id = [0u8; 32];
+        id[0] = 0x01;
+        let p = ed25519::decompress(&id).expect("canonical identity decodes");
+        // t = x·y = 0、z = 1
+        assert!(p.x.is_zero());
+        assert_eq!(p.compress(), id, "identity round-trips");
+    }
+
+    /// 基点压缩编码往返（decompress 严格化后的规范路径回归）。
+    #[test]
+    fn ed25519_base_point_round_trip() {
+        let g = ed25519::base_point();
+        let enc = g.compress();
+        assert_eq!(enc, ed25519::G_COMPRESSED);
+        let back = ed25519::decompress(&enc).expect("base point decodes");
+        assert_eq!(back.compress(), enc);
     }
 }
