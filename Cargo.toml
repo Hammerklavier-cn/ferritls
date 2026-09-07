@@ -14,6 +14,9 @@ license = "Apache-2.0 OR MIT"
 repository = "https://github.com/Hammerklavier-cn/ferritls"
 keywords = ["tls", "rustls", "cryptography", "crypto", "fips"]
 categories = ["cryptography", "network-programming"]
+authors = [
+    "Yu Xiaosong <hammerklavier@139.com>" # 于小淞
+]
 
 [workspace.dependencies]
 ferritls-core = { version = "0.1.0", path = "crates/ferritls-core" }
