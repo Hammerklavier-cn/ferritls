@@ -3,10 +3,12 @@
 纯 Rust 的 [rustls](https://github.com/rustls/rustls) `CryptoProvider`
 密码后端：无 C、无汇编、无 `unsafe`，按 FIPS 140-3 模块边界组织。
 
-**状态：M0–M6 完成**——`ferritls-core` 全部密码原语落地（RFC/NIST/CAVP
-官方向量测试绿），rustls `CryptoProvider` 适配层接线完成，端到端 TLS 1.3
-握手（内存内矩阵）通过。发布 0.1 前的收尾项（RFC 8448 轨迹、Wycheproof
-全量、webpki 链校验测试）见 [路线图](docs/ROADMAP.md) M7。
+**状态：M0–M7 完成，0.1 就绪**——`ferritls-core` 全部密码原语落地，
+外部真值锚定：RFC/NIST/CAVP 官方向量、RFC 8448 §3 密钥调度全链、
+Wycheproof 对抗性向量 2349 用例；rustls 适配层与 rustls-ring 交叉
+互操作（3 套件 × 双方向）通过，webpki 真实证书链校验通过，
+cargo-fuzz 目标进 CI。crates.io 发布与 tag 见
+[路线图](docs/ROADMAP.md) M7（待维护者执行）。
 
 ## 为什么
 
@@ -23,6 +25,9 @@
 - **签名/验证**：ECDSA P-256/384、RSA-PSS/PKCS#1（SHA-256/384/512）、Ed25519
 - **批准模式**（`fips` feature）：仅 NIST 批准算法 + SP 800-90A
   CTR-DRBG（每次生成混入 OS 熵）+ 上电自检 KAT
+- **测试面**：RFC/NIST/CAVP 官方向量、RFC 8448 密钥调度、Wycheproof
+  2349 用例、rustls-ring 交叉互操作、webpki 证书链、cargo-fuzz 六目标
+  （[向量溯源](docs/VECTOR-PROVENANCE.md)）
 
 ```rust
 let provider = ferritls_rustls::default_provider();

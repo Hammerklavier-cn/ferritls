@@ -10,8 +10,9 @@ rustls 对接细节与测试约定。修改设计先改这里和相关 `docs/`�
 |---|---|
 | 本文件 | 规则、速查、注意事项 |
 | `docs/ARCHITECTURE.md` | 模块分层、数据流、Ops 后端模式、rustls 接口映射 |
-| `docs/FIPS.md` | FIPS 边界定义、依赖白名单、认证三阶段路线 |
+| `docs/FIPS.md` | FIPS 边界定义、依赖白名单、认证三阶段路线、安全策略底稿 |
 | `docs/ROADMAP.md` | 里程碑 M0–M8 的范围/出口条件/当前状态 |
+| `docs/VECTOR-PROVENANCE.md` | 全部测试向量的官方来源与核对记录 |
 
 ---
 
@@ -232,14 +233,16 @@ targets 在 M6 建立，语料进 `fuzz/`），零 panic。
 
 - `crates/ferritls-core/tests/common/mod.rs`：hex 工具（唯一允许的
   测试基础设施代码）。
-- `crates/ferritls-core/tests/<算法>.rs`：向量测试。当前全部
-  `#[ignore = "Mx"]`，测试名/断言已按最终 API 写好。
-- `crates/ferritls-core/tests/vectors/`（M1 起逐步引入）：CAVP /
-  Wycheproof / RFC 原始向量文件。大文件（Wycheproof JSON 数 MB）：
-  引入时裁剪或用 git-lfs，避免仓库膨胀。
-- `crates/ferritls-rustls/tests/api.rs`：清单断言（现已可运行）+ M6
-  冒烟。
-- `crates/ferritls-interop/tests/`：互操作矩阵（M6）。
+- `crates/ferritls-core/tests/<算法>.rs`：向量测试（M1 起逐步 unignore，
+  当前全部启用；来源与核对方式见 `docs/VECTOR-PROVENANCE.md`）。
+- `crates/ferritls-core/tests/schedule_rfc8448.rs`：TLS 1.3 密钥调度
+  全链外部真值（**由 tools/extract_rfc8448.py 生成，勿手改**）。
+- `crates/ferritls-core/tests/wycheproof.rs` + `tests/vectors/`：
+  Wycheproof 对抗性向量（裁剪入库，策略见 vectors/README.md）。
+- `crates/ferritls-rustls/tests/api.rs`：清单断言 + provider 冒烟。
+- `crates/ferritls-interop/tests/`：互操作矩阵（M6）、ring 交叉互操作
+  与 webpki 真实证书链校验（M7）；`tests/certs/` 为 openssl 生成的
+  测试专用链（root→intermediate→leaf + 无关根）。
 
 ### 6.2 里程碑的“测试完成”定义
 
@@ -296,7 +299,7 @@ cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored
 
 ---
 
-## 9. 当前状态（2026-09，M0–M6 完成）
+## 9. 当前状态（2026-09，M0–M7 完成）
 
 - [x] 双许可（Apache-2.0 OR MIT）、workspace、CI、cargo-deny
 - [x] ferritls-core 全模块实现（无 `todo!()` 残留）
@@ -312,8 +315,12 @@ cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored
       上电自检 KAT 全集 + 失败注入测试
 - [x] M6：rustls 适配层全量实装（4 套件 × 3 KX 组 × 全验证算法），
       interop 内存握手矩阵（含 fips_mode_provider 矩阵）绿
-- [ ] M7：RFC 8448 轨迹重放、webpki 全链校验 dev-dep 测试、
-      Wycheproof 全量、crates.io 发布 0.1
+- [x] M7：RFC 8448 §3 密钥调度向量（程序化提取 + Python 复算双核对）、
+      Wycheproof 2349 用例（暴露并修复 DER 宽容解析/Ed25519 符号位
+      缺陷）、rustls-ring 交叉互操作矩阵、webpki 真实证书链校验
+      （修正 verify.rs 算法 ID 编码）、cargo-fuzz 六目标 + CI 冒烟、
+      FIPS.md 升级 SP 800-140Br1 底稿、发布元数据 + dry-run 通过；
+      crates.io 实际发布与 tag 待维护者执行（发布顺序 core → rustls）
 - [ ] M8：TLS 1.2 / QUIC / ML-KEM 混合 / intrinsics 后端
 
 **已知的实现级注记**（修订实现前必读）：

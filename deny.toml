@@ -25,7 +25,7 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-highlight = "simplest"
+highlight = "simplest-path"
 
 [sources]
 unknown-registry = "deny"

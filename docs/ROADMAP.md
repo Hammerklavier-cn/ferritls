@@ -12,8 +12,8 @@
 | M3 | X25519 + P-256/384 ECDH | 3–4 周 | **完成（2026-09）** |
 | M4 | ECDSA + RSA + Ed25519 + DER 解析 | 3–4 周 | **完成（2026-09，M4a+M4b）** |
 | M5 | CTR-DRBG + 上电自检 + 零化审计 | 1–2 周 | **完成（2026-09）** |
-| M6 | rustls 集成 + 互操作矩阵 | 2 周 | **完成（2026-09，RFC 8448 留待 M7）** |
-| M7 | 发布 0.1 + 批准模式打磨 + ACVP 预演 | 持续 | 进行中（批准模式 provider 已落地） |
+| M6 | rustls 集成 + 互操作矩阵 | 2 周 | **完成（2026-09）** |
+| M7 | 发布 0.1 + 批准模式打磨 + ACVP 预演 | 持续 | **完成（2026-09，发布动作待定）** |
 | M8 | TLS 1.2 / QUIC / ML-KEM 混合 / intrinsics 后端 | 发布后 | 规划中 |
 
 ## M0 — 脚手架（已完成）
@@ -67,11 +67,30 @@ Wycheproof ECDSA/RSA/EdDSA 全量。密钥生成在 M5 前临时用 `getrandom`
 `ferritls-interop` 矩阵（ferritls↔ferritls/ring/aws-lc-rs/openssl）、
 RFC 8448 轨迹重放、cargo-fuzz 目标建立（DER/签名验证/AEAD）。
 
-## M7 — 发布 0.1 与 FIPS 就绪
+## M7 — 发布 0.1 与 FIPS 就绪（已完成 2026-09）
 
-范围：`fips_mode_provider()` 矩阵、ACVP demo/静态向量 CI runner、
-crates.io 发布（core 与 adapter 同版）、README 状态更新、
-docs/FIPS.md 升级为 SP 800-140Br1 底稿。
+- [x] RFC 8448 §3 密钥调度全链向量（X25519 + HKDF 栈外部真值锚定；
+      记录级字节重放不可行的原因见 tests/schedule_rfc8448.rs 文档）
+- [x] Wycheproof 对抗性向量 2349 用例入库（invalid/acceptable 全保留），
+      并暴露修复 der.rs 两处 DER 宽容解析、Ed25519 x=0 符号位缺陷
+- [x] rustls-ring 交叉互操作矩阵（3 套件 × 双方向）——打破自握手盲区
+- [x] webpki 真实证书链校验（含不可信根/篡改负例）；修正 verify.rs
+      AlgorithmIdentifier 编码语义（SEQUENCE 内容，非完整 DER）
+- [x] cargo-fuzz 六目标 + 语料 + CI 冒烟（AGENTS §5.4 欠账清偿）
+- [x] docs/FIPS.md 升级为 SP 800-140Br1 安全策略底稿（§6）
+- [x] crates.io 0.1.0 元数据齐备，`cargo publish --dry-run` 通过
+      （rustls crate 的 dry-run 需 core 实际发布后才能通过——发布顺序
+      core → rustls）
+- [ ] **crates.io 实际发布 + tag v0.1.0**（外向动作，待维护者执行）
+
+## 已知问题 / 待开 issue
+
+- **TODO(M4c) RSA-CRT 私钥盲化**（AGENTS §5.2 允许后补）：本仓库无
+  gh CLI 会话，issue 待维护者在 GitHub 上创建（标题建议：
+  "RSA private-key blinding (M4c)"，正文引用 AGENTS.md §5.2 与
+  docs/FIPS.md §6.11）；在 issue 开立前此条目即为跟踪载体。
+- windows-gnu 工具链构建 ring 需要 ucrt64 工具链在 PATH 前列
+  （mingw64 DLL 与 ucrt64 编译器混载会静默崩溃；CI 不受影响）。
 
 ## M8 — 发布后方向（按需排期）
 
