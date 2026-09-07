@@ -112,13 +112,17 @@ pub fn integer(input: &[u8]) -> Result<(&[u8], &[u8]), Error> {
 /// 解析后的私钥内容（按算法分派给 [`crate::sign`] 各类型）。
 #[derive(Debug)]
 pub enum ParsedPrivateKey {
-    /// P-256：SEC1 OCTET STRING 内的 32 字节标量。
+    /// P-256：32 字节标量与（可选携带的）未压缩 SEC1 公钥点。
     P256 {
+        /// SEC1 privateKey OCTET STRING 内的标量。
+        scalar: [u8; 32],
         /// 未压缩 SEC1 公钥点（0x04||X||Y），SEC1 结构中可选携带。
         public_sec1: Option<Vec<u8>>,
     },
-    /// P-384：SEC1 内的 48 字节标量。
+    /// P-384：48 字节标量与（可选携带的）未压缩 SEC1 公钥点。
     P384 {
+        /// SEC1 privateKey OCTET STRING 内的标量。
+        scalar: [u8; 48],
         /// 未压缩 SEC1 公钥点。
         public_sec1: Option<Vec<u8>>,
     },
@@ -172,12 +176,12 @@ pub fn parse_pkcs8_private_key(der: &[u8]) -> Result<ParsedPrivateKey, Error> {
         return Ok(ParsedPrivateKey::RsaPkcs1(key_bytes.to_vec()));
     }
     if oid == oid::EC_PUBLIC_KEY {
-        // parameters = namedCurve OID
-        let (_ptag, params, _alg_rest_rest) = read_tlv(alg_rest)?;
-        if params[0] != 0x06 {
+        // parameters = namedCurve OID（TLV：tag 0x06 + 长度 + OID 内容）
+        let (ptag, params, _alg_rest_rest) = read_tlv(alg_rest)?;
+        if ptag != 0x06 {
             return Err(Error::InvalidInput);
         }
-        let curve_oid = &params[2..];
+        let curve_oid = params;
         let curve = if curve_oid == oid::PRIME256V1 {
             32usize
         } else if curve_oid == oid::SECP384R1 {
@@ -199,22 +203,45 @@ pub fn parse_pkcs8_private_key(der: &[u8]) -> Result<ParsedPrivateKey, Error> {
         if priv_key.len() != curve || !sec1_rest.is_empty() && sec1_rest[0] != 0xa1 {
             return Err(Error::InvalidInput);
         }
-        // 可选公钥 [1] BIT STRING
+        // 可选公钥 [1]：两种现实编码都要接受——
+        //  - [1] EXPLICIT：内容 = 内层 BIT STRING TLV（openssl 产物）；
+        //  - [1] IMPLICIT：内容 = 未使用位数（0x00）+ 未压缩 SEC1 点。
         let mut public_sec1 = None;
         if !sec1_rest.is_empty() {
-            let (pub_bits, pub_rest) = bit_string(sec1_rest)?;
-            if !pub_rest.is_empty() {
+            let (ptag, content, pub_rest) = read_tlv(sec1_rest)?;
+            if ptag != 0xa1 || !pub_rest.is_empty() || content.is_empty() {
                 return Err(Error::InvalidInput);
             }
-            if pub_bits.len() != 1 + 2 * curve || pub_bits[0] != 0x04 {
+            let point: &[u8] = if content[0] == 0x03 {
+                let (itag, bits, rest2) = read_tlv(content)?;
+                if itag != 0x03 || !rest2.is_empty() || bits.is_empty() || bits[0] != 0 {
+                    return Err(Error::InvalidInput);
+                }
+                &bits[1..]
+            } else if content[0] == 0x00 {
+                &content[1..]
+            } else {
+                return Err(Error::InvalidInput);
+            };
+            if point.len() != 1 + 2 * curve || point[0] != 0x04 {
                 return Err(Error::InvalidInput);
             }
-            public_sec1 = Some(pub_bits.to_vec());
+            public_sec1 = Some(point.to_vec());
         }
+        let mut scalar = [0u8; 48];
+        scalar[..curve].copy_from_slice(priv_key);
         return if curve == 32 {
-            Ok(ParsedPrivateKey::P256 { public_sec1 })
+            let mut s256 = [0u8; 32];
+            s256.copy_from_slice(&scalar[..32]);
+            Ok(ParsedPrivateKey::P256 {
+                scalar: s256,
+                public_sec1,
+            })
         } else {
-            Ok(ParsedPrivateKey::P384 { public_sec1 })
+            Ok(ParsedPrivateKey::P384 {
+                scalar,
+                public_sec1,
+            })
         };
     }
     Err(Error::InvalidInput)

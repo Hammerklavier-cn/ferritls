@@ -29,7 +29,6 @@ fn kx_group_names_are_stable() {
 }
 
 #[test]
-#[ignore = "M6: default_provider 接线后启用"]
 fn default_provider_smoke() {
     let p = ferritls_rustls::default_provider();
     assert!(!p.fips(), "认证前 fips() 必须为 false");

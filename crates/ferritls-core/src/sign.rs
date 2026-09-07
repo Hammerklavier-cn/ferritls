@@ -639,8 +639,9 @@ pub mod rsa {
             }
         }
 
-        /// 解析 PKCS#1 RSAPrivateKey 并做结构一致性校验。
-        fn from_pkcs1_der(der: &[u8]) -> Result<Self, crate::Error> {
+        /// 解析 PKCS#1 RSAPrivateKey DER 并做结构一致性校验
+        ///（rustls KeyProvider 的 PKCS#1 入口）。
+        pub fn from_pkcs1_der(der: &[u8]) -> Result<Self, crate::Error> {
             let (seq, rest) = crate::der::sequence(der)?;
             if !rest.is_empty() {
                 return Err(crate::Error::InvalidInput);
