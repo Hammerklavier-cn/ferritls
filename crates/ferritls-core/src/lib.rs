@@ -46,6 +46,7 @@ pub mod der;
 pub mod drbg;
 pub mod ecdh;
 pub mod entropy;
+mod fields;
 pub mod gcm;
 pub mod hkdf;
 pub mod hmac;

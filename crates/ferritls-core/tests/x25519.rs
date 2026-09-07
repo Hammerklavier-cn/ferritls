@@ -8,7 +8,6 @@ use common::{assert_hex, hex};
 use ferritls_core::ecdh::x25519;
 
 #[test]
-#[ignore = "M3: 待实现后启用（对照 RFC 7748 原文核对）"]
 fn x25519_rfc7748_diffie_hellman() {
     let alice_seed = hex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a");
     let bob_seed = hex("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb");

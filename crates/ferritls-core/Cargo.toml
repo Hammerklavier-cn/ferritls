@@ -14,6 +14,7 @@ repository.workspace = true
 [dependencies]
 subtle.workspace = true
 zeroize.workspace = true
+getrandom.workspace = true
 
 [features]
 default = []

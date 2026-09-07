@@ -10,7 +10,6 @@ use common::hex;
 use ferritls_core::ecdh::p256;
 
 #[test]
-#[ignore = "M3: 待实现后启用（Wycheproof JSON 向量一并引入）"]
 fn p256_ecdh_round_trip() {
     let a = p256::SecretKey::generate().expect("generate A");
     let b = p256::SecretKey::generate().expect("generate B");
