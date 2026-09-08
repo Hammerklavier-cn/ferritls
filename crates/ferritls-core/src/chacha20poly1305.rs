@@ -246,10 +246,95 @@ fn poly1305_tag(poly_key: &[u8; 64], aad: &[u8], ct: &[u8]) -> [u8; 16] {
 }
 
 /// Poly1305（26 位字组形态，branch-free）。
+///
+/// P1 余留优化：4 块分组吸收（[`Poly1305::absorb_zeropadded`]）。
+/// 串行 Horner（每块 h←(h+m)·r）的乘法依赖链是吞吐瓶颈；按 4 块
+/// 展开为 h←(h+m₁)·r⁴ + m₂·r³ + m₃·r² + m₄·r 后四个卷积乘法相互
+/// 独立，指令级并行 4 路。r 的幂字组（r²/r³/r⁴，模 2^130−5 规整）
+/// 在 [`Poly1305::new`] 预计算一次。字组界：h 输入每字 ≤ 2^26−1
+/// （+最高字 ≤ 26 的进位 slack），卷积乘积 ≤ 5·2^54 << 2^64；组内
+/// 四个乘积经"进位链 + c·5 回卷"松弛规整（每字 ≤ 2^26 + slack）
+/// 后求和、再一次完整条件减 p，slack 不跨组累积。
 struct Poly1305 {
     r: [u64; 5],
+    r2: [u64; 5],
+    r3: [u64; 5],
+    r4: [u64; 5],
     h: [u64; 5],
     pad: [u64; 2],
+}
+
+/// 完整 16 字节块 → 26 位字组（最高字含 hibit 2^128）。
+fn block_words(block: &[u8; 16]) -> [u64; 5] {
+    let le32 = |b: &[u8]| u32::from_le_bytes(b.try_into().unwrap());
+    [
+        u64::from(le32(&block[0..4])) & 0x3ffffff,
+        u64::from(le32(&block[3..7]) >> 2) & 0x3ffffff,
+        u64::from(le32(&block[6..10]) >> 4) & 0x3ffffff,
+        u64::from(le32(&block[9..13]) >> 6) & 0x3ffffff,
+        (u64::from(le32(&block[12..16]) >> 8) | (1 << 24)) & 0x3ffffff,
+    ]
+}
+
+/// 26 位字组卷积乘积（未规整）：d_i = Σ_{j+k=i} a_j·b_k，b 的高次
+/// 字以 ×5（2^130 ≡ 5）折叠进低次项。输入每字 ≤ 2^27 量级时
+/// d_i ≤ 5·2^54，u64 内无溢出。
+fn mul_conv(a: &[u64; 5], b: &[u64; 5]) -> [u64; 5] {
+    let s = [b[1] * 5, b[2] * 5, b[3] * 5, b[4] * 5];
+    [
+        a[0] * b[0] + a[1] * s[3] + a[2] * s[2] + a[3] * s[1] + a[4] * s[0],
+        a[0] * b[1] + a[1] * b[0] + a[2] * s[3] + a[3] * s[2] + a[4] * s[1],
+        a[0] * b[2] + a[1] * b[1] + a[2] * b[0] + a[3] * s[3] + a[4] * s[2],
+        a[0] * b[3] + a[1] * b[2] + a[2] * b[1] + a[3] * b[0] + a[4] * s[3],
+        a[0] * b[4] + a[1] * b[3] + a[2] * b[2] + a[3] * b[1] + a[4] * b[0],
+    ]
+}
+
+/// 进位链 + c·5 回卷：值模 2^130−5 缩小到 < 2^130，每字收紧到
+/// ≤ 2^26−1（仅 h1 可带 ≤ ~26 的进位 slack）。
+fn carry_fold(d: [u64; 5]) -> [u64; 5] {
+    let mut c;
+    let mut h0 = d[0] & 0x3ffffff;
+    c = d[0] >> 26;
+    let mut h1 = (d[1] + c) & 0x3ffffff;
+    c = (d[1] + c) >> 26;
+    let h2 = (d[2] + c) & 0x3ffffff;
+    c = (d[2] + c) >> 26;
+    let h3 = (d[3] + c) & 0x3ffffff;
+    c = (d[3] + c) >> 26;
+    let h4 = (d[4] + c) & 0x3ffffff;
+    c = (d[4] + c) >> 26;
+    h0 += c * 5;
+    c = h0 >> 26;
+    h0 &= 0x3ffffff;
+    h1 += c;
+    [h0, h1, h2, h3, h4]
+}
+
+/// 常数时间条件减 p（h ≥ p 时取 h−p+5 折叠表示）：g 链逐字进位，
+/// 掩码选择时被丢弃的高位均已传播到下一字，字组值精确保持；
+/// g4 的 bit63 为 1 ⇔ 借位（h < p，保留 h）。
+fn fold_mod_p(h: [u64; 5]) -> [u64; 5] {
+    let g0 = h[0].wrapping_add(5);
+    let g1 = h[1].wrapping_add(g0 >> 26);
+    let g2 = h[2].wrapping_add(g1 >> 26);
+    let g3 = h[3].wrapping_add(g2 >> 26);
+    let g4 = h[4].wrapping_add(g3 >> 26).wrapping_sub(1 << 26);
+    let keep_h = ((g4 >> 63) & 1).wrapping_neg();
+    let take_g = !keep_h;
+    let m26 = 0x3ffffffu64;
+    [
+        (h[0] & keep_h) | (g0 & m26 & take_g),
+        (h[1] & keep_h) | (g1 & m26 & take_g),
+        (h[2] & keep_h) | (g2 & m26 & take_g),
+        (h[3] & keep_h) | (g3 & m26 & take_g),
+        (h[4] & keep_h) | (g4 & m26 & take_g),
+    ]
+}
+
+/// 完整规整乘法：卷积 + 进位回卷 + 条件减 p（输出 < p）。
+fn mul_words(a: &[u64; 5], b: &[u64; 5]) -> [u64; 5] {
+    fold_mod_p(carry_fold(mul_conv(a, b)))
 }
 
 impl Poly1305 {
@@ -266,7 +351,17 @@ impl Poly1305 {
             u64::from(le32(&key[16..20])) | (u64::from(le32(&key[20..24])) << 32),
             u64::from(le32(&key[24..28])) | (u64::from(le32(&key[28..32])) << 32),
         ];
-        Self { r, h: [0; 5], pad }
+        let r2 = mul_words(&r, &r);
+        let r3 = mul_words(&r2, &r);
+        let r4 = mul_words(&r2, &r2);
+        Self {
+            r,
+            r2,
+            r3,
+            r4,
+            h: [0; 5],
+            pad,
+        }
     }
 
     /// 吸收一段数据：完整块带 hibit，末尾不足 16 字节的块在数据后
@@ -291,14 +386,24 @@ impl Poly1305 {
 
     /// 吸收一段零填充到 16 字节边界的数据（AEAD MAC 输入的 AAD/CT 段
     /// 语义：末块补零、hibit 置位；空段不贡献任何块）。
+    /// ≥64 字节走 4 块分组并行路径，尾段（<64 字节）逐块。
     fn absorb_zeropadded(&mut self, mut data: &[u8]) {
         if data.is_empty() {
             return;
         }
+        while data.len() >= 64 {
+            let mut blocks = [[0u64; 5]; 4];
+            for (i, blk) in blocks.iter_mut().enumerate() {
+                *blk = block_words(data[i * 16..i * 16 + 16].try_into().unwrap());
+            }
+            self.absorb_blocks4(&blocks);
+            data = &data[64..];
+        }
+        if data.is_empty() {
+            return;
+        }
         while data.len() > 16 {
-            let mut block = [0u8; 16];
-            block.copy_from_slice(&data[..16]);
-            self.absorb_full(&block);
+            self.absorb_full(data[..16].try_into().unwrap());
             data = &data[16..];
         }
         let mut block = [0u8; 16];
@@ -306,70 +411,49 @@ impl Poly1305 {
         self.absorb_full(&block);
     }
 
+    /// 4 块分组吸收：h ← (h+m₁)·r⁴ + m₂·r³ + m₃·r² + m₄·r，四个
+    /// 卷积乘法独立（无依赖链）。乘积各自松弛规整后求和，一次完整
+    /// 进位 + 条件减 p 收紧。
+    fn absorb_blocks4(&mut self, blocks: &[[u64; 5]; 4]) {
+        let mut t1 = self.h;
+        for (t, &m) in t1.iter_mut().zip(blocks[0].iter()) {
+            *t += m;
+        }
+        let t1 = carry_fold(mul_conv(&t1, &self.r4));
+        let t2 = carry_fold(mul_conv(&blocks[1], &self.r3));
+        let t3 = carry_fold(mul_conv(&blocks[2], &self.r2));
+        let t4 = carry_fold(mul_conv(&blocks[3], &self.r));
+        let mut d = [0u64; 5];
+        for (((d, &a), &b), (&c, &e)) in d
+            .iter_mut()
+            .zip(t1.iter())
+            .zip(t2.iter())
+            .zip(t3.iter().zip(t4.iter()))
+        {
+            *d = a + b + c + e;
+        }
+        self.h = fold_mod_p(carry_fold(d));
+    }
+
     /// 完整 16 字节块（hibit = 2^128 位）。
     fn absorb_full(&mut self, block: &[u8; 16]) {
-        let le32 = |b: &[u8]| u32::from_le_bytes(b.try_into().unwrap());
-        self.h[0] += u64::from(le32(&block[0..4])) & 0x3ffffff;
-        self.h[1] += (u64::from(le32(&block[3..7])) >> 2) & 0x3ffffff;
-        self.h[2] += (u64::from(le32(&block[6..10])) >> 4) & 0x3ffffff;
-        self.h[3] += (u64::from(le32(&block[9..13])) >> 6) & 0x3ffffff;
-        self.h[4] += ((u64::from(le32(&block[12..16])) >> 8) | (1 << 24)) & 0x3ffffff;
-        self.mul_r();
+        let m = block_words(block);
+        for (h, &m) in self.h.iter_mut().zip(m.iter()) {
+            *h += m;
+        }
+        self.h = mul_words(&self.h, &self.r);
     }
 
     /// 末尾部分块（数据后已有 0x01，无额外 hibit）。
     #[cfg(test)]
     fn absorb_partial(&mut self, block: &[u8; 16]) {
-        let le32 = |b: &[u8]| u32::from_le_bytes(b.try_into().unwrap());
-        self.h[0] += u64::from(le32(&block[0..4])) & 0x3ffffff;
-        self.h[1] += (u64::from(le32(&block[3..7])) >> 2) & 0x3ffffff;
-        self.h[2] += (u64::from(le32(&block[6..10])) >> 4) & 0x3ffffff;
-        self.h[3] += (u64::from(le32(&block[9..13])) >> 6) & 0x3ffffff;
-        // (le32 >> 8) 天然 ≤ 2^24 < 2^26，无需掩码。
-        self.h[4] += u64::from(le32(&block[12..16])) >> 8;
-        self.mul_r();
-    }
-
-    fn mul_r(&mut self) {
-        let s = [self.r[1] * 5, self.r[2] * 5, self.r[3] * 5, self.r[4] * 5];
-        let (r, h) = (&self.r, &self.h);
-        let d0 = h[0] * r[0] + h[1] * s[3] + h[2] * s[2] + h[3] * s[1] + h[4] * s[0];
-        let d1 = h[0] * r[1] + h[1] * r[0] + h[2] * s[3] + h[3] * s[2] + h[4] * s[1];
-        let d2 = h[0] * r[2] + h[1] * r[1] + h[2] * r[0] + h[3] * s[3] + h[4] * s[2];
-        let d3 = h[0] * r[3] + h[1] * r[2] + h[2] * r[1] + h[3] * r[0] + h[4] * s[3];
-        let d4 = h[0] * r[4] + h[1] * r[3] + h[2] * r[2] + h[3] * r[1] + h[4] * r[0];
-
-        let mut c: u64;
-        let mut h0 = d0 & 0x3ffffff;
-        c = d0 >> 26;
-        let mut h1 = (d1 + c) & 0x3ffffff;
-        c = (d1 + c) >> 26;
-        let h2 = (d2 + c) & 0x3ffffff;
-        c = (d2 + c) >> 26;
-        let h3 = (d3 + c) & 0x3ffffff;
-        c = (d3 + c) >> 26;
-        let h4 = (d4 + c) & 0x3ffffff;
-        c = (d4 + c) >> 26;
-        h0 += c * 5;
-        c = h0 >> 26;
-        h0 &= 0x3ffffff;
-        h1 += c;
-
-        // h 与 h - p 的常数时间选择。
-        let g0 = h0.wrapping_add(5);
-        let g1 = h1.wrapping_add(g0 >> 26);
-        let g2 = h2.wrapping_add(g1 >> 26);
-        let g3 = h3.wrapping_add(g2 >> 26);
-        let g4 = h4.wrapping_add(g3 >> 26).wrapping_sub(1 << 26);
-        // g4 的 bit63 为 1 ⇔ 发生借位（h < p，保留 h）。
-        let keep_h = ((g4 >> 63) & 1).wrapping_neg();
-        let take_g = !keep_h;
-        let m26 = 0x3ffffffu64;
-        self.h[0] = (h0 & keep_h) | (g0 & m26 & take_g);
-        self.h[1] = (h1 & keep_h) | (g1 & m26 & take_g);
-        self.h[2] = (h2 & keep_h) | (g2 & m26 & take_g);
-        self.h[3] = (h3 & keep_h) | (g3 & m26 & take_g);
-        self.h[4] = (h4 & keep_h) | (g4 & m26 & take_g);
+        let mut m = block_words(block);
+        // block_words 置了 hibit，0x01 部分块语义要求清除。
+        m[4] &= !(1u64 << 24);
+        for (h, &m) in self.h.iter_mut().zip(m.iter()) {
+            *h += m;
+        }
+        self.h = mul_words(&self.h, &self.r);
     }
 
     /// 结束：t = (h + pad) mod 2^128。u128 加法合成，天然处理字组间进位
@@ -394,6 +478,9 @@ impl Drop for Poly1305 {
     fn drop(&mut self) {
         self.h.fill(0);
         self.r.fill(0);
+        self.r2.fill(0);
+        self.r3.fill(0);
+        self.r4.fill(0);
         self.pad.fill(0);
     }
 }
@@ -421,6 +508,43 @@ mod tests {
                 0x27, 0xa9
             ]
         );
+    }
+
+    #[test]
+    fn poly1305_batched_matches_per_block() {
+        // 4 块分组路径 vs 逐块 Horner 参考（同一实现的独立入口，
+        // absorb_full 由 RFC 8439 §2.5.2/§2.8.2 向量锚定）。
+        // 长度覆盖分组/尾段边界：63/64/65、127/128/129、255/256/257。
+        let mut seed = 0x85E3_1A4Fu32;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        let key: [u8; 32] = core::array::from_fn(|_| next() as u8);
+        let mut data = vec![0u8; 300];
+        for b in data.iter_mut() {
+            *b = next() as u8;
+        }
+        for len in [
+            1usize, 15, 16, 17, 48, 63, 64, 65, 80, 127, 128, 129, 192, 255, 256, 257, 299, 300,
+        ] {
+            let msg = &data[..len];
+            let mut fast = Poly1305::new(&key);
+            fast.absorb_zeropadded(msg);
+            let mut reference = Poly1305::new(&key);
+            // 逐块参考：完整块 + 末块零填充（与批量路径的段语义一致）。
+            let mut rest = msg;
+            while rest.len() > 16 {
+                reference.absorb_full(rest[..16].try_into().unwrap());
+                rest = &rest[16..];
+            }
+            let mut block = [0u8; 16];
+            block[..rest.len()].copy_from_slice(rest);
+            reference.absorb_full(&block);
+            assert_eq!(fast.finish(), reference.finish(), "len={len}");
+        }
     }
 
     #[test]
