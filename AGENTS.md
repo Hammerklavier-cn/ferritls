@@ -340,13 +340,16 @@ cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored
       触发全量门禁后单次 `cargo publish`（cargo 1.90 起 workspace
       一次发布 core → rustls；需仓库 secrets 配置
       CARGO_REGISTRY_TOKEN）
-- [x] P1 性能轮（完成 2026-09）：稳定版自动向量化重构——AEAD 输出
-      路径 bulk-XOR 化、GHASH 瞬态 H 倍数表（公开索引）、ChaCha20
-      四块批处理 + 流式 Poly1305、64-lane 位切片 AES 加密方向、GCM
-      标签比较常数时间化；零 unsafe / 零新依赖 / 零 feature 开关。
-      AES-128-GCM 2.7 → 52 MB/s（19×）、AES-256-GCM 2.0 → 41 MB/s
-      （21×）、ChaCha20-Poly1305 451 → 573 MB/s；数字与余留慢点见
-      `docs/ROADMAP.md` P1 节
+- [x] P1 性能轮 + P1.5 余留慢点轮（完成 2026-09）：稳定版自动向量化
+      重构——AEAD 输出路径 bulk-XOR 化、GHASH 瞬态 H 倍数表（公开
+      索引）、ChaCha20 四块批处理、64-lane 位切片 AES 批量加密、
+      16 宽单次扫描 SubBytes（单块路径）、DRBG 批量 CTR、Poly1305
+      4 块分组吸收、GCM 标签比较常数时间化；零 unsafe / 零新依赖 /
+      零 feature 开关。AES-128-GCM 2.7 → 56 MB/s（20×）、
+      AES-256-GCM 2.0 → 44 MB/s（23×）、AES-128-CCM 1.4 → 14 MB/s
+      （10×）、单块 AES 2.9 → 18 MB/s（6×）、ChaCha20-Poly1305
+      451 → 620 MB/s；数字、两次实测回退记录与余留慢点见
+      `docs/ROADMAP.md` P1/P1.5 节
 - [ ] M8：TLS 1.2 / QUIC / ML-KEM 混合 / intrinsics 后端
 
 **已知的实现级注记**（修订实现前必读）：
@@ -355,6 +358,17 @@ cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored
   （x⁴=x+1 属 GF(16)，在 AES 的 f 下 x⁴ 是规范表示）；乘法折叠必须
   覆盖 x^9/x^11/x^13 全部奇次项——两类错误都实际踩过、由穷举测试
   （65536 对 + 256 S-box 值）拦截；
+- `aes.rs`（性能路径选择，P1.5）：位切片电路的平面操作数按"批"
+  固定（64 lane 共享），收益来自 lane 填充率——单块走该电路实测
+  慢 2×，已回退；单块热点（CCM CBC-MAC、GCM J0/tag_base）用
+  `sub_bytes` 16 宽单次掩码扫描（LLVM 向量化内层 16 字节选择）。
+  改动任一路径后必须跑 `encrypt_ctr_batch_matches_scalar` /
+  `sub_bytes_matches_scalar` 双 oracle；
+- `chacha20poly1305.rs`（Poly1305 分组吸收，P1.5）：
+  `absorb_zeropadded` 的 4 块分组循环余 0 时不得再补零填充块
+  （曾实际产出多余块、由边界长度等价测试拦截）；`fold_mod_p` 的
+  掩码选择要求被丢弃的高位均已进位传播到下一字（donna 不变式），
+  改动字组顺序前先重推值保持论证；
 - `fields.rs::from_bytes_be_mod`：条件减 p 的"还原"分支是空操作
   （acc 从未被替换），曾被误写为 acc += p 造成全量污染；
 - `ecdh.rs::x25519_ladder`：u 坐标导入后必须 `from_raw` 进
