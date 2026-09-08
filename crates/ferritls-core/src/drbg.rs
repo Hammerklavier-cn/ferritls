@@ -20,7 +20,7 @@
 //! （getrandom）的连续健康监测属边界外熵源的责任，此处为纵深防御。
 
 use crate::Error;
-use crate::aes::Aes256;
+use crate::aes::{Aes256, CTR_BATCH_BLOCKS};
 
 /// seedlen：Key（32 字节）+ V（16 字节）。
 const SEEDLEN: usize = 48;
@@ -116,13 +116,27 @@ impl CtrDrbg {
             let seed = xor_fold(ai);
             self.update(&seed);
         }
-        let mut temp = Vec::with_capacity(out.len() + 15);
+        // CTR 加密（P1 余留优化）：按 64 块批量走位切片路径。DRBG 的
+        // V 是 128 位计数器，而批量入口的计数器递增只作用于低 32 位
+        //（GCM 语义）——批大小按"低 32 位回绕前"截断即可保持两种
+        // 语义一致；块数与计数器值均为公开量，分支无关 ct 纪律。
+        let mut temp = Vec::with_capacity(out.len().div_ceil(16) * 16);
+        let mut ks = [0u8; CTR_BATCH_BLOCKS * 16];
+        let mut v = u128::from_be_bytes(self.v);
         while temp.len() < out.len() {
-            increment_v(&mut self.v);
-            let mut block = self.v;
-            self.aes.encrypt_block(&mut block);
-            temp.extend_from_slice(&block);
+            v = v.wrapping_add(1);
+            let base = v.to_be_bytes();
+            let lo = u32::from_be_bytes(base[12..16].try_into().unwrap()) as u64;
+            let want = out.len() - temp.len();
+            let n = want
+                .div_ceil(16)
+                .min(CTR_BATCH_BLOCKS)
+                .min((0x1_0000_0000 - lo) as usize);
+            self.aes.encrypt_ctr_batch(base, n, &mut ks);
+            temp.extend_from_slice(&ks[..n * 16]);
+            v = v.wrapping_add(n as u128 - 1);
         }
+        self.v = v.to_be_bytes();
         out.copy_from_slice(&temp[..out.len()]);
         zeroize_vec(&mut temp);
         // §10.2.1.2 末次 Update 无条件执行：provided_data = additional_input
@@ -146,15 +160,23 @@ impl CtrDrbg {
     }
 
     /// CTR_DRBG_Update（无 DF，§10.2.1.1）：temp = AES-256-CTR(Key, V++)，
-    /// Key/V ← temp ⊕ provided_data。
+    /// Key/V ← temp ⊕ provided_data。temp 恰 3 块，整批走位切片路径
+    ///（低 32 位回绕保护同 [`Self::generate_with_ai`]）。
     fn update(&mut self, provided_data: &[u8]) {
         let mut temp = [0u8; SEEDLEN];
-        let mut chunk = [0u8; 16];
-        for part in temp.chunks_mut(16) {
-            increment_v(&mut self.v);
-            chunk.copy_from_slice(&self.v);
-            self.aes.encrypt_block(&mut chunk);
-            part.copy_from_slice(&chunk);
+        increment_v(&mut self.v);
+        let lo = u32::from_be_bytes(self.v[12..16].try_into().unwrap());
+        if lo <= u32::MAX - 2 {
+            self.aes.encrypt_ctr_batch(self.v, 3, &mut temp);
+            self.v = u128::from_be_bytes(self.v).wrapping_add(2).to_be_bytes();
+        } else {
+            let mut chunk = [0u8; 16];
+            for part in temp.chunks_mut(16) {
+                chunk.copy_from_slice(&self.v);
+                self.aes.encrypt_block(&mut chunk);
+                part.copy_from_slice(&chunk);
+                increment_v(&mut self.v);
+            }
         }
         for (i, b) in temp.iter_mut().enumerate() {
             *b ^= provided_data[i];
