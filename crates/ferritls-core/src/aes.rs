@@ -3,15 +3,18 @@
 //! FIPS 批准；作为 GCM/CCM 与 CTR-DRBG 的底层部件，上电自检覆盖（M5）。
 //! AES-NI 后端在 M8+ 经 [`crate::ops`] 入口挂接，不影响本模块公开 API。
 //!
-//! 常数时间策略：S-box 不查表——单块路径由 256 项掩码全扫描实现；
-//! **批量路径（P1 性能轮）**为位切片纯布尔电路（逆元 = GF(2^8)
-//! 多项式基下 x^254 加法链 + FIPS-197 仿射变换，平方 = 平面重排 +
-//! 折叠），64 块/批共享同一电路，零查表、零秘密相关分支/访存，
-//! ct 性质强于掩码全扫描。字节移位/列混合全部为算术与掩码操作。
-//! 轮密钥 Drop 时零化。
+//! 常数时间策略：S-box 不查表——**批量路径（P1 性能轮）为位切片
+//! 纯布尔电路**（逆元 = GF(2^8) 多项式基下 x^254 加法链 + FIPS-197
+//! 仿射变换，平方 = 平面重排 + 折叠），64 块/批共享同一电路，零查表、
+//! 零秘密相关分支/访存；**单块路径为 16 宽掩码全扫描**
+//! （[`sub_bytes`]：一次表遍历同时服务全部 16 字节，访问模式与
+//! 输入无关）。实测单块走位切片电路反而慢约 2×（电路平面操作数
+//! 按"批"固定，单块仅占 1/64 lane），故两路径并存。字节移位/列混合
+//! 全部为算术与掩码操作。轮密钥与其位平面 Drop 时零化。
 //!
 //! 向量：FIPS-197 附录 C.1/C.2/C.3 KAT（`tests` 内嵌）+ GCM 集成 KAT；
-//! 位切片电路对照标量实现穷举 256 值（`bitslice_*` 测试）。
+//! 位切片电路与 16 宽扫描分别对照逐字节标量实现（`bitslice_*`、
+//! `sub_bytes_matches_scalar` 测试）。
 
 /// 官方 S-box（FIPS-197 图 7）。
 const SBOX: [u8; 256] = [
@@ -87,8 +90,44 @@ fn sbox(x: u8) -> u8 {
 }
 
 #[inline]
+/// 逐字节逆 S-box（生产路径已改用 [`inv_sub_bytes`]，保留为等价
+/// 测试的独立 oracle）。
+#[cfg(test)]
 fn inv_sbox(x: u8) -> u8 {
     ct_table_lookup(&INV_SBOX, x)
+}
+
+/// SubBytes（P1 余留优化）：一次 256 项扫描同时服务全部 16 字节。
+/// 内层对固定表项的 16 字节"相等→掩码→选择"是连续定长形状，LLVM
+/// 将其向量化为宽 SIMD（每表项约 4-5 条向量指令）；逐字节各跑一遍
+/// [`sbox`] 扫描则无法融合，实测慢约 3 倍。访问模式与输入无关
+///（全表遍历），ct 性质与 [`ct_table_lookup`] 相同。
+#[inline]
+fn sub_bytes(s: &mut [u8; 16]) {
+    let mut acc = [0u8; 16];
+    for (i, &entry) in SBOX.iter().enumerate() {
+        let idx = i as u8;
+        for (a, &x) in acc.iter_mut().zip(s.iter()) {
+            let eq = ((x == idx) as u8).wrapping_neg();
+            *a |= entry & eq;
+        }
+    }
+    *s = acc;
+}
+
+/// InvSubBytes：[`sub_bytes`] 的逆表版本（解密方向，无生产调用方，
+/// 保持与加密方向同构）。
+#[inline]
+fn inv_sub_bytes(s: &mut [u8; 16]) {
+    let mut acc = [0u8; 16];
+    for (i, &entry) in INV_SBOX.iter().enumerate() {
+        let idx = i as u8;
+        for (a, &x) in acc.iter_mut().zip(s.iter()) {
+            let eq = ((x == idx) as u8).wrapping_neg();
+            *a |= entry & eq;
+        }
+    }
+    *s = acc;
 }
 
 fn sub_word(w: [u8; 4]) -> [u8; 4] {
@@ -102,6 +141,11 @@ macro_rules! aes_impl {
         pub struct $name {
             /// 轮密钥（Nr+1 × 16 字节，按 FIPS-197 列序展开）。
             rk: Vec<u8>,
+            /// 轮密钥位平面（broadcast 形态）：`rk_planes[r][g][b]` = 轮 r
+            /// 字节 g 的比特 b 广播到全部 64 lane。位切片路径（单块与
+            /// 批量）直接 XOR，免去每次调用的平面展开。秘密材料，
+            /// Drop 零化。
+            rk_planes: Vec<[[u64; 8]; 16]>,
         }
 
         impl $name {
@@ -132,7 +176,17 @@ macro_rules! aes_impl {
                     }
                     i += 4;
                 }
-                Self { rk }
+                let mut rk_planes = Vec::with_capacity($nr + 1);
+                for round in 0..=$nr {
+                    let mut planes = [[0u64; 8]; 16];
+                    for g in 0..16 {
+                        for (b, plane) in planes[g].iter_mut().enumerate() {
+                            *plane = u64::from((rk[round * 16 + g] >> b) & 1).wrapping_neg();
+                        }
+                    }
+                    rk_planes.push(planes);
+                }
+                Self { rk, rk_planes }
             }
 
             fn add_round_key(&self, state: &mut [u8; 16], round: usize) {
@@ -141,21 +195,21 @@ macro_rules! aes_impl {
                 }
             }
 
-            /// 就地加密一个块。
+            /// 就地加密一个块（掩码全扫描，P1 余留优化：SubBytes 以
+            /// [`sub_bytes`] 单次扫描同时服务全部 16 字节——累加器内层
+            /// 16 字节比较/选择被 LLVM 向量化为宽 SIMD，实测约为逐字节
+            /// 扫描的 3 倍。位切片电路的平面操作数按"批"固定，单块仅
+            /// 占 1/64 lane，实测反而慢 2×，故单块保持掩码路径。
             pub fn encrypt_block(&self, block: &mut [u8; 16]) {
                 let mut s = *block;
                 self.add_round_key(&mut s, 0);
                 for round in 1..Self::NR {
-                    for b in s.iter_mut() {
-                        *b = sbox(*b);
-                    }
+                    sub_bytes(&mut s);
                     shift_rows(&mut s);
                     mix_columns(&mut s);
                     self.add_round_key(&mut s, round);
                 }
-                for b in s.iter_mut() {
-                    *b = sbox(*b);
-                }
+                sub_bytes(&mut s);
                 shift_rows(&mut s);
                 self.add_round_key(&mut s, Self::NR);
                 *block = s;
@@ -167,16 +221,12 @@ macro_rules! aes_impl {
                 self.add_round_key(&mut s, Self::NR);
                 for round in (1..Self::NR).rev() {
                     inv_shift_rows(&mut s);
-                    for b in s.iter_mut() {
-                        *b = inv_sbox(*b);
-                    }
+                    inv_sub_bytes(&mut s);
                     self.add_round_key(&mut s, round);
                     inv_mix_columns(&mut s);
                 }
                 inv_shift_rows(&mut s);
-                for b in s.iter_mut() {
-                    *b = inv_sbox(*b);
-                }
+                inv_sub_bytes(&mut s);
                 self.add_round_key(&mut s, 0);
                 *block = s;
             }
@@ -211,36 +261,13 @@ macro_rules! aes_impl {
                     }
                 }
 
-                // 轮函数（与标量 encrypt_block 同构）。
-                let rk_plane = |round: usize, g: usize, b: usize| -> u64 {
-                    u64::from((self.rk[round * 16 + g] >> b) & 1).wrapping_neg()
-                };
-                for g in 0..16 {
-                    for b in 0..8 {
-                        st[g][b] ^= rk_plane(0, g, b);
+                let rk0 = &self.rk_planes[0];
+                for (sg, rg) in st.iter_mut().zip(rk0.iter()) {
+                    for (s, r) in sg.iter_mut().zip(rg.iter()) {
+                        *s ^= r;
                     }
                 }
-                for round in 1..Self::NR {
-                    for group in st.iter_mut() {
-                        bs_sbox(group);
-                    }
-                    bs_shift_rows(&mut st);
-                    bs_mix_columns(&mut st);
-                    for g in 0..16 {
-                        for b in 0..8 {
-                            st[g][b] ^= rk_plane(round, g, b);
-                        }
-                    }
-                }
-                for group in st.iter_mut() {
-                    bs_sbox(group);
-                }
-                bs_shift_rows(&mut st);
-                for g in 0..16 {
-                    for b in 0..8 {
-                        st[g][b] ^= rk_plane(Self::NR, g, b);
-                    }
-                }
+                bs_rounds(&mut st, &self.rk_planes);
 
                 // 提取前 n 个 lane。
                 for lane in 0..n {
@@ -258,6 +285,7 @@ macro_rules! aes_impl {
         impl Drop for $name {
             fn drop(&mut self) {
                 self.rk.fill(0);
+                self.rk_planes.fill([[0u64; 8]; 16]);
             }
         }
 
@@ -368,6 +396,34 @@ fn bs_sbox(x: &mut Planes) {
             s = !s; // XOR 常数 1 平面 = 取反
         }
         x[i] = s;
+    }
+}
+
+/// 位切片轮函数（批量路径）：`st` 已含 ARK(0)，完成 1..Nr-1
+/// 轮（S-box/Shift/Mix/ARK）与终轮（S-box/Shift/ARK）。
+/// `rk_planes` 长度 = Nr+1。
+fn bs_rounds(st: &mut [[u64; 8]; 16], rk_planes: &[[[u64; 8]; 16]]) {
+    for rk in &rk_planes[1..rk_planes.len() - 1] {
+        for group in st.iter_mut() {
+            bs_sbox(group);
+        }
+        bs_shift_rows(st);
+        bs_mix_columns(st);
+        for (sg, rg) in st.iter_mut().zip(rk.iter()) {
+            for (s, r) in sg.iter_mut().zip(rg.iter()) {
+                *s ^= r;
+            }
+        }
+    }
+    for group in st.iter_mut() {
+        bs_sbox(group);
+    }
+    bs_shift_rows(st);
+    let rk = &rk_planes[rk_planes.len() - 1];
+    for (sg, rg) in st.iter_mut().zip(rk.iter()) {
+        for (s, r) in sg.iter_mut().zip(rg.iter()) {
+            *s ^= r;
+        }
     }
 }
 
@@ -583,6 +639,34 @@ mod tests {
                 got |= (((plane >> lane) & 1) as u8) << b;
             }
             assert_eq!(got, sbox(v), "lane {lane}");
+        }
+    }
+
+    #[test]
+    fn sub_bytes_matches_scalar() {
+        // 16 宽单次扫描 vs 逐字节 ct_table_lookup（独立实现），穷举
+        // 边界 + 随机状态；正/逆表同测（sbox 穷举锚定见
+        // sbox_known_values_and_bijection）。
+        let mut seed = 0x243F_6A88u32;
+        let mut next = || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        let mut states = vec![[0u8; 16], [0xff; 16], [0x53; 16]];
+        for _ in 0..64 {
+            states.push(core::array::from_fn(|_| next() as u8));
+        }
+        for st in &states {
+            let mut fwd = *st;
+            sub_bytes(&mut fwd);
+            let mut inv = *st;
+            inv_sub_bytes(&mut inv);
+            for g in 0..16 {
+                assert_eq!(fwd[g], sbox(st[g]), "sub_bytes state={st:?} g={g}");
+                assert_eq!(inv[g], inv_sbox(st[g]), "inv_sub_bytes state={st:?} g={g}");
+            }
         }
     }
 
