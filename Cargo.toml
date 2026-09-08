@@ -18,8 +18,11 @@ authors = [
 ]
 
 [workspace.dependencies]
-ferritls-core = { version = "0.1.0", path = "crates/ferritls-core" }
-ferritls-rustls = { version = "0.1.0", path = "crates/ferritls-rustls" }
+# default-features=false + 成员侧 simd/fips feature 转发：使下游的
+# opt-out 链路（default-features = false）端到端传导（P2，见各 crate
+# Cargo.toml 注释）。
+ferritls-core = { version = "0.1.0", path = "crates/ferritls-core", default-features = false }
+ferritls-rustls = { version = "0.1.0", path = "crates/ferritls-rustls", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["std"] }
 # 边界内依赖白名单仅此三者（见 docs/FIPS.md）。getrandom 自 M3/M5 起由
 # ferritls-core::entropy 使用；在此之前不得引入其他依赖。

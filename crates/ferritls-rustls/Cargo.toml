@@ -10,10 +10,15 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+# default-features=false + simd/fips 转发：让下游的 opt-out 链路
+# （default-features = false）端到端生效到 ferritls-core。
 ferritls-core.workspace = true
 rustls.workspace = true
 
 [features]
-default = []
+default = ["simd"]
+# 转发到 ferritls-core 的显式向量化路径（P2，见 ferritls-core
+# Cargo.toml 注释；stable 工具链需 RUSTC_BOOTSTRAP=1）。
+simd = ["ferritls-core/simd"]
 # 转发到 ferritls-core 的批准模式门控（见 ferritls-core Cargo.toml 注释）。
 fips = ["ferritls-core/fips"]

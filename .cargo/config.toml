@@ -1,0 +1,14 @@
+# 仓库本地构建配置（不随 crates.io 发布传播）。
+#
+# 默认 feature `simd`（ferritls-core）经 `#![feature(portable_simd)]`
+# 使用标准库 core::simd；stable 工具链上需要 RUSTC_BOOTSTRAP=1 才能编译
+# feature gate（本机已实证：stable rustc 1.98.1 + 该 env 产出真实 SIMD
+# 指令）。`[env]` 是 stable cargo（≥1.56）机制，作用于 cargo 触发的全部
+# rustc 调用；下游用户需自带该 env 或以 default-features = false 退出
+# （见 README 构建要求节）。portable_simd 稳定后删除本条目。
+#
+# 注意：本文件不设置任何 RUSTFLAGS/target-feature——仓库默认构建保持
+# 可移植基线（CI runner 与贡献者机器各异）；宽 ISA 实测经环境变量传入：
+#   RUSTFLAGS="-C target-feature=+avx2" cargo test --workspace
+[env]
+RUSTC_BOOTSTRAP = { value = "1", force = true }

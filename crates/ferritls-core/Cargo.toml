@@ -19,7 +19,13 @@ zeroize.workspace = true
 getrandom.workspace = true
 
 [features]
-default = []
+default = ["simd"]
+# P2：显式 core::simd（portable_simd）向量化路径。属 std，非第三方
+# 依赖（白名单不变）；stable 工具链上需 RUSTC_BOOTSTRAP=1（仓内
+# .cargo/config.toml / CI env 提供，下游自带 env 或
+# default-features = false 退出到标量回退——P1/P1.5 代码原样保留）。
+# 约束集见 AGENTS.md §5.5；portable_simd 稳定后拆除 RUSTC_BOOTSTRAP。
+simd = []
 # 批准模式门控：仅暴露 FIPS 批准算法（AES-GCM/CCM、SHA-2、HMAC/HKDF、
 # RSA、ECDSA P-256/384），并强制 CTR-DRBG + 上电自检路径。
 # 注意：此 feature 不是“已通过 CMVP 认证”的声明——认证落地前 rustls 侧

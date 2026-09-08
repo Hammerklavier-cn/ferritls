@@ -14,6 +14,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # 默认 feature `simd`（P2）经 #![feature(portable_simd)] 使用 core::simd，
+  # stable 工具链上需要 RUSTC_BOOTSTRAP=1（仓内 .cargo/config.toml 同值；
+  # 此处显式设置以覆盖 fmt/deny 等不读取仓库构建缓存的步骤，并对
+  # tag checkout（发布验证构建）同样生效）。portable_simd 稳定后移除。
+  RUSTC_BOOTSTRAP: "1"
 
 jobs:
   fmt:
@@ -62,6 +67,25 @@ jobs:
       - run: cargo test --workspace --all-features
       - run: cargo test -p ferritls-core --features fips
       - run: cargo test -p ferritls-rustls --features fips
+      # 标量回退路径（simd feature 关闭 = P1/P1.5 代码）：全链路
+      # opt-out 到 ferritls-rustls / interop（AGENTS §5.5 双配置要求）。
+      - name: Run tests (scalar fallback)
+        run: |
+          cargo test -p ferritls-core --no-default-features
+          cargo test -p ferritls-rustls --no-default-features
+          cargo test -p ferritls-interop --no-default-features
+      # 宽 ISA 代码档（P2）：AVX2 在 x86_64 runner 上普遍可用，实跑测试；
+      # AVX-512 未必可用，只做编译检查防 SIGILL（本机 Zen 4 实跑兜底）。
+      - name: Run tests (AVX2 channels)
+        if: runner.arch == 'X64'
+        env:
+          RUSTFLAGS: -C target-feature=+avx2
+        run: cargo test -p ferritls-core
+      - name: Check (AVX-512 channels, compile only)
+        if: runner.arch == 'X64'
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64-v4
+        run: cargo check --workspace --all-targets
 
   fuzz:
     runs-on: ubuntu-latest

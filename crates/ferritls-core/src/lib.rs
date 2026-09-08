@@ -11,6 +11,16 @@
 //! 任何新依赖都必须先更新 `docs/FIPS.md` 的白名单与审计依据（见 AGENTS.md
 //! 硬性规则 2）。
 //!
+//! ## 默认 feature `simd`（P2）
+//!
+//! 默认启用的 `simd` feature 在 AES/ChaCha20 热路径使用标准库
+//! `core::simd`（portable_simd）的显式向量类型——属 std，**不是第三方
+//! 依赖，白名单不变**。stable 工具链上需要 `RUSTC_BOOTSTRAP=1` 环境变量
+//! （本仓库 `.cargo/config.toml` 已提供；下游用户自带该 env 或以
+//! `default-features = false` 退出到标量回退）。通道宽度按编译目标自动
+//! 选择（SSE2/NEON 基线；用户以 RUSTFLAGS 开启 target-feature 时升级
+//! AVX2/AVX-512），无运行时分发、无 unsafe。
+//!
 //! ## 模块地图
 //!
 //! | 模块 | 内容 | FIPS 批准状态 | 落地里程碑 |
@@ -35,9 +45,23 @@
 //! CI 全绿（流程见 AGENTS.md“测试体系”）。
 
 #![forbid(unsafe_code)]
+// 默认 feature `simd`（P2）：显式 core::simd（portable_simd）向量化路径，
+// 属标准库、全部 safe 代码。stable 工具链上经 RUSTC_BOOTSTRAP=1 编译该
+// feature gate（仓内 .cargo/config.toml [env] / CI env 提供，下游自带 env
+// 或 default-features = false 退出到标量回退）。约束集与档位选择规则见
+// AGENTS.md §5.5；portable_simd 稳定后拆除 RUSTC_BOOTSTRAP 依赖。
+#![cfg_attr(feature = "simd", feature(portable_simd))]
 // 未来硬件加速后端（AES-NI/SHA 扩展）必然需要 unsafe；它们不得进入本 crate，
 // 而是作为边界外的独立后端 crate 通过 ops 模块的 trait 挂接（见 ops 模块文档
 // 与 docs/ARCHITECTURE.md），届时是否将后端纳入 FIPS 边界需重新评估。
+
+/// `simd` feature 编译金丝雀：确保当前配置下 portable_simd 真正可用
+///（P2 各模块的热路径在 aes / chacha20poly1305 中使用）。
+#[cfg(feature = "simd")]
+#[allow(dead_code)]
+fn _portable_simd_canary(v: std::simd::u32x4) -> std::simd::u32x4 {
+    v + std::simd::u32x4::splat(1)
+}
 
 pub mod aes;
 pub mod ccm;
