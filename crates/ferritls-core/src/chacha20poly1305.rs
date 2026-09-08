@@ -5,6 +5,14 @@
 //!
 //! 向量：RFC 8439 §2.8.2（`tests/chacha20poly1305.rs`）。
 //! Poly1305 为 26 位字组常数时间实现（poly1305-donna 形态）。
+//!
+//! P2（`simd` feature，默认启用）：批处理密钥流的转置通道为显式
+//! `Simd<u32, C>`，通道数按编译期目标特性三档（AVX-512 16 块 /
+//! AVX2 8 块 / 基线 4 块，见 [`CHACHA_BLOCKS`]）——同一份源码在用户
+//! 以 RUSTFLAGS 开启 target-feature 时自动加宽，无运行时分发；
+//! 标量逐块路径（[`chacha20_block`]）与数组版四块批处理
+//! （`chacha20_blocks4`，no-default-features 回退）原样保留为 oracle
+//! 与降级路径。
 
 /// ChaCha20-Poly1305 AEAD 实例（IETF 参数：256 位密钥、96 位 nonce）。
 #[derive(Clone)]
@@ -75,12 +83,60 @@ impl std::fmt::Debug for ChaCha20Poly1305 {
     }
 }
 
-/// 密钥流异或（P1 性能轮）：按 256 字节步进用四块批量
-/// [`chacha20_blocks4`]（转置布局，ARX 跨 4 通道自动向量化），尾段
-/// （<256 字节）回退逐块标量 [`chacha20_block`]。无秘密条件分支/访存
-/// （counter 与长度均为公开值）。
+#[cfg(feature = "simd")]
+use std::simd::Simd;
+
+/// 密钥流异或：分发到 simd 批处理路径（默认）或标量回退路径
+///（no-default-features；P1 的四块自动向量化形态，原样冻结）。
 fn keystream_xor(key: &[u8; 32], nonce: &[u8; 12], input: &[u8], out: &mut [u8]) {
     debug_assert_eq!(input.len(), out.len());
+    #[cfg(feature = "simd")]
+    keystream_xor_simd(key, nonce, input, out);
+    #[cfg(not(feature = "simd"))]
+    keystream_xor_scalar(key, nonce, input, out);
+}
+
+/// 密钥流异或（P2）：整批与"剩余 ≥ 1/4 批"的尾段都走
+/// [`chacha20_blocks`]（不足整批时浪费 < 3/4 批——批处理每块成本
+/// 约为标量 1/4，阈值取等价点）；更小的尾段回退逐块标量
+/// [`chacha20_block`]。counter 按实际消耗的块数推进（公开长度决定
+/// 全部分支，无秘密条件分支/访存）。
+#[cfg(feature = "simd")]
+fn keystream_xor_simd(key: &[u8; 32], nonce: &[u8; 12], input: &[u8], out: &mut [u8]) {
+    const STEP: usize = CHACHA_BLOCKS * 64;
+    let mut ks = [0u8; CHACHA_BLOCKS * 64];
+    let mut counter = 1u32;
+    let mut pos = 0usize;
+    while pos < input.len() {
+        let rem = input.len() - pos;
+        if rem >= STEP / 4 {
+            let take = rem.min(STEP);
+            chacha20_blocks::<CHACHA_BLOCKS>(key, counter, nonce, &mut ks);
+            let (ic, oc) = (&input[pos..pos + take], &mut out[pos..pos + take]);
+            for (o, (i, k)) in oc.iter_mut().zip(ic.iter().zip(&ks[..take])) {
+                *o = i ^ k;
+            }
+            counter = counter.wrapping_add(take.div_ceil(64) as u32);
+            pos += take;
+        } else {
+            let take = rem.min(64);
+            let ksb = chacha20_block(key, counter, nonce);
+            let (ic, oc) = (&input[pos..pos + take], &mut out[pos..pos + take]);
+            for (o, (i, k)) in oc.iter_mut().zip(ic.iter().zip(&ksb[..take])) {
+                *o = i ^ k;
+            }
+            counter = counter.wrapping_add(1);
+            pos += take;
+        }
+    }
+}
+
+/// 密钥流异或（P1 标量回退，原样冻结）：按 256 字节步进用四块批量
+/// `chacha20_blocks4`（转置布局，ARX 跨 4 通道自动向量化），尾段
+/// （<256 字节）回退逐块标量 [`chacha20_block`]。无秘密条件分支/访存
+///（counter 与长度均为公开值）。
+#[cfg(not(feature = "simd"))]
+fn keystream_xor_scalar(key: &[u8; 32], nonce: &[u8; 12], input: &[u8], out: &mut [u8]) {
     let mut counter = 1u32;
     let mut ks = [0u8; 256];
     for (in_chunk, out_chunk) in input.chunks(256).zip(out.chunks_mut(256)) {
@@ -152,11 +208,111 @@ fn qr(w: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
     w[b] = w[b].rotate_left(7);
 }
 
-/// ChaCha20 四块批量（P1 性能轮）：一次计算 counter..counter+3 的
-/// 256 字节密钥流。状态为转置布局 `[u32; 4]`——每个状态字持有 4 个
-/// 块的对应字，ARX 运算跨通道执行，LLVM 按目标向量宽度自动向量化
-///（SSE2/AVX2，编译期决定，无 target_feature 探测）。计数器回绕按
-/// wrapping 语义与标量路径一致。
+/// ChaCha20 批量块数（通道数）：按编译期目标特性三档（P2）。
+/// AVX-512 → 16 块（16 个 ZMM 状态恰入寄存器）、AVX2 → 8 块
+/// （16×YMM）、其余（x86-64 基线 SSE2 / aarch64 NEON）→ 4 块
+/// （16×128-bit）。同一份源码：用户以 RUSTFLAGS 开启 target-feature
+/// 即自动升级通道宽度；不做运行时分发（需 unsafe 调
+/// `#[target_feature]` 函数，被 `#![forbid(unsafe_code)]` 禁止）。
+#[cfg(feature = "simd")]
+#[cfg(target_feature = "avx512f")]
+const CHACHA_BLOCKS: usize = 16;
+#[cfg(feature = "simd")]
+#[cfg(all(not(target_feature = "avx512f"), target_feature = "avx2"))]
+const CHACHA_BLOCKS: usize = 8;
+#[cfg(feature = "simd")]
+#[cfg(not(any(target_feature = "avx512f", target_feature = "avx2")))]
+const CHACHA_BLOCKS: usize = 4;
+
+/// C 通道四分之一轮（P2）：ARX 全部逐通道并行；旋转经 [`rotl`]
+///（本版 portable_simd 的 SimdUint 未提供 rotate_left）。
+#[cfg(feature = "simd")]
+fn qr_simd<const C: usize>(w: &mut [Simd<u32, C>; 16], a: usize, b: usize, c: usize, d: usize) {
+    let (mut wa, mut wb, mut wc, mut wd) = (w[a], w[b], w[c], w[d]);
+    wa += wb;
+    wd ^= wa;
+    wd = rotl(wd, 16);
+    wc += wd;
+    wb ^= wc;
+    wb = rotl(wb, 12);
+    wa += wb;
+    wd ^= wa;
+    wd = rotl(wd, 8);
+    wc += wd;
+    wb ^= wc;
+    wb = rotl(wb, 7);
+    w[a] = wa;
+    w[b] = wb;
+    w[c] = wc;
+    w[d] = wd;
+}
+
+/// 逐通道循环左移：`(v << r) | (v >> (32 − r))`——右移量必须是
+/// `32 − r` 而非 `r`（后者仅在 r = 16 自对偶时凑巧正确；曾因此产出
+/// 错误密钥流，由标量 oracle 立即拦截）。
+#[cfg(feature = "simd")]
+#[inline]
+fn rotl<const C: usize>(v: Simd<u32, C>, r: u32) -> Simd<u32, C> {
+    (v << Simd::splat(r)) | (v >> Simd::splat(32 - r))
+}
+
+/// ChaCha20 C 块批量（P2）：一次计算 counter..counter+C-1 的密钥流，
+/// C*64 字节写入 `out`（调用方保证长度）。转置布局 `Simd<u32, C>`——
+/// 每个状态字的 C 个通道承载 C 个块的对应字，显式向量类型保证宽 ISA
+/// 下的通道利用率（P2 基线实测：P1 自动向量化在 +avx2 下不加宽）。
+/// 计数器回绕按 wrapping 语义与标量路径一致。
+#[cfg(feature = "simd")]
+fn chacha20_blocks<const C: usize>(key: &[u8; 32], counter: u32, nonce: &[u8; 12], out: &mut [u8]) {
+    debug_assert!(out.len() >= C * 64);
+    let le32 = |b: &[u8]| u32::from_le_bytes(b.try_into().unwrap());
+    let mut w: [Simd<u32, C>; 16] = [
+        Simd::splat(0x6170_7865),
+        Simd::splat(0x3320_646e),
+        Simd::splat(0x7962_2d32),
+        Simd::splat(0x6b20_6574),
+        Simd::splat(le32(&key[0..4])),
+        Simd::splat(le32(&key[4..8])),
+        Simd::splat(le32(&key[8..12])),
+        Simd::splat(le32(&key[12..16])),
+        Simd::splat(le32(&key[16..20])),
+        Simd::splat(le32(&key[20..24])),
+        Simd::splat(le32(&key[24..28])),
+        Simd::splat(le32(&key[28..32])),
+        Simd::from_array(core::array::from_fn(|i| counter.wrapping_add(i as u32))),
+        Simd::splat(le32(&nonce[0..4])),
+        Simd::splat(le32(&nonce[4..8])),
+        Simd::splat(le32(&nonce[8..12])),
+    ];
+    let init = w;
+
+    for _ in 0..10 {
+        // 列轮
+        qr_simd(&mut w, 0, 4, 8, 12);
+        qr_simd(&mut w, 1, 5, 9, 13);
+        qr_simd(&mut w, 2, 6, 10, 14);
+        qr_simd(&mut w, 3, 7, 11, 15);
+        // 对角轮
+        qr_simd(&mut w, 0, 5, 10, 15);
+        qr_simd(&mut w, 1, 6, 11, 12);
+        qr_simd(&mut w, 2, 7, 8, 13);
+        qr_simd(&mut w, 3, 4, 9, 14);
+    }
+    let fin = w.map(|v| v.to_array());
+    let ini = init.map(|v| v.to_array());
+    for blk in 0..C {
+        for i in 0..16 {
+            let word = fin[i][blk].wrapping_add(ini[i][blk]);
+            out[blk * 64 + i * 4..blk * 64 + i * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+    }
+}
+
+/// ChaCha20 四块批量（P1 标量回退，原样冻结；no-default-features 路径）：
+/// 一次计算 counter..counter+3 的 256 字节密钥流。状态为转置布局
+/// `[u32; 4]`——每个状态字持有 4 个块的对应字，ARX 运算跨通道执行，
+/// LLVM 按目标向量宽度自动向量化（SSE2/AVX2，编译期决定，无
+/// target_feature 探测）。计数器回绕按 wrapping 语义与标量路径一致。
+#[cfg(not(feature = "simd"))]
 fn chacha20_blocks4(key: &[u8; 32], counter: u32, nonce: &[u8; 12], out: &mut [u8; 256]) {
     let mut w = [[0u32; 4]; 16];
     w[0] = [0x6170_7865; 4];
@@ -199,8 +355,10 @@ fn chacha20_blocks4(key: &[u8; 32], counter: u32, nonce: &[u8; 12], out: &mut [u
     }
 }
 
-/// 四通道四分之一轮。显式定长下标同步推进 4 个通道数组——这是
-/// LLVM 自动向量化所依赖的形状，改写为迭代器形式会 obscures 该意图。
+/// 四通道四分之一轮（标量回退路径）。显式定长下标同步推进 4 个通道
+/// 数组——这是 LLVM 自动向量化所依赖的形状，改写为迭代器形式会
+/// obscures 该意图。
+#[cfg(not(feature = "simd"))]
 #[allow(clippy::needless_range_loop)]
 fn qr4(w: &mut [[u32; 4]; 16], a: usize, b: usize, c: usize, d: usize) {
     let (mut wa, mut wb, mut wc, mut wd) = (w[a], w[b], w[c], w[d]);
@@ -571,6 +729,22 @@ mod tests {
 
     #[test]
     fn blocks4_matches_scalar_and_rfc_anchor() {
+        // 批量入口按配置选择（P2：Simd 通道三档；回退：数组版四块）。
+        #[cfg(feature = "simd")]
+        let batch = |key: &[u8; 32], counter: u32, nonce: &[u8; 12], out: &mut [u8]| {
+            chacha20_blocks::<CHACHA_BLOCKS>(key, counter, nonce, out)
+        };
+        #[cfg(not(feature = "simd"))]
+        let batch = |key: &[u8; 32], counter: u32, nonce: &[u8; 12], out: &mut [u8]| {
+            let mut buf = [0u8; 256];
+            chacha20_blocks4(key, counter, nonce, &mut buf);
+            out[..256].copy_from_slice(&buf);
+        };
+        #[cfg(feature = "simd")]
+        const T_BLOCKS: usize = CHACHA_BLOCKS;
+        #[cfg(not(feature = "simd"))]
+        const T_BLOCKS: usize = 4;
+
         let key = [
             0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
             0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
@@ -581,10 +755,10 @@ mod tests {
         ];
         // 批量路径 = 标量路径按 counter 拼接（含计数器回绕点）。
         for start in [0u32, 1, 42, 0x7fff_fffd, 0xffff_fffe] {
-            let mut batched = [0u8; 256];
-            chacha20_blocks4(&key, start, &nonce, &mut batched);
-            let mut expect = [0u8; 256];
-            for i in 0..4u32 {
+            let mut batched = vec![0u8; T_BLOCKS * 64];
+            batch(&key, start, &nonce, &mut batched);
+            let mut expect = vec![0u8; T_BLOCKS * 64];
+            for i in 0..T_BLOCKS as u32 {
                 let b = chacha20_block(&key, start.wrapping_add(i), &nonce);
                 expect[i as usize * 64..(i as usize + 1) * 64].copy_from_slice(&b);
             }
@@ -593,8 +767,8 @@ mod tests {
         // RFC 8439 §2.4.2 密钥流的第 1 块 = §2.3.2 单块向量（同
         // key/nonce/counter=1）：批量的首块锚定官方字节，其余块由上面的
         // 标量等价覆盖（标量路径已由 §2.3.2 向量锚定）。
-        let mut out = [0u8; 256];
-        chacha20_blocks4(&key, 1, &nonce, &mut out);
+        let mut out = vec![0u8; T_BLOCKS * 64];
+        batch(&key, 1, &nonce, &mut out);
         assert_eq!(
             &out[..64],
             &[
@@ -618,15 +792,19 @@ mod tests {
             *b = seed as u8;
         }
         let nonce = [3u8; 12];
-        let mut data = vec![0u8; 1024];
+        let mut data = vec![0u8; 2048];
         for b in data.iter_mut() {
             seed ^= seed << 13;
             seed ^= seed >> 17;
             seed ^= seed << 5;
             *b = seed as u8;
         }
-        // 覆盖批量/标量边界：0、<64、=64、255/256/257、511/512/513、1024。
-        for len in [0usize, 1, 63, 64, 65, 255, 256, 257, 511, 512, 513, 1024] {
+        // 覆盖批量/尾段边界：0、<64、=64、255/256/257、511/512/513、
+        // 1024/1025、1500（典型 MTU）、2048——P2 通道档（4/8/16 块）下
+        // 的整批、填充批（剩余 ≥ 1/4 批）与小尾段三种路径全部命中。
+        for len in [
+            0usize, 1, 63, 64, 65, 255, 256, 257, 511, 512, 513, 1024, 1025, 1500, 1601, 2048,
+        ] {
             let input = &data[..len];
             let mut fast = vec![0u8; len];
             keystream_xor(&key, &nonce, input, &mut fast);
