@@ -379,17 +379,44 @@ cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored
       （10×）、单块 AES 2.9 → 18 MB/s（6×）、ChaCha20-Poly1305
       451 → 620 MB/s；数字、两次实测回退记录与余留慢点见
       `docs/ROADMAP.md` P1/P1.5 节
-- [ ] P2 portable_simd 轮（进行中，2026-09-08）：`simd` 默认
-      feature + stable 工具链 RUSTC_BOOTSTRAP 编译 `core::simd`
-      显式向量化——AES 位切片平面泛型化（`u64`/`Simd<u64,L>` 同源
-      电路，批量档 64/128/256/512 按请求选档）、ChaCha20 通道按
-      `cfg(target_feature)` 三档（16/8/4 块）、单块 SubBytes 显式
-      `u8x16`；效率按 AVX2/AVX-512（Zen 4 本机 RUSTFLAGS）同 ISA
-      对照判定。设计、约束与测量矩阵见 `docs/ROADMAP.md` P2 节
+- [x] P2 portable_simd 轮（完成 2026-09-08）：`simd` 默认 feature +
+      stable 工具链 RUSTC_BOOTSTRAP 编译 `core::simd` 显式向量化
+      ——AES 位切片平面泛型化（`Plane` trait：`u64` 与
+      `Simd<u64,L>` 同一份电路源码，批量档 64/128/256/512 按公开
+      请求块数选档）、ChaCha20 通道按 `cfg(target_feature)` 三档
+      （AVX-512 16 块 / AVX2 8 块 / 基线 4 块）；单块 SubBytes 的
+      显式 `u8x16` 尝试实测回退 2.5×（select 降级）已撤销。同 ISA
+      对照（Zen 4）：+avx512 AES-128-GCM 2.55×（57.6→146.7）、
+      AES-256-GCM 3.11×（44.6→138.7）；+avx2 ChaCha 2.17×
+      （584→1266）；基线 GCM +28~32%、ChaCha 1.62×（旧数组版连
+      SSE2 都未向量化满）。设计、约束、完整矩阵与回退记录见
+      `docs/ROADMAP.md` P2 节
 - [ ] M8：TLS 1.2 / QUIC / ML-KEM 混合 / intrinsics 后端
 
 **已知的实现级注记**（修订实现前必读）：
 
+- `aes.rs`（位切片平面，P2）：电路函数（`bs_mul/bs_sq/bs_sbox/
+  bs_rounds`）按 `Plane` trait 泛型——`u64` 实例即标量回退路径
+  （no-default-features），`Simd<u64,L>` 实例即 simd 档位（64/128/
+  256/512 块按公开 n 分发，n≤64 恒走 u64 档）。改动电路必须同时
+  跑双 oracle（`bitslice_circuits_match_scalar_exhaustive` +
+  `encrypt_ctr_batch_matches_scalar` 的档位边界组）；本 rustc 的
+  `Simd<T,N>` 对 N 无 trait bound（无需 LaneCount），若未来 rustc
+  要求需补 where 子句；计数器装载/提取按 64-lane 组进行后经
+  `from_lane_groups`/`to_lane_group` 装配，组数上限 8（512 块）；
+- `chacha20poly1305.rs`（Simd 通道，P2）：`rotl` 的右移量必须是
+  `32 − r` 而非 `r`——`(v<<r)|(v>>r)` 仅在 r=16 自对偶时凑巧正确
+  （曾实际产出错误密钥流、由标量 oracle 立即拦截，12/8/7 全错）；
+  通道数按 `cfg(target_feature)` 三档（16/8/4），改通道数后必须重跑
+  `blocks4_matches_scalar_and_rfc_anchor`（自动覆盖当前档）与
+  `keystream_xor_matches_scalar_all_shapes`（整批/填充批/标量尾
+  三种路径）；填充批只消耗 `ceil(rem/64)` 块，counter 按实际消耗
+  推进（计数器为公开量）；
+- `aes.rs`（单块 SubBytes，P2 实测回退第三例）：显式 `u8x16` 的
+  `simd_eq`+`select` 掩码扫描在 crate 内联上下文实测慢 2.5×
+  （`Mask::select` 的掩码↔向量往返未被消除；独立编译时代码生成
+  理想也不作数）——单块保持标量掩码扫描形态（LLVM 自动向量化），
+  改动前先实测；portable_simd 的 `select` 不可假设折叠为 AND；
 - `aes.rs`（位切片，P1）：GF(2^8) 折叠约减严禁混入 GF(2^4) 的关系
   （x⁴=x+1 属 GF(16)，在 AES 的 f 下 x⁴ 是规范表示）；乘法折叠必须
   覆盖 x^9/x^11/x^13 全部奇次项——两类错误都实际踩过、由穷举测试
