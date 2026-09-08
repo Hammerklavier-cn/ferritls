@@ -3,18 +3,28 @@
 //! FIPS 批准；作为 GCM/CCM 与 CTR-DRBG 的底层部件，上电自检覆盖（M5）。
 //! AES-NI 后端在 M8+ 经 [`crate::ops`] 入口挂接，不影响本模块公开 API。
 //!
-//! 常数时间策略：S-box 不查表——**批量路径（P1 性能轮）为位切片
-//! 纯布尔电路**（逆元 = GF(2^8) 多项式基下 x^254 加法链 + FIPS-197
-//! 仿射变换，平方 = 平面重排 + 折叠），64 块/批共享同一电路，零查表、
-//! 零秘密相关分支/访存；**单块路径为 16 宽掩码全扫描**
-//! （[`sub_bytes`]：一次表遍历同时服务全部 16 字节，访问模式与
-//! 输入无关）。实测单块走位切片电路反而慢约 2×（电路平面操作数
-//! 按"批"固定，单块仅占 1/64 lane），故两路径并存。字节移位/列混合
-//! 全部为算术与掩码操作。轮密钥与其位平面 Drop 时零化。
+//! 常数时间策略：S-box 不查表——**批量路径（P1 起）为位切片纯布尔
+//! 电路**（逆元 = GF(2^8) 多项式基下 x^254 加法链 + FIPS-197 仿射
+//! 变换，平方 = 平面重排 + 折叠），零查表、零秘密相关分支/访存；
+//! **单块路径为 16 宽掩码全扫描**（[`sub_bytes`]：一次表遍历同时
+//! 服务全部 16 字节，访问模式与输入无关）。实测单块走位切片电路
+//! 反而慢约 2×（电路平面操作数按"批"固定，单块仅占极小 lane 占比），
+//! 故两路径并存。字节移位/列混合全部为算术与掩码操作。轮密钥与
+//! 其位平面 Drop 时零化。
+//!
+//! P2（`simd` feature，默认启用）：位切片电路按平面元素 [`Plane`]
+//! 泛型——`u64`（64 块/批，P1 标量形态原样保留）与
+//! `Simd<u64, L>`（64·L 块/批）共享同一份电路源码；
+//! [`encrypt_ctr_batch`] 按公开请求块数在 64/128/256/512 块档位中
+//! 取最小浪费档，向量宽度随编译目标自动决定（SSE2 每平面元素 2×
+//! u64 / AVX2 4× / AVX-512 8×）。显式向量类型保证宽 ISA 下的通道
+//! 利用率不依赖 LLVM 自动向量化启发式（P2 基线实测：P1 代码在
+//! +avx2/+avx512 下吞吐几乎不变）。
 //!
 //! 向量：FIPS-197 附录 C.1/C.2/C.3 KAT（`tests` 内嵌）+ GCM 集成 KAT；
 //! 位切片电路与 16 宽扫描分别对照逐字节标量实现（`bitslice_*`、
-//! `sub_bytes_matches_scalar` 测试）。
+//! `sub_bytes_matches_scalar` 测试）；批量各档位对照逐块标量
+//! （`encrypt_ctr_batch_matches_scalar`）。
 
 /// 官方 S-box（FIPS-197 图 7）。
 const SBOX: [u8; 256] = [
@@ -145,7 +155,7 @@ macro_rules! aes_impl {
             /// 字节 g 的比特 b 广播到全部 64 lane。位切片路径（单块与
             /// 批量）直接 XOR，免去每次调用的平面展开。秘密材料，
             /// Drop 零化。
-            rk_planes: Vec<[[u64; 8]; 16]>,
+            rk_planes: Vec<[Planes; 16]>,
         }
 
         impl $name {
@@ -231,54 +241,33 @@ macro_rules! aes_impl {
                 *block = s;
             }
 
-            /// 批量加密计数器块（位切片路径，P1）：以 `base` 为第 0 块，
-            /// 加密"base 低 32 位 + i"（i = 0..n）共 n（≤ [`CTR_BATCH_BLOCKS`]
-            /// = 64）个块，每块 16 字节密钥流写入 `out`。未用 lane 计算
-            /// 任意值但不写出。装载利用 CTR 结构：前 12 字节跨块常量
-            /// （平面全 0/全 1），仅低 32 位计数器按 lane 展开。
-            /// 供 GCM/CCM 的 CTR 密钥流使用；仅加密方向。
+            /// 批量加密计数器块（位切片路径，P1；P2 档位分发）：以
+            /// `base` 为第 0 块，加密"base 低 32 位 + i"（i = 0..n）共
+            /// n（≤ [`CTR_BATCH_BLOCKS`]）个块，每块 16 字节密钥流写入
+            /// `out`。未用 lane 计算任意值但不写出。装载利用 CTR 结构：
+            /// 前 12 字节跨块常量（平面全 0/全 1），仅低 32 位计数器按
+            /// lane 展开。档位按公开 n 取最小浪费：64（u64，P1 形态）/
+            /// 128/256/512（Simd<u64,2/4/8>，仅 simd feature）。
+            /// 供 GCM/CCM/DRBG 的 CTR 密钥流使用；仅加密方向。
             ///（Aes192 当前无批量调用方——GCM/CCM/DRBG 用 128/256——
             /// 随宏同型生成，保留完整实例 API。）
             #[allow(dead_code)]
             pub(crate) fn encrypt_ctr_batch(&self, base: [u8; 16], n: usize, out: &mut [u8]) {
                 debug_assert!(n > 0 && n <= CTR_BATCH_BLOCKS && out.len() >= n * 16);
-
-                // 装载：常量字节平面。
-                let mut st = [[0u64; 8]; 16];
-                for (g, byte) in base[..12].iter().enumerate() {
-                    for (b, plane) in st[g].iter_mut().enumerate() {
-                        *plane = u64::from((byte >> b) & 1).wrapping_neg();
+                #[cfg(feature = "simd")]
+                {
+                    if n <= 64 {
+                        encrypt_ctr_batch_p::<u64>(&self.rk_planes, base, n, out)
+                    } else if n <= 128 {
+                        encrypt_ctr_batch_p::<Simd<u64, 2>>(&self.rk_planes, base, n, out)
+                    } else if n <= 256 {
+                        encrypt_ctr_batch_p::<Simd<u64, 4>>(&self.rk_planes, base, n, out)
+                    } else {
+                        encrypt_ctr_batch_p::<Simd<u64, 8>>(&self.rk_planes, base, n, out)
                     }
                 }
-                // 计数器低 32 位（大端 base[12..16]）按 lane 展开。
-                let ctr0 = u32::from_be_bytes(base[12..16].try_into().unwrap());
-                for lane in 0..n {
-                    let ctr = ctr0.wrapping_add(lane as u32).to_be_bytes();
-                    for k in 0..4 {
-                        for b in 0..8 {
-                            st[12 + k][b] |= u64::from((ctr[k] >> b) & 1) << lane;
-                        }
-                    }
-                }
-
-                let rk0 = &self.rk_planes[0];
-                for (sg, rg) in st.iter_mut().zip(rk0.iter()) {
-                    for (s, r) in sg.iter_mut().zip(rg.iter()) {
-                        *s ^= r;
-                    }
-                }
-                bs_rounds(&mut st, &self.rk_planes);
-
-                // 提取前 n 个 lane。
-                for lane in 0..n {
-                    for (g, group) in st.iter().enumerate() {
-                        let mut byte = 0u8;
-                        for (b, plane) in group.iter().enumerate() {
-                            byte |= (((plane >> lane) & 1) as u8) << b;
-                        }
-                        out[lane * 16 + g] = byte;
-                    }
-                }
+                #[cfg(not(feature = "simd"))]
+                encrypt_ctr_batch_p::<u64>(&self.rk_planes, base, n, out);
             }
         }
 
@@ -298,11 +287,14 @@ macro_rules! aes_impl {
 }
 
 // ---------------------------------------------------------------------------
-// 位切片批量加密路径（P1 性能轮）
+// 位切片批量加密路径（P1 性能轮；P2 平面元素泛型化）
 //
-// 表示：state = 16 个字节组 × 8 个位平面。平面是 u64：bit i（lane i）
-// 承载第 i 块在该字节位置该比特上的值 → 一批 64 块共享同一布尔电路，
-// 每个 u64 AND/XOR 即一次 64 路并行。零查表、零秘密相关控制流。
+// 表示：state = 16 个字节组 × 8 个位平面。平面元素 P 实现位运算且
+// 承载一批块在同一字节位置同一比特上的值：u64 的 bit i（lane i）承载
+// 第 i 块 → 一批 64 块；`Simd<u64, L>`（simd feature）的每个元素是一个
+// 64-lane 组 → 一批 64·L 块。布尔运算逐元素即逐块并行，电路源码对
+// P 泛型（u64 实例 = P1 标量形态，逐位对照穷举验证）。零查表、零秘密
+// 相关控制流。
 //
 // 电路代数（全部与上方标量实现穷举对照验证）：
 // - GF(2^8) 乘法：多项式基卷积（64 AND）+ 折叠约减
@@ -313,18 +305,91 @@ macro_rules! aes_impl {
 //   （下标 mod 8，c = 0x63；c_i=1 时平面取反）。
 // ---------------------------------------------------------------------------
 
+use core::ops::{BitAnd, BitAndAssign, BitOr, BitOrAssign, BitXor, BitXorAssign, Not};
+
+#[cfg(feature = "simd")]
+use std::simd::Simd;
+
+/// 位平面元素（P2）：一批块在同一字节位置同一比特上的并行承载。
+///
+/// `u64` = 64 块/批（P1 标量形态）；`Simd<u64, L>` = 64·L 块/批，
+/// 每个 Simd 元素是一个独立的 64-lane 组（装载/提取按组进行，
+/// 见 [`encrypt_ctr_batch_p`]）。所有方法 `#[inline]`：u64 实例的
+/// broadcast/组装配均为恒等操作，电路代码生成与 P1 逐位一致。
+trait Plane:
+    Copy
+    + BitAnd<Output = Self>
+    + BitOr<Output = Self>
+    + BitXor<Output = Self>
+    + Not<Output = Self>
+    + BitAndAssign
+    + BitOrAssign
+    + BitXorAssign
+{
+    /// 一批覆盖的块数。
+    const LANES: usize;
+    /// 同一 u64 值用于全部 lane 组（常数平面 / 轮密钥平面广播，
+    /// 入参恒为 0 或 !0）。
+    fn broadcast(x: u64) -> Self;
+    /// 由"每个 64-lane 组的平面值"装配（计数器装载用）。
+    fn from_lane_groups(f: impl FnMut(usize) -> u64) -> Self;
+    /// 取第 e 个 64-lane 组的平面值（e < `LANES / 64`；提取用）。
+    fn to_lane_group(self, e: usize) -> u64;
+}
+
+impl Plane for u64 {
+    const LANES: usize = 64;
+    #[inline]
+    fn broadcast(x: u64) -> Self {
+        x
+    }
+    #[inline]
+    fn from_lane_groups(mut f: impl FnMut(usize) -> u64) -> Self {
+        f(0)
+    }
+    #[inline]
+    fn to_lane_group(self, e: usize) -> u64 {
+        debug_assert_eq!(e, 0);
+        self
+    }
+}
+
+// 本 rustc 的 portable_simd 中 `Simd<T, N>` 仅要求 `T: SimdElement`，
+// N 为任意 const 泛型参数（无需 LaneCount bound）。
+#[cfg(feature = "simd")]
+impl<const L: usize> Plane for Simd<u64, L> {
+    const LANES: usize = 64 * L;
+    #[inline]
+    fn broadcast(x: u64) -> Self {
+        Simd::splat(x)
+    }
+    #[inline]
+    fn from_lane_groups(f: impl FnMut(usize) -> u64) -> Self {
+        Simd::from_array(core::array::from_fn(f))
+    }
+    #[inline]
+    fn to_lane_group(self, e: usize) -> u64 {
+        self.to_array()[e]
+    }
+}
+
 /// 64 位位平面组：一个状态字节在 64 个块上的全部比特。
 type Planes = [u64; 8];
 
-/// 一批并行加密的块数（= 位平面位宽）。
+/// 一批并行加密的最大块数（= 最大档位平面覆盖）。
+/// simd feature：512 块（Simd<u64,8> 每平面 8×64 lane）；
+/// 标量回退：64 块（P1 形态）。
+#[cfg(feature = "simd")]
+pub(crate) const CTR_BATCH_BLOCKS: usize = 512;
+#[cfg(not(feature = "simd"))]
 pub(crate) const CTR_BATCH_BLOCKS: usize = 64;
 
 /// GF(2^8) 位切片乘法：卷积 t_k = Σ_{i+j=k} a_i·b_j 后折叠约减。
 /// 折叠关系（f = x^8+x^4+x^3+x+1）：
 /// x^8→{4,3,1,0}，x^9→{5,4,2,1}，x^10→{6,5,3,2}，x^11→{7,6,4,3}，
 /// x^12→{7,5,3,1,0}，x^13→{6,3,2,0}，x^14→{7,4,3,1}。
-fn bs_mul(a: &Planes, b: &Planes) -> Planes {
-    let mut t = [0u64; 15];
+fn bs_mul<P: Plane>(a: &[P; 8], b: &[P; 8]) -> [P; 8] {
+    let mut t = [P::broadcast(0); 15];
     for i in 0..8 {
         for j in 0..8 {
             t[i + j] ^= a[i] & b[j];
@@ -344,7 +409,7 @@ fn bs_mul(a: &Planes, b: &Planes) -> Planes {
 
 /// GF(2^8) 位切片平方：a_i → 偶次幂平面 2i，折叠 x^8/x^10/x^12/x^14
 ///（奇次卷积项为 0，折叠集见 [`bs_mul`]）。
-fn bs_sq(a: &Planes) -> Planes {
+fn bs_sq<P: Plane>(a: &[P; 8]) -> [P; 8] {
     [
         a[0] ^ a[4] ^ a[6],
         a[4] ^ a[6] ^ a[7],
@@ -358,7 +423,7 @@ fn bs_sq(a: &Planes) -> Planes {
 }
 
 /// GF(2^8) 位切片乘 x（xtime）：a_i → i+1，a_7 折叠 0x1b。
-fn bs_xtime(a: &Planes) -> Planes {
+fn bs_xtime<P: Plane>(a: &[P; 8]) -> [P; 8] {
     [
         a[7],
         a[0] ^ a[7],
@@ -372,7 +437,7 @@ fn bs_xtime(a: &Planes) -> Planes {
 }
 
 /// 位切片 S-box：就地把一个字节组替换为 S-box 输出。
-fn bs_sbox(x: &mut Planes) {
+fn bs_sbox<P: Plane>(x: &mut [P; 8]) {
     let a = *x;
     // 逆元 x^254：
     let x2 = bs_sq(&a);
@@ -401,8 +466,9 @@ fn bs_sbox(x: &mut Planes) {
 
 /// 位切片轮函数（批量路径）：`st` 已含 ARK(0)，完成 1..Nr-1
 /// 轮（S-box/Shift/Mix/ARK）与终轮（S-box/Shift/ARK）。
-/// `rk_planes` 长度 = Nr+1。
-fn bs_rounds(st: &mut [[u64; 8]; 16], rk_planes: &[[[u64; 8]; 16]]) {
+/// `rk_planes` 长度 = Nr+1；Simd 档位下轮密钥平面 splat-on-use，
+/// 不新增秘密存储。
+fn bs_rounds<P: Plane>(st: &mut [[P; 8]; 16], rk_planes: &[[Planes; 16]]) {
     for rk in &rk_planes[1..rk_planes.len() - 1] {
         for group in st.iter_mut() {
             bs_sbox(group);
@@ -411,7 +477,7 @@ fn bs_rounds(st: &mut [[u64; 8]; 16], rk_planes: &[[[u64; 8]; 16]]) {
         bs_mix_columns(st);
         for (sg, rg) in st.iter_mut().zip(rk.iter()) {
             for (s, r) in sg.iter_mut().zip(rg.iter()) {
-                *s ^= r;
+                *s ^= P::broadcast(*r);
             }
         }
     }
@@ -422,13 +488,13 @@ fn bs_rounds(st: &mut [[u64; 8]; 16], rk_planes: &[[[u64; 8]; 16]]) {
     let rk = &rk_planes[rk_planes.len() - 1];
     for (sg, rg) in st.iter_mut().zip(rk.iter()) {
         for (s, r) in sg.iter_mut().zip(rg.iter()) {
-            *s ^= r;
+            *s ^= P::broadcast(*r);
         }
     }
 }
 
 /// 位切片 ShiftRows：字节组层面的平面重排（flat = 4*col + row）。
-fn bs_shift_rows(s: &mut [[u64; 8]; 16]) {
+fn bs_shift_rows<P: Plane>(s: &mut [[P; 8]; 16]) {
     let t = *s;
     for row in 1..4 {
         for col in 0..4 {
@@ -438,7 +504,7 @@ fn bs_shift_rows(s: &mut [[u64; 8]; 16]) {
 }
 
 /// 位切片 MixColumns：out = M·in，M 同标量路径（xtime 组合）。
-fn bs_mix_columns(s: &mut [[u64; 8]; 16]) {
+fn bs_mix_columns<P: Plane>(s: &mut [[P; 8]; 16]) {
     for c in 0..4 {
         let o = 4 * c;
         let (a0, a1, a2, a3) = (s[o], s[o + 1], s[o + 2], s[o + 3]);
@@ -451,6 +517,92 @@ fn bs_mix_columns(s: &mut [[u64; 8]; 16]) {
             s[o + 1][b] = a0[b] ^ xt1[b] ^ xt2[b] ^ a2[b] ^ a3[b];
             s[o + 2][b] = a0[b] ^ a1[b] ^ xt2[b] ^ xt3[b] ^ a3[b];
             s[o + 3][b] = xt0[b] ^ a0[b] ^ a1[b] ^ a2[b] ^ xt3[b];
+        }
+    }
+}
+
+/// 计数器字节的某一个 64-lane 组的位平面（大端低 32 位 + lane）。
+/// 与块数/计数器一样属公开量。
+fn ctr_group_planes(ctr0: u32, e: usize, n: usize) -> [[u64; 8]; 16] {
+    let mut grp = [[0u64; 8]; 16];
+    for i in 0..64usize {
+        let lane = e * 64 + i;
+        if lane < n {
+            let ctr = ctr0.wrapping_add(lane as u32).to_be_bytes();
+            for k in 0..4 {
+                for (b, slot) in grp[12 + k].iter_mut().enumerate() {
+                    *slot |= u64::from((ctr[k] >> b) & 1) << i;
+                }
+            }
+        }
+    }
+    grp
+}
+
+/// 批量加密核心（P2 泛型）：以 `base` 为第 0 块，加密"base 低 32
+/// 位加 i"（i = 0..n，n ≤ `P::LANES`）共 n 个块，每块 16 字节密钥流
+/// 写入 `out`。未用 lane 计算任意值但不写出。装载/提取按 64-lane
+/// 组进行后装配为 P；档位选择在
+/// [`encrypt_ctr_batch`](Aes128::encrypt_ctr_batch) 按公开 n 完成，
+/// 本函数零分支于秘密。
+fn encrypt_ctr_batch_p<P: Plane>(
+    rk_planes: &[[Planes; 16]],
+    base: [u8; 16],
+    n: usize,
+    out: &mut [u8],
+) {
+    debug_assert!(n > 0 && n <= P::LANES && out.len() >= n * 16);
+
+    // 装载：前 12 字节跨块常量 → 全 0/全 1 平面。
+    let mut st = [[P::broadcast(0); 8]; 16];
+    for (g, byte) in base[..12].iter().enumerate() {
+        for (b, plane) in st[g].iter_mut().enumerate() {
+            *plane = P::broadcast(u64::from((byte >> b) & 1).wrapping_neg());
+        }
+    }
+    // 计数器低 32 位（大端）按 lane 展开：逐 64-lane 组展开后装配。
+    let ctr0 = u32::from_be_bytes(base[12..16].try_into().unwrap());
+    let ng = P::LANES / 64;
+    let mut groups = [[[0u64; 8]; 16]; 8]; // 上限档位 512 块 = 8 组
+    for (e, slot) in groups.iter_mut().enumerate().take(ng) {
+        *slot = ctr_group_planes(ctr0, e, n);
+    }
+    for g in 12..16 {
+        for (b, slot) in st[g].iter_mut().enumerate() {
+            *slot = P::from_lane_groups(|e| groups[e][g][b]);
+        }
+    }
+
+    // ARK(0) + 主轮。
+    let rk0 = &rk_planes[0];
+    for (sg, rg) in st.iter_mut().zip(rk0.iter()) {
+        for (s, r) in sg.iter_mut().zip(rg.iter()) {
+            *s ^= P::broadcast(*r);
+        }
+    }
+    bs_rounds(&mut st, rk_planes);
+
+    // 提取前 n 个 lane（逐组拉平为 u64 平面后逐 lane 装配字节）。
+    for e in 0..ng {
+        let grp = st.map(|g8| {
+            let mut grp8 = [0u64; 8];
+            for (slot, p) in grp8.iter_mut().zip(g8.iter()) {
+                *slot = p.to_lane_group(e);
+            }
+            grp8
+        });
+        for i in 0..64usize {
+            let lane = e * 64 + i;
+            if lane >= n {
+                continue; // n 公开
+            }
+            for (g, group) in grp.iter().enumerate() {
+                let mut byte = 0u8;
+                for (b, plane) in group.iter().enumerate() {
+                    byte |= (((plane >> i) & 1) as u8) << b;
+                }
+                out[lane * 16 + g] = byte;
+            }
         }
     }
 }
@@ -686,10 +838,17 @@ mod tests {
             0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0x00, 0x00,
             0x00, 0x01,
         ];
-        for n in [1usize, 2, 3, 63, 64] {
+        // 覆盖全部批量档位边界（P2：64/128/256/512 块档按 n 分发）。
+        #[cfg(feature = "simd")]
+        let sizes = [
+            1usize, 2, 3, 63, 64, 65, 100, 128, 129, 200, 256, 257, 300, 511, 512,
+        ];
+        #[cfg(not(feature = "simd"))]
+        let sizes = [1usize, 2, 3, 63, 64];
+        for n in sizes {
             let mut fast = vec![0u8; CTR_BATCH_BLOCKS * 16];
             aes.encrypt_ctr_batch(base, n, &mut fast);
-            let mut expect = vec![0u8; 64 * 16];
+            let mut expect = vec![0u8; n * 16];
             let ctr0 = u32::from_be_bytes(base[12..16].try_into().unwrap());
             for i in 0..n {
                 let mut blk = base;
@@ -697,9 +856,9 @@ mod tests {
                 aes.encrypt_block(&mut blk);
                 expect[i * 16..(i + 1) * 16].copy_from_slice(&blk);
             }
-            assert_eq!(&fast[..n * 16], &expect[..n * 16], "n={n} aes128");
+            assert_eq!(&fast[..n * 16], &expect, "n={n} aes128");
             // aes256 单独比对
-            let mut expect256 = vec![0u8; 64 * 16];
+            let mut expect256 = vec![0u8; n * 16];
             for i in 0..n {
                 let mut blk = base;
                 blk[12..16].copy_from_slice(&ctr0.wrapping_add(i as u32).to_be_bytes());
@@ -707,9 +866,9 @@ mod tests {
                 expect256[i * 16..(i + 1) * 16].copy_from_slice(&blk);
             }
             aes256.encrypt_ctr_batch(base, n, &mut fast);
-            assert_eq!(&fast[..n * 16], &expect256[..n * 16], "n={n} aes256");
+            assert_eq!(&fast[..n * 16], &expect256, "n={n} aes256");
         }
-        // 计数器回绕点。
+        // 计数器回绕点（64 块组内回绕 + P2 最大档位跨组回绕）。
         base[12..16].copy_from_slice(&0xFFFF_FFFDu32.to_be_bytes());
         let mut fast = vec![0u8; CTR_BATCH_BLOCKS * 16];
         aes.encrypt_ctr_batch(base, 64, &mut fast);
@@ -719,6 +878,33 @@ mod tests {
             blk[12..16].copy_from_slice(&ctr0.wrapping_add(i as u32).to_be_bytes());
             aes.encrypt_block(&mut blk);
             assert_eq!(&fast[i * 16..(i + 1) * 16], &blk, "wrap i={i}");
+        }
+        #[cfg(feature = "simd")]
+        {
+            // 512 块档位：0xFFFFFF00 起第 256 块处回绕，覆盖两个 64-lane 组
+            // 交界与组内回绕（批量入口按 wrapping 语义，与标量参考一致）。
+            let mut base = [
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xff, 0xff,
+                0xff, 0x00,
+            ];
+            let mut fast = vec![0u8; 512 * 16];
+            aes.encrypt_ctr_batch(base, 512, &mut fast);
+            let ctr0 = u32::from_be_bytes(base[12..16].try_into().unwrap());
+            for i in 0..512usize {
+                let mut blk = base;
+                blk[12..16].copy_from_slice(&ctr0.wrapping_add(i as u32).to_be_bytes());
+                aes.encrypt_block(&mut blk);
+                assert_eq!(&fast[i * 16..(i + 1) * 16], &blk, "wrap512 i={i}");
+            }
+            base[12..16].copy_from_slice(&0xFFFF_FFFDu32.to_be_bytes());
+            aes.encrypt_ctr_batch(base, 129, &mut fast);
+            let ctr0 = u32::from_be_bytes(base[12..16].try_into().unwrap());
+            for i in 0..129usize {
+                let mut blk = base;
+                blk[12..16].copy_from_slice(&ctr0.wrapping_add(i as u32).to_be_bytes());
+                aes.encrypt_block(&mut blk);
+                assert_eq!(&fast[i * 16..(i + 1) * 16], &blk, "wrap129 i={i}");
+            }
         }
     }
 }
