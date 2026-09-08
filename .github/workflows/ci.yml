@@ -76,15 +76,21 @@ jobs:
           cargo test -p ferritls-interop --no-default-features
       # 宽 ISA 代码档（P2）：AVX2 在 x86_64 runner 上普遍可用，实跑测试；
       # AVX-512 未必可用，只做编译检查防 SIGILL（本机 Zen 4 实跑兜底）。
+      # 两腿均经 CARGO_BUILD_TARGET 显式钉住目标三元组：cargo 只在
+      # target 模式下才把 RUSTFLAGS 限定于目标单元；否则宿主侧 build
+      # script / proc-macro 也按宽 ISA 编码，在不支持该 ISA 的 runner
+      # CPU 上一执行即 SIGILL（0.2.0 CI 的 ring build script 即此死法）。
       - name: Run tests (AVX2 channels)
         if: runner.arch == 'X64'
         env:
           RUSTFLAGS: -C target-feature=+avx2
+          CARGO_BUILD_TARGET: ${{ runner.os == 'Linux' && 'x86_64-unknown-linux-gnu' || (runner.os == 'Windows' && 'x86_64-pc-windows-msvc' || 'x86_64-apple-darwin') }}
         run: cargo test -p ferritls-core
       - name: Check (AVX-512 channels, compile only)
         if: runner.arch == 'X64'
         env:
           RUSTFLAGS: -C target-cpu=x86-64-v4
+          CARGO_BUILD_TARGET: ${{ runner.os == 'Linux' && 'x86_64-unknown-linux-gnu' || (runner.os == 'Windows' && 'x86_64-pc-windows-msvc' || 'x86_64-apple-darwin') }}
         run: cargo check --workspace --all-targets
 
   fuzz:
