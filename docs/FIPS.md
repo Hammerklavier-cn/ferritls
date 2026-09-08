@@ -20,6 +20,14 @@
 | zeroize | 秘密零化 | 体量极小，社区广泛使用；无已知公告 |
 | getrandom | OS 熵（边界外输入） | 广泛审计（rustls 自身依赖链） |
 
+- P2 起 `simd` 默认 feature 使用标准库 `core::simd`（portable_simd）
+  的显式向量类型：**属 std，不是第三方依赖，白名单不变**；在 stable
+  工具链上经 `RUSTC_BOOTSTRAP=1` 启用 `#![feature(portable_simd)]`
+  编译（仓内 `.cargo/config.toml [env]` / CI env / 下游自带 env 三
+  途径，`default-features = false` 可整体退出回标量路径）。portable_
+  simd 稳定后该 env 依赖拆除。送审快照须连同该环境变量与目标特性
+  一并记录（见 §6.1/§6.5）。
+
 - 快照纪律：送审版本 `--locked` + 固定工具链构建；发布产物与送审产物
   可复现比对。**边界内任何源码改动都会使证书失效**，需要重验证或走
   CMVP 更新流程（Go 的先例：约每年重验证一次）。
@@ -95,7 +103,8 @@ FIPS 140-3（ISO/IEC 19790）对软件模块的核心要求与我们的对应物
 ### 6.1 密码模块规格（SP 800-140C §1）
 
 - 模块：`ferritls-core`，纯软件实现（Software），版本 = crate 0.1.x
-  的锁定源码快照 + `--locked` 依赖 + 固定 Rust 工具链。
+  的锁定源码快照 + `--locked` 依赖 + 固定 Rust 工具链（含
+  `RUSTC_BOOTSTRAP=1` 编译环境与 `simd` feature 档位，P2 起）。
 - 类型：多芯片独立独立软件模块；总体安全等级目标 Level 1。
 - 批准模式：`fips` feature 编译单元，由 `policy::Approval` 与
   `fips_mode_provider()` 门控；非批准算法（X25519、Ed25519、
@@ -125,7 +134,9 @@ FIPS 140-3（ISO/IEC 19790）对软件模块的核心要求与我们的对应物
 - 修改性：非可修改（Non-Modifiable）——库以编译产物分发，不含
   脚本解释器。
 - 环境：Rust 工具链目标平台（win/linux/macos，x86_64/aarch64）；
-  送审时锁定 rustc 版本与目标三元组。无 OS 服务依赖（熵除外）。
+  送审时锁定 rustc 版本、目标三元组与编译环境（P2 起 `simd` feature
+  需 `RUSTC_BOOTSTRAP=1`；ChaCha20 通道宽度由目标特性决定，快照须
+  记录所用 target-feature 组合）。无 OS 服务依赖（熵除外）。
 
 ### 6.6 密码算法（§6，SP 800-140D 口径）
 
@@ -187,7 +198,10 @@ FIPS 140-3（ISO/IEC 19790）对软件模块的核心要求与我们的对应物
   后 CRT，r⁻¹ 去盲，中间值零化）。GHASH 乘法：P1 性能轮（2026-09）
   按 §5.1 查表二分判据由逐位实现改为 H 倍数 4-bit 表（索引仅公开
   AAD/密文/长度字节，访存模式与秘密无关）；AES 批量加密方向为
-  位切片纯布尔电路（零查表），单块方向为 16 宽单次全表掩码扫描
-  （P1.5；访问模式与输入无关）；Poly1305 4 块分组吸收为纯字组
-  算术（P1.5，无查表、无秘密条件分支）。
+  位切片纯布尔电路（零查表；P2 起平面运算显式 `core::simd` 向量
+  类型，批量档位按公开请求长度选择），单块方向为 16 宽单次全表
+  掩码扫描（P1.5；访问模式与输入无关；P2 起显式 `u8x16`）；
+  ChaCha20 批处理通道为显式 `Simd<u32, C>`（P2；C 由编译期目标
+  特性决定，不依赖秘密）；Poly1305 4 块分组吸收为纯字组算术
+  （P1.5，无查表、无秘密条件分支）。
 - 攻击者可控输入不 panic：Wycheproof 2349 用例 + fuzz CI（M7）。

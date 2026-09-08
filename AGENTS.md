@@ -229,14 +229,35 @@ targets 在 M6 建立，语料进 `fuzz/`），零 panic。
 
 - **先正确，后快**：向量全绿 + 常数时间审查通过之前，禁止任何
   “性能优化”提交（包括看似无害的循环展开）。
-- 优化有两条入口：① **软件后端自身的重构**（稳定版、零 unsafe、
-  边界内——如 P1 性能轮的批量 XOR / H 倍数表 / 位切片 / 批处理形状
-  重排）属常规维护，不经 ops 分发，公开 API 与 rustls 适配层不动；
-  ② **新增硬件后端**的唯一入口是 `ferritls-core::ops` 的 trait 分发
-  （模式见 `docs/ARCHITECTURE.md` §4），以边界外独立 crate 存在。
+- 优化有两条入口：① **软件后端自身的重构**（stable 工具链、零
+  unsafe、边界内——如 P1 性能轮的批量 XOR / H 倍数表 / 位切片 /
+  批处理形状重排，P2 起含默认 feature `simd` 的显式 `core::simd`
+  路径，约束集见下条）属常规维护，不经 ops 分发，公开 API 与
+  rustls 适配层不动；② **新增硬件后端**的唯一入口是
+  `ferritls-core::ops` 的 trait 分发（模式见 `docs/ARCHITECTURE.md`
+  §4），以边界外独立 crate 存在。
+- **`simd` feature（P2 起，默认启用）**：显式 `core::simd`
+  （portable_simd）代码经 `#![cfg_attr(feature = "simd",
+  feature(portable_simd))]` 启用，在 stable 工具链上依赖
+  `RUSTC_BOOTSTRAP=1` 编译（仓内由 `.cargo/config.toml` 的 `[env]`
+  提供，CI 由 workflow env 提供；下游 stable 用户需自带该 env 或以
+  `default-features = false` 退出）。约束集：safe-only
+  （`#![forbid(unsafe_code)]` 不变）、零新依赖（portable_simd 属
+  std，白名单不变）、通道宽度按编译期信息选择（AES 批量按请求
+  块数在已实例化档位中取最小浪费；ChaCha20 按
+  `cfg(target_feature)` 三档 AVX-512/AVX2/基线，档位选择不依赖
+  任何秘密）、**不做运行时分发**（调用 `#[target_feature]` 函数
+  需要 unsafe，被 forbid）、标量路径原样保留为永久回退与 oracle
+  基线。portable_simd 稳定后：拆除 RUSTC_BOOTSTRAP 依赖，代码
+  不变。
 - 任何优化不得引入以秘密为条件的分支/访存（§5.1），PR 里要说明。
-- 性能 PR 三要件：全向量套件一行不改且绿 + 常数时间声明 + 基准
-  前后数字（`cargo run -p ferritls-interop --release --example perf`）。
+- 性能 PR 三要件：全向量套件一行不改且绿（simd feature 存在时须
+  **默认（simd）与 no-default-features（标量回退）双配置**都绿）+
+  常数时间声明 + 基准前后数字（`cargo run -p ferritls-interop
+  --release --example perf`；宽 ISA 评估加跑
+  `RUSTFLAGS="-C target-feature=+avx2"`（及 +avx512f,+avx512vl）
+  变体——自动向量化在宽 ISA 下常常不加宽，效率判定以同 ISA 对照
+  为准，不以 x86-64 默认 SSE2 宽度为唯一标尺）。
 - 批准模式下后端固定为软件后端（边界稳定优先，见 `ops.rs` 文档）。
 
 ---
@@ -272,14 +293,22 @@ targets 在 M6 建立，语料进 `fuzz/`），零 panic。
 
 ### 6.3 本地命令
 
+默认 feature `simd`（P2 起）经 `#![feature(portable_simd)]` 启用，
+**stable 工具链上需 `RUSTC_BOOTSTRAP=1`**——仓内 `.cargo/config.toml`
+的 `[env]` 已提供，以下命令可直接跑；仓外/CI 由环境变量提供。
+
 ```bash
 cargo build --workspace
-cargo test --workspace                 # ignored 默认跳过
+cargo test --workspace                 # ignored 默认跳过（simd 路径）
+cargo test -p ferritls-core --no-default-features   # 标量回退路径
 cargo test -p ferritls-core --features fips
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 cargo deny check                       # 需已安装 cargo-deny
-cargo run -p ferritls-interop --release --example perf # P1 性能基准（同机前后对比用）
+cargo run -p ferritls-interop --release --example perf # 性能基准（同机前后对比用）
+RUSTFLAGS="-C target-feature=+avx2" cargo test --workspace          # AVX2 档
+RUSTFLAGS="-C target-cpu=native" cargo run -p ferritls-interop \
+    --release --example perf           # 宽 ISA 性能（本机 CPU 支持 AVX2/512 时）
 cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored 测试
 ```
 
@@ -350,6 +379,13 @@ cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored
       （10×）、单块 AES 2.9 → 18 MB/s（6×）、ChaCha20-Poly1305
       451 → 620 MB/s；数字、两次实测回退记录与余留慢点见
       `docs/ROADMAP.md` P1/P1.5 节
+- [ ] P2 portable_simd 轮（进行中，2026-09-08）：`simd` 默认
+      feature + stable 工具链 RUSTC_BOOTSTRAP 编译 `core::simd`
+      显式向量化——AES 位切片平面泛型化（`u64`/`Simd<u64,L>` 同源
+      电路，批量档 64/128/256/512 按请求选档）、ChaCha20 通道按
+      `cfg(target_feature)` 三档（16/8/4 块）、单块 SubBytes 显式
+      `u8x16`；效率按 AVX2/AVX-512（Zen 4 本机 RUSTFLAGS）同 ISA
+      对照判定。设计、约束与测量矩阵见 `docs/ROADMAP.md` P2 节
 - [ ] M8：TLS 1.2 / QUIC / ML-KEM 混合 / intrinsics 后端
 
 **已知的实现级注记**（修订实现前必读）：

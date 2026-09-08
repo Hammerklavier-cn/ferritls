@@ -15,6 +15,7 @@
 | M6 | rustls 集成 + 互操作矩阵 | 2 周 | **完成（2026-09）** |
 | M7 | 发布 0.1 + 批准模式打磨 + ACVP 预演 | 持续 | **完成（2026-09，发布动作待定）** |
 | P1 | 性能轮：稳定版自动向量化（默认生效） | 1–2 周 | **完成（2026-09）** |
+| P2 | portable_simd 轮：`simd` 默认 feature（stable + RUSTC_BOOTSTRAP） | 数日 | **进行中（2026-09-08）** |
 | M8 | TLS 1.2 / QUIC / ML-KEM 混合 / intrinsics 后端 | 发布后 | 规划中 |
 
 ## M0 — 脚手架（已完成）
@@ -100,6 +101,12 @@ nightly）。本轮在 stable 上默认生效：零 `unsafe`、零新依赖、�
 之①）。位切片/转置/批处理的代码形状为将来 portable_simd 稳定后的
 `core::simd` 变体与 M8 intrinsics 后端 crate 复用而设计。
 
+> **（2026-09-08 注）**本段"不能作为默认 feature"的决策已被 P2 轮
+> （用户指令）推翻：`simd` 成为默认 feature，经 `RUSTC_BOOTSTRAP=1`
+> 在 stable 工具链编译 `#![feature(portable_simd)]`，标量路径保留为
+> 回退与 oracle 基线，下游可用 `default-features = false` 退出。
+> 设计与实测矩阵见下方 P2 节。
+
 - [x] AEAD 输出路径 bulk-XOR 化：消灭 gcm/ccm/chacha20poly1305 中
       逐字节 `Vec::push` 的内循环（固定块 `zip` 形状，自动向量化）
 - [x] GCM 标签比较常数时间化（gcm.rs 的 `!=` u128 比较 → ct 比较，
@@ -176,6 +183,72 @@ P1 完成时注记中列出的余留慢点，除 SHA-2 外全部处理：
   块加密（可平移 `encrypt_ctr_batch`）；Poly1305 串行吸收
   （ChaCha 已不是瓶颈）；SHA-2 单流（M8 一并）。
   ——前三类已由 P1.5 处理（见上节），SHA-2 仍留 M8。
+
+## P2 — portable_simd 轮（`simd` 默认 feature，进行中 2026-09-08）
+
+**决策（用户指令，推翻 P1 的"portable_simd 不能作默认 feature"）**：
+`simd` 成为 ferritls-core 默认 feature；代码经
+`#![cfg_attr(feature = "simd", feature(portable_simd))]` 启用，在
+**stable 工具链**上以 `RUSTC_BOOTSTRAP=1` 编译（已本机实证可行：
+stable rustc 1.98.1 + 该 env 产出真实 SIMD 指令；无 env 则 E0554
+拒绝）。仓内 `.cargo/config.toml` 的 `[env]`（stable cargo 机制）
+供开发构建零负担使用；CI 由 workflow env 提供；**下游 stable 用户
+需自带该 env 或 `default-features = false` 退出**（README 构建要求
+节注明）。标量路径 = P1/P1.5 现有代码**原样保留**：永久回退 +
+双 oracle 基线。portable_simd 稳定后：拆 RUSTC_BOOTSTRAP，代码不动。
+
+约束集（AGENTS §5.5）：safe-only（`#![forbid(unsafe_code)]` 不变）、
+零新依赖（portable_simd 属 std）、不做运行时分发（需 unsafe 调
+`#[target_feature]` 函数）、档位选择只依赖编译期目标特性与公开长度。
+
+**设计**：
+
+- **AES 位切片批量**：电路（`bs_mul/bs_sq/bs_sbox/bs_rounds` 等）
+  按平面元素类型 `P: Logic` 泛型化——`u64` 与 `Simd<u64, L>` 共享
+  同一份电路源码（u64 实例 = 现有标量路径原样）。批量档位
+  64/128/256/512 块（P = u64 / Simd<u64,2/4/8>）按请求块数 n 取
+  最小浪费档（n≤64 → u64 档 = 现状，小记录零回退）；每平面一个
+  Simd 元素覆盖 64 块，向量宽度由编译目标自动决定（SSE2 2 元素/
+  YMM 4/ZMM 8），轮密钥平面 splat-on-use（不新增秘密存储，DRBG
+  每次 update 重键无额外代价）。
+- **ChaCha20 批处理**：转置通道 `[u32; 4]` → `Simd<u32, C>`，C 按
+  `cfg(target_feature)` 编译期三档：AVX-512 → 16 块/批（16×ZMM）、
+  AVX2 → 8 块/批（16×YMM）、否则 → 4 块/批（16×XMM/NEON）——每档
+  状态恰好 ≈16 个向量寄存器，无 spill。用户以 RUSTFLAGS 开启
+  target-feature 时同一份源码自动升级通道宽度。
+- **单块 AES SubBytes**：`sub_bytes`/`inv_sub_bytes` 16 宽掩码扫描
+  显式 `u8x16`（`simd_eq` + `Select::select`；表索引为公开循环
+  计数器，ct 论证不变）。
+
+**效率判定矩阵（本轮验收核心）**：默认基线 / `+avx2` /
+`+avx2,+avx512f,+avx512vl` 三配置 ×（P1.5 现状 vs P2 Simd），同 ISA
+对照为主；**默认基线不允许比 P1.5 回退**（含 1 KiB 小记录）。
+本机 = AMD Ryzen 9 7900X（Zen 4，AVX2 + AVX-512）。
+
+**基线（P1.5 现状，2026-09-08 实测）**——自动向量化在宽 ISA 下
+几乎不加宽（GCM 仅 +5%；ChaCha 在 +avx2 反而略降；SHA-256 在
++avx512 因向量化决策变化**回归 37%**）——这正是 P2 的空间：
+
+| 基准（seal，MB/s） | 基线（SSE2） | +avx2 | +avx512 |
+|---|---|---|---|
+| AES-128-GCM 1 KiB | 40.8 | 42.9 | 43.6 |
+| AES-128-GCM 16 KiB | 54.6 | 57.1 | 57.6 |
+| AES-256-GCM 16 KiB | 43.5 | 44.7 | 44.6 |
+| AES-128-CCM 16 KiB | 13.6 | 17.1 | 15.5 |
+| ChaCha20-Poly1305 16 KiB | 607 | 584 | 789 |
+| SHA-256 16 KiB | 354 | 356 | 223（回归） |
+
+**出口条件**：全向量套件 / Wycheproof / interop 在默认（simd）、
+no-default-features（标量）、fips、+avx2 四配置一行不改且全绿；
+ct 声明；矩阵前后数字记入本节。结果表（P2 完成时填写）：
+
+| 基准（seal，MB/s） | P2 基线 | P2 +avx2 | P2 +avx512 |
+|---|---|---|---|
+| AES-128-GCM 1 KiB | — | — | — |
+| AES-128-GCM 16 KiB | — | — | — |
+| AES-256-GCM 16 KiB | — | — | — |
+| AES-128-CCM 16 KiB | — | — | — |
+| ChaCha20-Poly1305 16 KiB | — | — | — |
 
 ## 已知问题 / 待开 issue
 

@@ -28,10 +28,12 @@ cryptographic module boundary.
   schedule, 2,349 Wycheproof cases, rustls-ring cross-interop, webpki
   certificate chains, six cargo-fuzz targets
   ([vector provenance](docs/VECTOR-PROVENANCE.md))
-- **Performance** (P1 round, on by default, still zero `unsafe`):
-  bitsliced AES (64 blocks/batch) + grouped GHASH tables + batched
-  ChaCha20 — roughly 19-21x faster AES-GCM record processing versus
-  the masked-scalar baseline; see the P1 section of
+- **Performance** (P1 autovectorization + P2 explicit `std::simd`, on
+  by default, still zero `unsafe`): bitsliced AES + grouped GHASH
+  tables + batched ChaCha20 — roughly 19-21x faster AES-GCM record
+  processing versus the masked-scalar baseline (baseline ISA); building
+  with `RUSTFLAGS="-C target-cpu=native"` automatically widens the
+  vector channels to AVX2/AVX-512; see the P1/P2 sections of
   [docs/ROADMAP.md](docs/ROADMAP.md)
 
 ```rust
@@ -39,6 +41,28 @@ let provider = ferritls_rustls::default_provider();
 provider.install_default()?;
 // ClientConfig::builder() / ServerConfig::builder() now use it by default.
 ```
+
+## Build requirements (default `simd` feature)
+
+The default `simd` feature of `ferritls-core` uses the standard
+library's `core::simd` (portable_simd), which on the **stable
+toolchain** requires the `RUSTC_BOOTSTRAP=1` environment variable
+(this repository ships a `.cargo/config.toml` that sets it, so a
+cloned checkout builds out of the box):
+
+```bash
+# When depending on this crate (crates.io / path / git) — pick one:
+export RUSTC_BOOTSTRAP=1                      # (a) keep simd
+ferritls-core = { version = "0.1", default-features = false }  # (b) scalar fallback
+```
+
+- Vector width follows the compile target: the default x86-64/aarch64
+  baselines (SSE2/NEON); building with
+  `RUSTFLAGS="-C target-feature=+avx2"` or `-C target-cpu=native`
+  automatically widens the same source to AVX2/AVX-512 channels.
+- Once portable_simd stabilizes on a Rust release, this environment
+  variable requirement goes away.
+- Nightly toolchains need no variable (feature gates are native).
 
 ## FIPS 140-3 statement
 

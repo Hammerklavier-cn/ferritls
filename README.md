@@ -23,16 +23,35 @@
 - **测试面**：RFC/NIST/CAVP 官方向量、RFC 8448 密钥调度、Wycheproof
   2349 用例、rustls-ring 交叉互操作、webpki 证书链、cargo-fuzz 六目标
   （[向量溯源](docs/VECTOR-PROVENANCE.md)）
-- **性能**（P1 性能轮，默认生效，仍零 `unsafe`）：位切片 AES
-  （64 块/批）+ 分组 GHASH 表 + 批处理 ChaCha20——AES-GCM 记录层
-  较纯掩码基线提升约 19–21 倍，详见 [docs/ROADMAP.md](docs/ROADMAP.md)
-  P1 节
+- **性能**（P1 自动向量化 + P2 显式 `std::simd`，默认启用，仍零
+  `unsafe`）：位切片 AES + 分组 GHASH 表 + 批处理 ChaCha20——AES-GCM
+  记录层较纯掩码基线提升约 19–21 倍（基线 ISA）；以
+  `RUSTFLAGS="-C target-cpu=native"` 构建可自动启用 AVX2/AVX-512
+  宽通道，详见 [docs/ROADMAP.md](docs/ROADMAP.md) P1/P2 节
 
 ```rust
 let provider = ferritls_rustls::default_provider();
 provider.install_default()?;
 // 之后 ClientConfig::builder() / ServerConfig::builder() 默认使用它。
 ```
+
+## 构建要求（默认 `simd` feature）
+
+`ferritls-core` 的默认 feature `simd` 使用标准库 `core::simd`
+（portable_simd），在 **stable 工具链**上需要 `RUSTC_BOOTSTRAP=1`
+环境变量编译（本仓库内置 `.cargo/config.toml` 已自动提供，克隆即用）：
+
+```bash
+# 依赖本仓库时（crates.io / path / git）——二选一：
+export RUSTC_BOOTSTRAP=1                      # ① 保留 simd
+ferritls-core = { version = "0.1", default-features = false }  # ② 标量回退
+```
+
+- 通道宽度按编译目标自动选择：默认 x86-64/aarch64 基线（SSE2/NEON）；
+  以 `RUSTFLAGS="-C target-feature=+avx2"` 或 `-C target-cpu=native`
+  构建时同一份源码自动升级到 AVX2/AVX-512 通道。
+- portable_simd 在 Rust 稳定通道发布后，此环境变量要求将自动移除。
+- nightly 工具链无需该变量（原生支持 feature gate）。
 
 ## FIPS 140-3 声明
 
