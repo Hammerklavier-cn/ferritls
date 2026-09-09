@@ -37,12 +37,13 @@
 //! | [`rsabig`]（内部） | RSA 固定宽度大数 + Montgomery 模幂 | 非公开支撑 | M4 |
 //! | [`ct`] / [`policy`] / [`ops`] | 常数时间工具、批准策略、后端入口 | — | M0 |
 //!
-//! ## 骨架状态
+//! ## 实现状态
 //!
-//! 当前为 M0 骨架：公开 API 形状已定型，函数体为 `todo!("Mx")`，对应的
-//! NIST/RFC/Wycheproof 向量测试已预置在 `tests/` 并标记 `#[ignore = "Mx"]`。
-//! 实现某个里程碑时：落地实现 → 与官方文档核对向量 → 移除 `#[ignore]` →
-//! CI 全绿（流程见 AGENTS.md“测试体系”）。
+//! M1–M7 已全部落地：上表各模块的实现与向量测试（NIST/RFC 官方向量、
+//! Wycheproof、RFC 8448 密钥调度）均已启用并全绿，无 `todo!()` 残留——
+//! 唯 [`ops`] 的后端分发 trait 仍为占位形态（软件实现直接内联在公开
+//! 类型里），其接线是 M8 intrinsics 后端的前置项。新增测试向量时沿用
+//! 既有流程：核对官方原文 → 入库 → 全绿（见 AGENTS.md“测试体系”）。
 
 #![forbid(unsafe_code)]
 // 默认 feature `simd`（P2）：显式 core::simd（portable_simd）向量化路径，

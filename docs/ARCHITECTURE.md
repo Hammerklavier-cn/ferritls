@@ -1,7 +1,9 @@
 # ferritls 架构
 
-本文描述目标架构与数据流。当前仓库处于 M0 骨架阶段：模块签名已定型，
-实现按 ROADMAP 里程碑落地。改架构先改本文（AGENTS.md 规则 9）。
+本文描述目标架构与数据流。当前 M0–M7 已全部落地：ferritls-core 全模块
+实现完毕（无 `todo!()` 残留——唯 ops.rs 的后端分发 trait 仍为占位形态，
+见 §4），rustls 适配层与互操作矩阵已建成。改架构先改本文（AGENTS.md
+规则 9）。
 
 ## 1. crate 分层与依赖方向
 
@@ -39,7 +41,7 @@
 | `cipher_suites: Vec<SupportedCipherSuite>` | `cipher::all_tls13_suites()` | 4 个 TLS 1.3 套件；批准模式 3 个 |
 | `Tls13CipherSuite.hash_provider` | 包装 `core::sha2` 为 `crypto::Hash` | 块长/输出长 + reset/update/finish |
 | `Tls13CipherSuite.hkdf_provider` | `crypto::tls13::HkdfUsingHmac` + 包装的 `crypto::hmac::Hmac` | **复用 rustls 辅助器**，不手写密钥调度 |
-| `Tls13CipherSuite.aead_alg` | 包装 `core::gcm`/`ccm`/`chacha20poly1305` 为 `Tls13AeadAlgorithm` | `extract_keys` M6 支持 key exporter |
+| `Tls13CipherSuite.aead_alg` | 包装 `core::gcm`/`ccm`/`chacha20poly1305` 为 `Tls13AeadAlgorithm` | `extract_keys` 已支持 key exporter（GCM/ChaCha20；CCM 因 rustls `ConnectionTrafficSecrets` 无对应变体返回 `UnsupportedOperationError`） |
 | `Tls13CipherSuite.quic` | `None` | QUIC 是 M8+ |
 | `kx_groups: &[&dyn SupportedKxGroup]` | `kx::{X25519,SecP256R1,SecP384R1}` | 经典 ECDH 用默认 `start_and_complete` |
 | `ActiveKeyExchange` | `kx::Active*` 持有 core 的 ECDH 私钥 | `complete` 消费 `Box<Self>` |
@@ -48,7 +50,7 @@
 | `key_provider` | `sign::KeyLoader` → core `der` + `sign::*Key` | 5 字段中容易漏的一个 |
 | `rustls::sign::{SigningKey,Signer}` | `sign::{EcdsaP256Key,…}` | `sign()` 输入未哈希消息 |
 
-## 3. TLS 1.3 数据流（M6 后）
+## 3. TLS 1.3 数据流
 
 ```
 ClientHello ──SupportedKxGroup::start()──► core::ecdh 私钥+公钥
@@ -59,7 +61,7 @@ ClientHello ──SupportedKxGroup::start()──► core::ecdh 私钥+公钥
                                           │
 记录层 ──────Tls13AeadAlgorithm──────────► core::gcm/ccm/chacha20poly1305
                                           │
-ClientHello.random ──SecureRandom::fill──► core::entropy（M5 前）/ core::drbg（后）
+ClientHello.random ──SecureRandom::fill──► core::drbg（M5 起批准模式）/ core::entropy（其余）
 ```
 
 ferritls-core 内部再经过 `ops` 分发（§4），上表的所有箭头最终落在
@@ -67,10 +69,13 @@ ferritls-core 内部再经过 `ops` 分发（§4），上表的所有箭头最�
 
 ## 4. Ops 后端分发模式（优化入口）
 
-每个原语的公开类型是薄壳，内部经 `Ops` trait 调到具体后端：
+每个原语的公开类型是薄壳；`ferritls-core::ops` 定义后端分发 trait 作为
+未来硬件后端的唯一挂接点。当前状态：**trait 仍为占位形态**，公开 API
+尚未真正经其分发（软件实现直接内联在公开类型里）——把现有实现接线到
+Ops trait 是 M8 intrinsics 后端动工的前置项：
 
 ```rust
-// ferritls-core::ops（示例为 AeadOps，正式启用于 M2）
+// ferritls-core::ops（示例为 AeadOps）
 pub trait AeadOps: Send + Sync {
     fn name(&self) -> &'static str;
     fn seal_in_place(&self, nonce: &[u8], aad: &[u8], buf: &mut [u8])

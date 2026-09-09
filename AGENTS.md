@@ -449,5 +449,7 @@ cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored
   Generate 末次 Update 无条件执行（AI 空则 0^seedlen）；
   官方流程 = Instantiate → Reseed → Generate → Generate。
 
-下一步实现者（人或代理）请从 M7 开始（RFC 8448 / Wycheproof /
-发布准备），动手前重读 §5 与上述注记。
+下一步实现者（人或代理）：M0–M7 已完成、crates.io 发布自动化就绪
+（推 tag 即发布），当前方向为 M8 按需排期（TLS 1.2 / QUIC / ML-KEM
+混合 / intrinsics 后端，动手前先在 ROADMAP 补写出口条件）与 FIPS
+阶段 B 准备（docs/FIPS.md §3）。修订实现前重读 §5 与上述注记。
