@@ -295,5 +295,27 @@ ct 声明；矩阵前后数字记入本节。
   （SP 800-52r2 部署面需要）；
 - QUIC packet protection（`quic` 字段 + Header Protection）；
 - ML-KEM（FIPS 203）+ X25519MLKEM768 混合（X25519 进批准模式的通道）；
-- intrinsics 后端 crate（AES-NI/SHA-ext，边界外，经 ops 挂接）；
+- intrinsics 后端 crate（见 M8.1，2026-09 排期启动）；
 - 认证阶段 B/C 启动（见 docs/FIPS.md）。
+
+### M8.1 intrinsics 后端（AES-NI + CLMUL，进行中）
+
+范围：core `ops` 分发接线（AES-GCM 整消息 kernel + SHA-256 trait
+形状）；新 crate `ferritls-backend-aesni`（仅 x86_64，unsafe 限于唯一
+叶子模块，借鉴 fearless_simd 模式零依赖）；`ops::install()` 应用侧
+显式注册 + 安装 KAT + 批准模式拒绝；软/Ni 差分与向量锚定测试；
+interop 三方 A/B 握手；量化数据入 docs/BENCHMARKS.md。
+
+出口条件：
+
+- [ ] core 仍 `#![forbid(unsafe_code)]`，全部既有向量测试零改动仍绿
+      （软件默认路径逐字节不变）；
+- [ ] 后端 crate：Ni 路径过 GCMVS/RFC 向量子集 + 数千组软/Ni 差分
+      一致 + tag 篡改负例（`VerificationFailed` 且缓冲零化）；
+- [ ] 接线阶段零回归（criterion 同机基线对比）；提升数据记录入
+      BENCHMARKS.md §5；
+- [ ] `--features fips` 构建下 `install()` 拒绝且有测试守护；
+- [ ] fmt / clippy -D warnings / 三平台 test 全绿。
+
+SHA-NI（`ShaNi` token + `HashOps` kernel）为 M8.1 的可选后续，另行
+排期；CCM/ChaCha/P-256/Ed25519 加速与 aarch64 后端明确不在本节范围。

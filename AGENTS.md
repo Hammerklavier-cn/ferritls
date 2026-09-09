@@ -19,8 +19,10 @@ rustls 对接细节与测试约定。修改设计先改这里和相关 `docs/`�
 
 ## 1. 项目是什么、为什么
 
-**ferritls** = 纯 Rust（无 C、无汇编、无 `unsafe`）的 rustls 0.23
-`CryptoProvider`，目标是：
+**ferritls** = 纯 Rust（无 C、无汇编）的 rustls 0.23
+`CryptoProvider`——密码学核心 crate 全程 `#![forbid(unsafe_code)]`；
+可选的 AES-NI 硬件后端 crate 在边界外，把 `unsafe` 限制在唯一的
+叶子模块（§5.5、docs/ARCHITECTURE.md §4）。目标是：
 
 1. **替代 rustls-rustcrypto**（已停更：2024-04 最后发版，README 挂
    "禁止生产使用"横幅，仓库只剩 dependabot 提交）；
@@ -56,7 +58,9 @@ ferritls/
 ├── crates/
 │   ├── ferritls-core/       # 密码学核心 = FIPS 模块边界（#![forbid(unsafe_code)]）
 │   ├── ferritls-rustls/     # rustls CryptoProvider 适配层（边界外，无密码学）
-│   └── ferritls-interop/    # 互操作/E2E 测试宿主（publish=false，依赖不受白名单约束）
+│   ├── ferritls-interop/    # 互操作/E2E 测试宿主（publish=false，依赖不受白名单约束）
+│   └── ferritls-backend-aesni/ # AES-NI + CLMUL GHASH 硬件后端（边界外、仅
+│                            #   x86_64；unsafe 限于唯一叶子模块，经 core::ops 注册）
 ├── docs/                    # ARCHITECTURE / FIPS / ROADMAP
 ├── .github/workflows/ci.yml # fmt / clippy(-D warnings) / 三平台 test / cargo-deny
 │                            #   / fuzz 冒烟 / tag 触发的 crates.io 自动发布
@@ -230,6 +234,7 @@ targets 在 M6 建立，语料进 `fuzz/`），零 panic。
 
 - **先正确，后快**：向量全绿 + 常数时间审查通过之前，禁止任何
   “性能优化”提交（包括看似无害的循环展开）。
+<<<<<<< HEAD
 - 优化有两条入口：① **软件后端自身的重构**（stable 工具链、零
   unsafe、边界内——如 P1 性能轮的批量 XOR / H 倍数表 / 位切片 /
   批处理形状重排，P2 起含默认 feature `simd` 的显式 `core::simd`
@@ -260,6 +265,18 @@ targets 在 M6 建立，语料进 `fuzz/`），零 panic。
   变体——自动向量化在宽 ISA 下常常不加宽，效率判定以同 ISA 对照
   为准，不以 x86-64 默认 SSE2 宽度为唯一标尺）。
 - 批准模式下后端固定为软件后端（边界稳定优先，见 `ops.rs` 文档）。
+=======
+- 优化的唯一入口是 `ferritls-core::ops` 的 trait 分发（模式见
+  `docs/ARCHITECTURE.md` §4）；公开 API 与 rustls 适配层不动。
+- 硬件后端 crate（`ferritls-backend-aesni`）的 unsafe 纪律：crate 根
+  `#![deny(unsafe_code)]`，unsafe 只出现在唯一 `#[allow(unsafe_code)]`
+  私有叶子模块；CPU 能力 token 只能经运行时探测构造；kernel 以安全
+  签名书写、由本地宏生成 `#[target_feature]` 包装（借鉴 fearless_simd
+  的模式，零依赖自建）。安装前后端须通过自身 KAT。
+- 任何优化不得引入以秘密为条件的分支/访存（§5.1），PR 里要说明。
+- 批准模式下后端固定为软件后端（边界稳定优先，`ops::install()` 在
+  `fips` 构建下拒绝，见 `ops.rs` 文档）。
+>>>>>>> 5a8264f (docs: specify real ops dispatch API and ferritls-backend-aesni (M8.1, docs-first))
 
 ---
 
