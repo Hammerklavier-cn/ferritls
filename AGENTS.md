@@ -13,6 +13,7 @@ rustls 对接细节与测试约定。修改设计先改这里和相关 `docs/`�
 | `docs/FIPS.md` | FIPS 边界定义、依赖白名单、认证三阶段路线、安全策略底稿 |
 | `docs/ROADMAP.md` | 里程碑 M0–M8 的范围/出口条件/当前状态 |
 | `docs/VECTOR-PROVENANCE.md` | 全部测试向量的官方来源与核对记录 |
+| `docs/BENCHMARKS.md` | 基准体系：运行方式、基线对比工作流、参考量级、新增约定 |
 
 ---
 
@@ -313,6 +314,9 @@ cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored
 cargo bench -p ferritls-core           # criterion 基准（aead/hash/ecdh/sign/drbg）
 cargo bench -p ferritls-interop        # 全握手基准（含 ring 基线）
 ```
+
+基准的完整用法（过滤、快速冒烟、`--save-baseline`/`--baseline` 回归
+工作流、profiler 配合、参考量级、新增基准约定）见 `docs/BENCHMARKS.md`。
 
 Windows（msys2/windows-gnu）注意：带 cc 构建依赖的 dev-deps
 （criterion 0.8 → alloca）需要 ucrt64 工具链在 PATH **最前**

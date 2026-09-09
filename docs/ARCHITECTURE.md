@@ -100,6 +100,10 @@ pub trait AeadOps: Send + Sync {
    不经 ops 分发——它就是对软件后端的维护，公开 API 不变；ops 分发
    仅服务于未来边界外的硬件后端 crate（AGENTS §5.5）。
 
+任何性能改动（含 M8 硬件后端）前后都用 `docs/BENCHMARKS.md` 的基线
+工作流（`--save-baseline` / `--baseline`）在同机量化对比，禁止仅凭
+直觉申报性能改进（AGENTS.md §5.5）。
+
 ## 5. 错误处理
 
 - 边界内统一 `ferritls_core::Error`（`non_exhaustive`）。
