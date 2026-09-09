@@ -310,7 +310,15 @@ RUSTFLAGS="-C target-feature=+avx2" cargo test --workspace          # AVX2 档
 RUSTFLAGS="-C target-cpu=native" cargo run -p ferritls-interop \
     --release --example perf           # 宽 ISA 性能（本机 CPU 支持 AVX2/512 时）
 cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored 测试
+cargo bench -p ferritls-core           # criterion 基准（aead/hash/ecdh/sign/drbg）
+cargo bench -p ferritls-interop        # 全握手基准（含 ring 基线）
 ```
+
+Windows（msys2/windows-gnu）注意：带 cc 构建依赖的 dev-deps
+（criterion 0.8 → alloca）需要 ucrt64 工具链在 PATH **最前**
+（`export PATH="/c/msys64/ucrt64/bin:$PATH"`），否则 gcc 子进程混载
+mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——与 ring
+构建的已知约束同源。CI（Linux）不受影响。
 
 ---
 
