@@ -17,7 +17,16 @@ ferritls-rustls.workspace = true
 # ring 作为独立参照实现参与交叉互操作（打破「自握手双方同错也对得上」
 # 的盲区）；interop 不发布，dev-deps 不受白名单约束。
 rustls = { workspace = true, features = ["ring"] }
+<<<<<<< HEAD
 
 [features]
 default = ["simd"]
 simd = ["ferritls-core/simd", "ferritls-rustls/simd"]
+=======
+criterion = "0.8.2"
+
+# 全握手基准（含 ring 基线对照），`cargo bench -p ferritls-interop`。
+[[bench]]
+name = "handshake"
+harness = false
+>>>>>>> c050dad (test(interop): add in-memory TLS 1.3 handshake benchmark with ring baseline)
