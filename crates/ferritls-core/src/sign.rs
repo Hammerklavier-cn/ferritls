@@ -227,11 +227,11 @@ macro_rules! ecdsa_curve {
                 let u2 = r_s.mul(&w);
 
                 let g = (crv::gx(), crv::gy());
-                let p1 = crv::mul_point_pub(&u1.to_raw(), 8 * SEED_LEN, &g.0, &g.1);
+                let p1 = crv::mul_point_pub(&u1.to_raw(), &g.0, &g.1);
                 if p1.is_infinity() {
                     return Err(crate::Error::VerificationFailed);
                 }
-                let p2 = crv::mul_point_pub(&u2.to_raw(), 8 * SEED_LEN, &qx, &qy);
+                let p2 = crv::mul_point_pub(&u2.to_raw(), &qx, &qy);
                 if p2.is_infinity() {
                     return Err(crate::Error::VerificationFailed);
                 }

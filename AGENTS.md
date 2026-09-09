@@ -436,6 +436,11 @@ cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored
   （acc 从未被替换），曾被误写为 acc += p 造成全量污染；
 - `ecdh.rs::x25519_ladder`：u 坐标导入后必须 `from_raw` 进
   Montgomery 域（曾漏掉 → 全错一个 R 因子）；
+- `ecdh.rs::mul_point_pub`：公开标量 k 入口先 k mod n 规范化——k ≥ n
+  时中间前缀 k' = (n+1)/2 使 add_or_copy 落入 madd 的 h=0∧r=0 退化
+  （2k'·Q = Q，公式给出无穷远而真值 2Q），曾污染 r0（k=n+2 错回
+  无穷远）；`ladder`（blind 路径 d' = d + r·n）仍保留该理论例外
+  前缀，触发概率 ~2⁻²⁵⁶，已文档化、实际不可达；
 - `sign.rs`（Ed25519）：`compress()` 仿射转换是 X/Z、Y/Z
   （非 Jacobian 的 Z²/Z³），符号位取 `to_raw()` 后的规范奇偶；
 - `sign.rs`（ECDSA）：RFC 6979 步骤 d–g 共两次 K 重构（0x00 与

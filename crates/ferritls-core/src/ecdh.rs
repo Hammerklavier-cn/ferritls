@@ -523,9 +523,22 @@ macro_rules! sw_curve {
             }
 
             /// M4/测试复用：任意点标量乘（验证路径，公开数据）。
+            ///
+            /// 入口先做 k mod n 规范化（公开数据，可变时间无妨）：
+            /// k·Q 只依赖 k mod n，而 k ≥ n 时中间前缀 k' = (n+1)/2 使
+            /// `add_or_copy` 落入 h=0 ∧ r=0 的 madd 退化（2k'·Q = Q，
+            /// 公式给出无穷远而真值为 2Q），污染 r0。规范化后全部前缀
+            /// < n，阶梯对任意 k 正确；生产路径（ECDSA 验证 u1/u2 恒
+            /// < n）规范化为恒等，无额外成本。
             #[allow(dead_code)]
-            pub(crate) fn mul_point_pub(k: &[u64], bits: usize, qx: &F, qy: &F) -> Jac {
-                ladder(k, bits, qx, qy)
+            pub(crate) fn mul_point_pub(k: &[u64], qx: &F, qy: &F) -> Jac {
+                let mut be = vec![0u8; k.len() * 8];
+                for (i, limb) in k.iter().enumerate() {
+                    let off = be.len() - (i + 1) * 8;
+                    be[off..off + 8].copy_from_slice(&limb.to_be_bytes());
+                }
+                let kn = S::from_bytes_be_mod(&be);
+                ladder(&kn.to_raw(), S::LIMBS * 64, qx, qy)
             }
 
             /// M4/测试复用：雅可比 -> 仿射。
@@ -639,7 +652,7 @@ mod tests {
         let rhs = x3.sub(&gx.add(&gx).add(&gx)).add(&b);
         assert_eq!(lhs, rhs, "G must be on P-256");
 
-        let p = p256::mul_point_pub(&Fp256Scalar::P, 256, &gx, &gy);
+        let p = p256::mul_point_pub(&Fp256Scalar::P, &gx, &gy);
         assert!(p.is_infinity(), "n·G must be infinity");
     }
 
@@ -691,7 +704,7 @@ mod tests {
         );
         assert_eq!(lhs, rhs, "G must be on P-384");
 
-        let p = p384::mul_point_pub(&Fp384Scalar::P, 384, &gx, &gy);
+        let p = p384::mul_point_pub(&Fp384Scalar::P, &gx, &gy);
         assert!(p.is_infinity(), "n·G must be infinity");
     }
 
@@ -763,7 +776,7 @@ mod tests {
         let gx = p256::gx();
         let gy = p256::gy();
         for (k, x_exp, y_exp) in cases {
-            let p = p256::mul_point_pub(&[k, 0, 0, 0], 256, &gx, &gy);
+            let p = p256::mul_point_pub(&[k, 0, 0, 0], &gx, &gy);
             assert!(!p.is_infinity(), "{k}G infinity");
             let (x, y) = p256::to_affine_pub(&p);
             assert_eq!(x.to_raw(), x_exp, "{k}G x");
@@ -771,23 +784,18 @@ mod tests {
         }
     }
 
-    /// 已知边界缺陷记录（暂不修）：`mul_point_pub` 的 (R0, R1) 阶梯在
-    /// **k ≥ n 的标量**下存在例外路径——k = n+2 时最后一位的前缀
-    /// k' = (n+1)/2 使 d0 = 2k'·G = +G，madd 公式在 h=0 且 r=0 时给出
-    /// 无穷远，而真值应为 2G（bit=1 选择了被污染的 sum）。
+    /// k ≥ n 的标量乘正确性（历史缺陷回归）：`mul_point_pub` 现在入口
+    /// 做 k mod n 规范化——k ≥ n 时中间前缀 k' = (n+1)/2 使 madd 落入
+    /// h=0 ∧ r=0 退化（2k'·Q = Q，公式给出无穷远而真值为 2Q），曾污染
+    /// r0（k = n+2 时错误返回无穷远）。规范化后 k·Q 对任意 k 正确；
+    /// 本测试断言 (n+2)·G = 2G（锚值与上方 k·G 表中 k=2 一致，来源
+    /// 独立实现交叉核对）。
     ///
-    /// 生产路径不受影响，可证明：ECDSA 验证传入的 u1/u2 恒 < n
-    /// （parse_sig 强制 r/s < n，域乘自然归约），而 k < n 时 2k' ≡ ±1
-    /// (mod n) 仅在 k' = (n±1)/2 且 i = 0（即 k = n−1）可达，此时
-    /// 真值确为无穷远、公式结果正确。签名/密钥生成经 blind() 的
-    /// d' = d + r·n 虽 > n，但触发需随机盲化因子命中 ~2⁻²⁵⁶ 概率前缀，
-    /// 实际不可达。
-    ///
-    /// 本测试**断言当前行为**（无穷远）以钉住该缺陷：若将来修复阶梯
-    /// 例外处理，此断言会失败并提醒同步更新为断言 2G 的正确值。
+    /// 注：`ladder` 本身（blind() 路径，d' = d + r·n > n）的理论例外
+    /// 前缀未改——触发需随机盲化因子命中 ~2⁻²⁵⁶ 概率前缀，实际不可达，
+    /// 详见 mul_point_pub 文档与上方注记。
     #[test]
-    #[ignore = "已知边界缺陷记录：k ≥ n 时 mul_point_pub 阶梯例外路径（生产路径可证明不受影响）"]
-    fn p256_mul_point_pub_scalar_ge_n_exception_documented() {
+    fn p256_mul_point_pub_scalar_ge_n_reduced_mod_n() {
         // n + 2（n = P-256 群阶）
         let k = [
             0xf3b9cac2fc632553u64,
@@ -795,11 +803,29 @@ mod tests {
             0xffffffffffffffff,
             0xffffffff00000000,
         ];
-        let p = p256::mul_point_pub(&k, 256, &p256::gx(), &p256::gy());
-        // 正确结果应为 2G；当前实现因例外路径返回无穷远
-        assert!(
-            p.is_infinity(),
-            "documenting current broken behavior for k = n+2"
+        let p = p256::mul_point_pub(&k, &p256::gx(), &p256::gy());
+        // (n+2)·G ≡ 2·G (mod n)——修复前此断言因例外路径失败（返回无穷远）
+        assert!(!p.is_infinity(), "(n+2)G must not be infinity");
+        let (x, y) = p256::to_affine_pub(&p);
+        assert_eq!(
+            x.to_raw(),
+            [
+                0xa60b48fc47669978,
+                0xc08969e277f21b35,
+                0x8a52380304b51ac3,
+                0x7cf27b188d034f7e
+            ],
+            "(n+2)G x must equal 2G x"
+        );
+        assert_eq!(
+            y.to_raw(),
+            [
+                0x9e04b79d227873d1,
+                0xba7dade63ce98229,
+                0x293d9ac69f7430db,
+                0x7775510db8ed040
+            ],
+            "(n+2)G y must equal 2G y"
         );
     }
 }
