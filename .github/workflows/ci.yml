@@ -5,6 +5,10 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  # 每周全量扫一遍：audit 漏洞公告、慢测试（RFC 7748 1000 轮）、
+  # 以及常规门禁的定期回归。
+  schedule:
+    - cron: "17 3 * * 1"
   workflow_dispatch:
     inputs:
       tag:
@@ -138,6 +142,79 @@ jobs:
         with:
           tool: cargo-deny
       - run: cargo deny check
+
+  # 覆盖率度量（M7 后补强）：汇总打进 job 日志，lcov 作为 artifact 供
+  # 下载；不接 codecov 等外部服务（需 token 与外部依赖，后续可选）。
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Generate coverage (lcov)
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+      - name: Print summary to job log
+        run: cargo llvm-cov report --summary
+      - uses: actions/upload-artifact@v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+
+  # 依赖漏洞公告扫描：cargo-deny 的 advisories 只在 push/PR 时检查，
+  # 公告发布于两次 push 之间时无人感知；本 job（随每周 schedule 与
+  # 手动触发）补上时间维度的扫描。根 workspace 与 fuzz/（独立
+  # workspace）各查一次。
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - run: cargo audit
+      - run: cargo audit --file fuzz/Cargo.lock
+
+  # 公开 API 兼容性门禁：两个发布 crate 的 semver 违例在 PR 阶段拦截
+  # （baseline 默认取最近的版本 tag）。
+  semver-checks:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+
+  # 文档门禁：intra-doc 链接与 rustdoc 警告按错误处理（密码库的文档
+  # 即安全说明的一部分）。
+  docs:
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo doc --no-deps --all-features
+
+  # 慢测试（平时 #[ignore]）：RFC 7748 §5.2 1000 轮迭代金标准等，
+  # 随每周 schedule 与手动触发专职执行。
+  slow-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test -p ferritls-core --test x25519 -- --ignored
 
   # 发布（M7）：推 tag v*（或手动 dispatch 填 tag）→ 全量门禁 → 发布。
   # 单次 `cargo publish` 即可：cargo 1.90（2025-09 stable）起支持

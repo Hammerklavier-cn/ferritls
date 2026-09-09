@@ -1,0 +1,17 @@
+# 依赖更新自动化：根 workspace、fuzz/（独立 workspace）与 CI action
+# 每周检查一轮。ferritls-core 的边界内运行时依赖（subtle/zeroize/
+# getrandom）升级仍受 deny.toml + docs/FIPS.md 白名单流程约束。
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: "/fuzz"
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
