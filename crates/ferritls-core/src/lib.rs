@@ -34,7 +34,7 @@
 //! | [`drbg`] / [`entropy`] | SP 800-90A CTR-DRBG、OS 熵 | 批准 | M5 |
 //! | [`selftest`] | 上电自检（KAT） | 要求项 | M5 |
 //! | [`der`] | 最小 DER/PKCS#8/SEC1 解析 | — | M4 |
-//! | [`rsabig`]（内部） | RSA 固定宽度大数 + Montgomery 模幂 | 非公开支撑 | M4 |
+//! | `rsabig`（内部） | RSA 固定宽度大数 + Montgomery 模幂 | 非公开支撑 | M4 |
 //! | [`ct`] / [`policy`] / [`ops`] | 常数时间工具、批准策略、后端入口 | — | M0 |
 //!
 //! ## 实现状态

@@ -14,8 +14,8 @@
 //! | Ed25519 | 非批准 | FIPS 186-5 不含 EdDSA |
 //!
 //! “非批准”不等于“移除”：它们继续在非批准模式（默认 provider）提供，
-//! 但 [`crate::fips_mode_enabled`] 为真时不得进入套件清单，上电自检也不
-//! 覆盖它们。
+//! 但 [`crate::policy::fips_mode_enabled`] 为真时不得进入套件清单，上电
+//! 自检也不覆盖它们。
 
 /// 单个算法/原语在 FIPS 140-3 下的批准状态。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

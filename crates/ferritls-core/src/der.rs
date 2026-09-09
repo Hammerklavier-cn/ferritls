@@ -144,7 +144,7 @@ pub enum ParsedPrivateKey {
 ///   version INTEGER (0),
 ///   privateKeyAlgorithm AlgorithmIdentifier,
 ///   privateKey OCTET STRING,
-///   attributes [0] IMPLICIT OPTIONAL }
+///   `attributes [0] IMPLICIT OPTIONAL` }
 pub fn parse_pkcs8_private_key(der: &[u8]) -> Result<ParsedPrivateKey, Error> {
     let (seq, rest) = sequence(der)?;
     // PKCS#8 后不得有剩余字节

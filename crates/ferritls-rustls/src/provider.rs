@@ -2,8 +2,9 @@
 //!
 //! rustls 0.23.43 的 `CryptoProvider` 共 **5 个字段**：
 //! `cipher_suites` / `kx_groups` / `signature_verification_algorithms` /
-//! `secure_random` / `key_provider`。本模块从 [`cipher`]、[`kx`]、
-//! [`verify`]、[`random`]、[`sign`] 的静态表组装两个出厂配置。
+//! `secure_random` / `key_provider`。本模块从 [`crate::cipher`]、
+//! [`crate::kx`]、[`crate::verify`]、[`crate::random`]、[`crate::sign`]
+//! 的静态表组装两个出厂配置。
 
 use rustls::crypto::CryptoProvider;
 

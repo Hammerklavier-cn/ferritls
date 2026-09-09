@@ -595,18 +595,18 @@ pub mod ed25519 {
 ///
 /// 安全：
 /// - 私钥运算走 CRT（p/q 各自模幂，Garner 重组），指数位经掩码选择，
-///   对秘密指数常数时间（见 [`crate::rsabig`]）；Garner 回绕修正为
+///   对秘密指数常数时间（见 `rsabig` 模块）；Garner 回绕修正为
 ///   常数时间掩码选择；
 /// - 乘法盲化（Kocher，M4c）：每次签名取单次使用随机 r ∈ [1, n)
 ///   （OS 熵 + 拒绝采样），先算 EM′ = EM·rᵉ mod n 的 CRT 私钥运算，
 ///   再乘 r⁻¹ 去盲——CRT 内全部中间值随 r 随机化，秘密与观测
 ///   时序/访存解耦；r⁻¹ 经变量时间 binary xgcd 求得，输入为单次
 ///   随机值与公开模数，时序不泄露可利用信息（Go/OpenSSL 同实践，
-///   见 [`crate::rsabig::mod_inverse_odd`]）；r 与盲化中间值退出前零化；
+///   见 `rsabig::mod_inverse_odd`）；r 与盲化中间值退出前零化；
 /// - 验证 padding 检查严格，一切失败归一化为
 ///   [`Error::VerificationFailed`](crate::Error::VerificationFailed)；
-/// - 模长 < 2048 位拒绝（[`MIN_MODULUS_LEN`]），> 4096 位拒绝
-///   （受 [`crate::rsabig::MAX_LIMBS`] 限制）；
+/// - 模长 < 2048 位拒绝（[`crate::sign::rsa::MIN_MODULUS_LEN`]），
+///   > 4096 位拒绝（受 `rsabig::MAX_LIMBS` 限制）；
 /// - 密钥装载做结构校验：p·q = n、q·qInv ≡ 1 (mod p)、dp < p、
 ///   dq < q、qInv < p、n/p/q 为奇数、e ≥ 3 且为奇数；不做素性检测
 ///   （密钥来源为本机信任输入，素性由密钥生成方保证）。
