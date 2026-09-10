@@ -73,25 +73,27 @@ ClientHello ──SupportedKxGroup::start()──► core::ecdh 私钥+公钥
 ClientHello.random ──SecureRandom::fill──► core::drbg（M5 起批准模式）/ core::entropy（其余）
 ```
 
-ferritls-core 内部再经过 `ops` 分发（§4）：上表箭头默认落在软件后端；
-应用显式安装硬件后端后，AES-GCM（及后续 SHA-256）的执行核心被替换，
-公开 API 与 trait 装配不变。
+ferritls-core 内部再经过 `ops` 分发（§4）：上表箭头默认落在软件直连
+路径；应用显式安装硬件后端后，AES-GCM 的执行核心被替换，公开 API 与
+trait 装配不变。
 
 ## 4. Ops 后端分发模式（优化入口）
 
 每个原语的公开类型是薄壳；`ferritls-core::ops` 定义后端分发 trait 作为
-硬件后端的唯一挂接点。公开类型在**构造时**从已安装后端取得执行核心，
-每消息一次 dyn 分发（不是每块/每字节），µs–ms 级操作下分发开销不可见：
+硬件后端的唯一挂接点。**默认路径零分发开销**：未安装后端时，公开类型
+内部经 `enum { Soft, Ext }` 直连软件实现（不经 trait 对象）；安装后，
+新构造的实例取得 trait 对象执行核心，每消息一次 dyn 分发（不是每块/
+每字节），µs–ms 级操作下分发开销不可见：
 
 ```rust
 // ferritls-core::ops —— AEAD 侧（AES-GCM）
 pub trait AeadGcm: Send + Sync {
-    fn seal(&self, nonce: &[u8; 12], aad: &[u8], buf: &mut [u8])
-        -> Result<[u8; 16], Error>;
+    /// 合同为不可失败：前置条件由公开类型的类型系统保证。
+    fn seal(&self, nonce: &[u8; 12], aad: &[u8], buf: &mut [u8]) -> [u8; 16];
     /// 就地解密并返回**计算出的**标签；标签比较由 core 公开类型以
     /// ct::verify_tag 完成——常数时间纪律集中在 core，后端只算不比。
     fn open_compute_tag(&self, nonce: &[u8; 12], aad: &[u8], buf: &mut [u8])
-        -> Result<[u8; 16], Error>;
+        -> [u8; 16];
     fn clone_box(&self) -> Box<dyn AeadGcm>;
 }
 pub trait AeadOps: Send + Sync {
@@ -101,29 +103,22 @@ pub trait AeadOps: Send + Sync {
 }
 /// 进程级一次性安装；批准模式或重复安装 → Err(Unsupported)。
 pub fn install(backend: &'static dyn AeadOps) -> Result<(), Error>;
-```
+/// 未安装 → None（公开类型据此走零开销软件直连分支）。
+pub fn installed_aead() -> Option<&'static dyn AeadOps>;
 
-SHA-256 侧同构：`HashOps` 工厂 + `Sha256Ctx` 流式上下文，供 SHA-NI
-后端挂接；HMAC/HKDF 经 `Sha256` 类型透明受益。
+// SHA-256 侧为函数分发：后端不携带实例状态，只交出块压缩函数。
+pub type Sha256Compress = fn(h: &mut [u32; 8], block: &[u8; 64]);
+pub trait HashOps: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn sha256_compress(&self) -> Sha256Compress;
+}
+pub fn install_hash(backend: &'static dyn HashOps) -> Result<(), Error>;
+```
 
 规则：
 
-<<<<<<< HEAD
-1. 软件实现是默认且当前唯一的后端，常驻边界内（即各模块内的具体
-   实现；ops 下不设注册结构，也**禁止预写** todo 存根——P1 已清除）。
-2. 硬件后端（AES-NI/SHA-ext/AVX512）是**边界外的独立 crate**，需要
-   `unsafe`/intrinsics，经注册挂入；进程启动时探测一次（
-   `is_x86_feature_detected!`），运行期不切换。
-3. 批准模式下后端固定为软件后端（FIPS 边界按软件实现申报；引入硬件
-   后端入边界 = 重新走实验室审查，阶段 C 的决策）。
-4. 每个里程碑落地对应原语时**同步定义**其 Ops trait（避免事后重构），
-   但禁止预写无实现的 trait 堆积。
-5. **软件后端自身的性能重构**（稳定版、零 unsafe、边界内，P1 性能轮）
-   不经 ops 分发——它就是对软件后端的维护，公开 API 不变；ops 分发
-   仅服务于未来边界外的硬件后端 crate（AGENTS §5.5）。
-=======
-1. 软件实现（`SoftwareBackend`）是默认后端，常驻边界内；未安装任何
-   后端时 `ops::current()` 返回它，公开 API 行为与接线前逐字节一致。
+1. 软件实现是默认路径，常驻边界内；未安装任何后端时公开类型**直连**
+   软件代码（零分发开销），行为与未接线时逐字节一致。
 2. 硬件后端（AES-NI/CLMUL/SHA-ext）是**边界外的独立 crate**
    （`ferritls-backend-aesni`，仅 x86_64），经 `ops::install()` 显式
    注册：进程内一次安装、运行期不切换；安装前须通过后端自身 KAT。
@@ -132,14 +127,27 @@ SHA-256 侧同构：`HashOps` 工厂 + `Sha256Ctx` 流式上下文，供 SHA-NI
    后端入边界 = 重新走实验室审查，阶段 C 的决策）；`fips` feature
    构建下 `install()` 直接拒绝。
 4. 后端 crate 的 unsafe 纪律（借鉴 fearless_simd 的模式，零依赖自建）：
-   crate 根 `#![deny(unsafe_code)]`，unsafe 只存在于唯一
-   `#[allow(unsafe_code)]` 私有叶子模块；CPU 能力 token 只能经运行时
-   探测构造（能力在类型层面成为调用前置条件）；kernel 以安全签名
-   书写、由本地宏生成 `#[target_feature]` 内层包装。
+   crate 根 `#![deny(unsafe_code)]`；unsafe 存在于唯一 `#[allow(unsafe_code)]`
+   私有叶子模块（**仅内存读写包装**——寄存器型 intrinsic 没有包装，
+   只在 kernel 内直调）与各 kernel 文件的**单点**
+   `#[allow(unsafe_code)]` trampoline（进入 `#[target_feature]`
+   kernel 的调用）。CPU 能力 token 只能经运行时探测构造（能力在类型
+   层面成为调用前置条件）。**kernel 必须标记 `#[target_feature]` 并
+   在其上下文内直接调用 intrinsic**——该工具链的 intrinsic 是带
+   feature 的安全函数，从无 feature 上下文调用不得内联（每次包装
+   调用都是真实函数调用），会吃光硬件收益（实测：SHA-NI 未优化时
+   反而比软件慢 ~20%；AES/CLMUL 同病——反汇编 103 处真实 callq，
+   2026-09-13 直调化后清零，GCM 原语 5.2–6.6×，见 BENCHMARKS §5.2）。
 5. 未接后端的原语（CCM/ChaCha20-Poly1305/ECDH/签名）保持软件实现
    直通；其 Ops trait 随对应硬件后端排期**同步定义**，禁止预写无用
-   trait 堆积。
->>>>>>> 5a8264f (docs: specify real ops dispatch API and ferritls-backend-aesni (M8.1, docs-first))
+   trait 堆积。（历史注记：SHA-256 曾试对象分发形态，因 HKDF 短命
+   实例的逐实例检查 +2.3% 被零回归门否决；函数分发形态使其归零，
+   hkdf 甚至因 finalize 直写重构改善 ~3.5%。）
+6. **软件后端自身的性能重构**（稳定版、零 unsafe、边界内——P1/P2 性能
+   轮的批量 XOR / 位切片 / 瞬态 H 倍数表 / `core::simd` 路径等）不经
+   ops 分发——它就是对软件后端的常规维护，公开 API 不变；ops 分发
+   仅服务边界外硬件后端 crate（AGENTS §5.5）。GHASH 的 H 倍数表属
+   “索引公开、内容含秘密”类查表，判据见 AGENTS §5.1。
 
 任何性能改动（含 M8 硬件后端）前后都用 `docs/BENCHMARKS.md` 的基线
 工作流（`--save-baseline` / `--baseline`）在同机量化对比，禁止仅凭

@@ -300,11 +300,13 @@ ct 声明；矩阵前后数字记入本节。
 
 ### M8.1 intrinsics 后端（AES-NI + CLMUL，进行中）
 
-范围：core `ops` 分发接线（AES-GCM 整消息 kernel + SHA-256 trait
-形状）；新 crate `ferritls-backend-aesni`（仅 x86_64，unsafe 限于唯一
-叶子模块，借鉴 fearless_simd 模式零依赖）；`ops::install()` 应用侧
-显式注册 + 安装 KAT + 批准模式拒绝；软/Ni 差分与向量锚定测试；
-interop 三方 A/B 握手；量化数据入 docs/BENCHMARKS.md。
+范围：core `ops` 分发接线（AES-GCM 整消息 kernel；SHA-256 分发经
+实测推迟——HKDF 短生命周期实例 +2.3% 回归不满足零开销门，随 SHA-NI
+kernel 一并落地）；新 crate `ferritls-backend-aesni`（仅 x86_64，
+unsafe 限于唯一叶子模块，借鉴 fearless_simd 模式零依赖）；
+`ops::install()` 应用侧显式注册 + 安装 KAT + 批准模式拒绝；软/Ni
+差分与向量锚定测试；interop 三方 A/B 握手；量化数据入
+docs/BENCHMARKS.md。
 
 出口条件：
 
