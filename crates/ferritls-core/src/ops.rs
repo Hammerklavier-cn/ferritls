@@ -1,10 +1,17 @@
 //! 后端分发入口（性能优化的唯一挂接点）。
 //!
-//! 公开类型（如 [`crate::gcm::Aes128Gcm`]）是薄壳，但**默认路径零分发
-//! 开销**：未安装任何后端时，公开类型内部直连软件实现（`enum { Soft,
-//! Ext }` 的 `Soft` 分支，不经 trait 对象）。安装后端后，新构造的实例
-//! 取得 trait 对象执行核心（`Ext` 分支），每消息一次 dyn 分发，
-//! µs–ms 级操作下分发开销不可见。
+//! 两种分发粒度，按"后端需要携带的状态"选择（OpenSSL 模式的对应物）：
+//!
+//! - **对象分发（AES-GCM）**：硬件后端必须持有展开的轮密钥——执行核心
+//!   是每密钥一个的 trait 对象（[`AeadGcm`]），经工厂（[`AeadOps`]）在
+//!   公开类型构造时取得，每消息一次 dyn 分发。默认路径零开销：公开
+//!   类型内部 `enum { Soft, Ext }`，未安装时直连软件实现。
+//! - **函数分发（SHA-256）**：SHA-NI 后端**不携带任何实例状态**——它
+//!   只替换块压缩这一个纯函数（[`Sha256Compress`]）。上下文结构保持
+//!   哑形态（无 enum、无 Box、`new()` 不查任何全局），分发开销 =
+//!   每次 `update`/`finalize` 一次注册表读取（摊给其中全部数据块）+
+//!   每块一次目标不变的间接调用。这是 OpenSSL「init 时选定全局函数
+//!   指针、上下文纯数据」模式的对应物。
 //!
 //! 硬件后端（AES-NI/CLMUL/SHA-ext）是边界外的独立 crate（如
 //! `ferritls-backend-aesni`，需要 `unsafe`/intrinsics，不得进入本 crate
@@ -24,11 +31,10 @@
 //! 5. 执行核心合同为**不可失败**：nonce 长度等前置条件由公开类型的
 //!    类型系统保证（`&[u8; 12]`），缓冲长度任意；后端不得因输入内容
 //!    返回错误（未来若出现可失败后端，以破坏性版本演进 trait）；
-//! 6. 未接后端的原语（SHA-2/CCM/ChaCha20-Poly1305/ECDH/签名）保持
-//!    软件直通。SHA-256 的分发**刻意推迟**到 SHA-NI kernel 落地时
-//!    一起接线：试接线（M8.1 期间）曾因 HKDF 链中短生命周期实例的
-//!    逐实例分发检查造成 +2.3% 回归，不满足默认路径零开销门；其
-//!    Ops trait 届时随 kernel 同步定义（不预写无用 trait）。
+//! 6. 未接后端的原语（CCM/ChaCha20-Poly1305/ECDH/签名）保持软件
+//!    直通，其 Ops trait 随对应硬件后端排期同步定义，不预写无用
+//!    trait。（SHA-256 曾试过对象分发形态，因 HKDF 短命实例的逐
+//!    实例检查 +2.3% 被零回归门否决；函数分发形态使其归零。）
 //!
 //! 完整模式说明见 docs/ARCHITECTURE.md §4。
 
@@ -65,7 +71,28 @@ pub trait AeadOps: Send + Sync {
     fn aes256_gcm(&self, key: &[u8; 32]) -> Box<dyn AeadGcm>;
 }
 
+/// SHA-256 块压缩函数签名（软件与硬件后端共用）。
+///
+/// `h` 为 8 个 32 位工作变量，`block` 为 64 字节数据块。这是 SHA-256
+/// 的全部热点：缓冲/填充等廉价逻辑留在 core 的 [`crate::sha2::Sha256`]
+/// 中，后端只替换本函数。
+pub type Sha256Compress = fn(h: &mut [u32; 8], block: &[u8; 64]);
+
+/// 哈希后端（函数分发形态）。
+///
+/// 后端**不携带任何实例状态**——实现只负责交出选定的压缩函数（通常
+/// 是一个经 `#[target_feature]` 包装的私有函数），能力探测在安装流程
+/// 中完成一次。
+pub trait HashOps: Send + Sync {
+    /// 后端名（诊断/基准报告用）。
+    fn name(&self) -> &'static str;
+
+    /// 交出 SHA-256 块压缩函数。
+    fn sha256_compress(&self) -> Sha256Compress;
+}
+
 static AEAD_BACKEND: OnceLock<&'static dyn AeadOps> = OnceLock::new();
+static HASH_BACKEND: OnceLock<&'static dyn HashOps> = OnceLock::new();
 
 /// 安装 AEAD 后端（进程级一次）。
 ///
@@ -83,4 +110,29 @@ pub fn install(backend: &'static dyn AeadOps) -> Result<(), crate::Error> {
 /// 已安装的 AEAD 后端（未安装 → [`None`]，公开类型直连软件实现）。
 pub fn installed_aead() -> Option<&'static dyn AeadOps> {
     AEAD_BACKEND.get().copied()
+}
+
+/// 安装哈希后端（进程级一次；语义同 [`install`]）。
+pub fn install_hash(backend: &'static dyn HashOps) -> Result<(), crate::Error> {
+    if crate::policy::fips_mode_enabled() {
+        return Err(crate::Error::Unsupported);
+    }
+    HASH_BACKEND
+        .set(backend)
+        .map_err(|_| crate::Error::Unsupported)
+}
+
+/// 已安装的哈希后端（未安装 → [`None`]，公开类型直连软件实现）。
+pub fn installed_hash() -> Option<&'static dyn HashOps> {
+    HASH_BACKEND.get().copied()
+}
+
+/// 当前 SHA-256 压缩函数（未安装 → 软件）。
+///
+/// 每次 `update`/`finalize` 调用一次，摊给其中全部数据块。
+pub(crate) fn current_sha256_compress() -> Sha256Compress {
+    match HASH_BACKEND.get() {
+        Some(backend) => backend.sha256_compress(),
+        None => crate::sha2::compress256,
+    }
 }

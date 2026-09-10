@@ -21,3 +21,8 @@ criterion = "0.8.2"
 [[bench]]
 name = "aead_ni"
 harness = false
+
+# SHA-256 软/Ni A/B 基准（同进程分安装前后测量）。
+[[bench]]
+name = "hash_ni"
+harness = false

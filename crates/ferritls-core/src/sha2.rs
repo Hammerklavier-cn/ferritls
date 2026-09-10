@@ -1,7 +1,10 @@
 //! SHA-2 家族：SHA-256 / SHA-384 / SHA-512（FIPS 180-4）。
 //!
-//! FIPS 批准；上电自检覆盖（M5）。软实现为唯一后端；SHA 扩展 intrinsics
-//! 后端在 M8+ 经 [`crate::ops`] 入口挂接。
+//! FIPS 批准；上电自检覆盖（M5）。`Sha256` 的块压缩经 [`crate::ops`]
+//! **函数分发**（未安装 → 软件直连，`new()` 不查任何全局；安装 SHA-NI
+//! 后端后只替换压缩函数指针，上下文保持哑结构——OpenSSL 模式，见
+//! [`crate::ops`] 模块文档）。SHA-384/512 无 x86 硬件指令对应，保持
+//! 软件直连。
 //!
 //! 向量：NIST CAVP SHAVS（`tests/sha2.rs`，含 "abc"/空串/两块消息 KAT 与
 //! 流式一致性检查）。
@@ -48,6 +51,7 @@ impl Sha256 {
 
     /// 吸入数据。可多次调用。
     pub fn update(&mut self, mut data: &[u8]) {
+        let compress = crate::ops::current_sha256_compress();
         self.total = self.total.wrapping_add(data.len() as u64);
         if self.buf_len > 0 {
             let take = (64 - self.buf_len).min(data.len());
@@ -56,14 +60,14 @@ impl Sha256 {
             data = &data[take..];
             if self.buf_len == 64 {
                 let block = self.buf;
-                compress256(&mut self.h, &block);
+                compress(&mut self.h, &block);
                 self.buf_len = 0;
             }
         }
         while data.len() >= 64 {
             let mut block = [0u8; 64];
             block.copy_from_slice(&data[..64]);
-            compress256(&mut self.h, &block);
+            compress(&mut self.h, &block);
             data = &data[64..];
         }
         if !data.is_empty() {
@@ -73,15 +77,27 @@ impl Sha256 {
     }
 
     /// 结束并输出摘要。消耗 `self` 以便内部状态被清零。
+    ///
+    /// 填充直接写入缓冲（0x80、零、64 位大端长度），数据等价于
+    /// 旧实现「update(0x80) 后逐字节补零」的路径，但只取一次压缩
+    /// 函数、最多压缩两次。
     pub fn finalize(mut self) -> [u8; 32] {
+        let compress = crate::ops::current_sha256_compress();
         let bit_len = self.total.wrapping_mul(8);
-        self.update(&[0x80]);
-        while self.buf_len != 56 {
-            self.update(&[0]);
+        self.buf[self.buf_len] = 0x80;
+        self.buf_len += 1;
+        if self.buf_len > 56 {
+            // 0x80 放不进本块：本块补零压掉，长度单独成块。
+            self.buf[self.buf_len..].fill(0);
+            let block = self.buf;
+            compress(&mut self.h, &block);
+            self.buf = [0u8; 64];
+        } else {
+            self.buf[self.buf_len..56].fill(0);
         }
         self.buf[56..64].copy_from_slice(&bit_len.to_be_bytes());
         let block = self.buf;
-        compress256(&mut self.h, &block);
+        compress(&mut self.h, &block);
 
         let mut out = [0u8; 32];
         for (i, w) in self.h.iter().enumerate() {
@@ -104,7 +120,7 @@ impl Default for Sha256 {
     }
 }
 
-fn compress256(h: &mut [u32; 8], block: &[u8; 64]) {
+pub(crate) fn compress256(h: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
     for i in 0..16 {
         w[i] = u32::from_be_bytes([

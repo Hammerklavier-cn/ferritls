@@ -26,12 +26,14 @@ mod bench {
     type Case = (&'static str, fn() -> CryptoProvider, NamedGroup);
 
     fn bench_handshake_ni(c: &mut Criterion) {
+        // AEAD 与 SHA-256 各自独立安装（CPU 可能只支持其一）。
         match ferritls_backend_aesni::install() {
             Ok(()) => {}
-            Err(e) => {
-                eprintln!("aesni backend unavailable ({e:?}); skipping Ni handshake bench");
-                return;
-            }
+            Err(e) => eprintln!("aesni unavailable ({e:?}); AEAD stays software"),
+        }
+        match ferritls_backend_aesni::install_hash() {
+            Ok(()) => {}
+            Err(e) => eprintln!("sha-ni unavailable ({e:?}); SHA stays software"),
         }
 
         let mut group = c.benchmark_group("handshake_ni");

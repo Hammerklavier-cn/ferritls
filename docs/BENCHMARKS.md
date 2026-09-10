@@ -21,6 +21,7 @@ M8 intrinsics 后端的价值无从证明，优化本身也无从把关。
 | `drbg` | ferritls-core | CTR-DRBG 生成 32 B——**含每次 generate 的 128 位 OS 熵重播种**（AGENTS.md §5.3 策略），即真实部署成本 | — |
 | `handshake` | ferritls-interop | TLS 1.3 内存全握手（进程内管道驱动，无 TCP/线程噪声）：ferritls × X25519 / P-256 + **ring 同套件基线**，AES-128-GCM，双方钉扎。**软件路径**（不安装后端） | Elements |
 | `aead_ni` | ferritls-backend-aesni | 软/Ni 逐记录对照：AES-128/256-GCM 的 seal/open，尺寸与 `aead` 一致（不安装，Ni 侧经 token 直构，两路径同进程独立测） | Bytes |
+| `hash_ni` | ferritls-backend-aesni | SHA-256 软/Ni 对照：同 core `hash` 的案例（流式 1350/16K + HMAC + HKDF），同进程分安装前后（criterion 组按注册顺序同步执行，中间桥接安装） | Bytes |
 | `handshake_ni` | ferritls-interop | 与 `handshake` 同法，**启动时安装 AES-NI 后端**（仅 x86_64；与 `handshake` 分属二进制，互不污染） | Elements |
 
 要点：
@@ -125,16 +126,25 @@ AES-NI + CLMUL 后端（`ferritls-backend-aesni`，仅 x86_64）相对软件
 | AES-128-GCM seal 16 KiB | ~8.20 ms | ~66.5 µs | **~123×** |
 | AES-128-GCM open 16 KiB | ~8.18 ms | ~65.5 µs | **~125×** |
 | AES-256-GCM seal 16 KiB | ~11.4 ms | ~84.2 µs | **~136×** |
-| 全握手 ferritls × X25519 | ~2.12 ms | ~1.27 ms | **−40%（1.7×）** |
-| 全握手 ferritls × P-256 | ~4.60 ms | ~3.84 ms | −17%（1.2×） |
+| SHA-256 流式 1350 B | ~4.25 µs | ~0.68 µs | **~6.2×** |
+| SHA-256 流式 16 KiB | ~45.9 µs | ~7.8 µs | **~5.9×**（~1.7 周期/字节） |
+| HMAC-SHA256 1350 B | ~4.56 µs | ~0.80 µs | **~5.7×** |
+| HKDF-SHA256 extract | ~752 ns | ~150 ns | **~5.0×** |
+| HKDF-SHA256 expand-64 | ~1.74 µs | ~391 ns | **~4.5×** |
+| 全握手 ferritls × X25519（AEAD+SHA 双 Ni） | ~2.12 ms | ~0.90 ms | **~2.35×** |
+| 全握手 ferritls × P-256 | ~4.60 ms | ~2.61 ms | ~1.8× |
 
 要点：
 
-- Ni 握手提升比例低于 GCM 原语提升，因为小记录的 GHASH/密钥扩展在
-  软件路径占比低，且 X25519 案例剩余成本以 SHA-256/HKDF/DRBG 为主
-  （SHA-256 分发接线因零回归门推迟，见 ARCHITECTURE §4）；
-- 同日 ring X25519 基线 ~162 µs：ferritls-Ni 握手差距从 ~13× 缩至
-  **~7.8×**（剩余差距 = SHA-256 软实现 + ECDSA/RSA 等软原语）；
+- 握手 X25519 双 Ni 后 0.90 ms：同日 ring 基线 ~162 µs，差距从
+  ~13× 缩至 **~5.6×**（剩余 = P-256/ECDSA 等软原语与记录层组帧）；
+  P-256 案例提升较小（ECDH/ECDSA 软实现占主导）；
+- **教训（target_feature 与内联）**：该工具链的 intrinsic 是带
+  feature 的安全函数，从无 feature 上下文调用时编译器不得内联，
+  每次包装调用都成为真实函数调用——SHA-NI kernel 未进入 feature
+  上下文时比软件路径还慢 ~20%；标记 `#[target_feature]` 后直接
+  调用 intrinsic（安全、编译为裸指令）才兑现全部收益。AES kernel
+  同理存在该开销（aesenc 调用链），后续可按同法优化；
 - **跨日绝对值不可比**：不同会话的机器状态差异可达 ±40%+（本次软
   路径相对上次会话整体漂移 +43%），回归判断只认同会话 A/B。
 

@@ -130,7 +130,7 @@ impl<const N: usize> NiGcm<N> {
 
     #[inline]
     fn keys(&self) -> [__m128i; N] {
-        std::array::from_fn(|i| raw::loadu(&self.tok, &self.round_keys[i]))
+        std::array::from_fn(|i| raw::loadu(&self.round_keys[i]))
     }
 }
 
@@ -157,9 +157,9 @@ impl<const N: usize> AeadGcm for NiGcm<N> {
 
 /// `x ^ slli4(x) ^ slli8(上述)`：字链 [x0, x1^x0, x2^x1^x0, x3^x2^x1^x0]。
 #[inline]
-fn chain_words(tok: &AesNi, x: __m128i) -> __m128i {
-    let t = raw::xor(tok, x, raw::slli_bytes::<4>(tok, x));
-    raw::xor(tok, t, raw::slli_bytes::<8>(tok, t))
+fn chain_words(x: __m128i) -> __m128i {
+    let t = raw::xor(x, raw::slli_bytes::<4>(x));
+    raw::xor(t, raw::slli_bytes::<8>(t))
 }
 
 /// 广播 `x` 的 word3，经 AESKEYGENASSIST 取 `Sub(Rot(w3)) ^ rcon` 广播到全字。
@@ -169,9 +169,9 @@ fn chain_words(tok: &AesNi, x: __m128i) -> __m128i {
 /// 实现两次 `0xFF` 广播的原因）——因此对输出再用 `0xFF` 提取。
 #[inline]
 fn bcast_subrot_rcon(tok: &AesNi, x: __m128i, rcon: u8) -> __m128i {
-    let w3 = raw::shuffle_epi32::<0xFF>(tok, x);
+    let w3 = raw::shuffle_epi32::<0xFF>(x);
     let assist = raw::aeskeygenassist(tok, w3, rcon);
-    raw::shuffle_epi32::<0xFF>(tok, assist)
+    raw::shuffle_epi32::<0xFF>(assist)
 }
 
 /// 广播 `x` 的 word3，经 AESKEYGENASSIST 取 `Sub(w3)`（无 Rot/Rcon）广播。
@@ -180,9 +180,9 @@ fn bcast_subrot_rcon(tok: &AesNi, x: __m128i, rcon: u8) -> __m128i {
 /// word3)；带 RotWord+Rcon 的值在输出 word3（`bcast_subrot_rcon`）。
 #[inline]
 fn bcast_sub(tok: &AesNi, x: __m128i) -> __m128i {
-    let w3 = raw::shuffle_epi32::<0xFF>(tok, x);
+    let w3 = raw::shuffle_epi32::<0xFF>(x);
     let assist = raw::aeskeygenassist(tok, w3, 0);
-    raw::shuffle_epi32::<0xAA>(tok, assist)
+    raw::shuffle_epi32::<0xAA>(assist)
 }
 
 /// AES-128：11 个轮密钥（FIPS-197）。
@@ -191,9 +191,9 @@ fn expand_128(tok: &AesNi, key: &[u8; 16]) -> [[u8; 16]; 11] {
     let mut rk = [[0u8; 16]; 11];
     rk[0] = *key;
     for i in 1..=10 {
-        let prev = raw::loadu(tok, &rk[i - 1]);
+        let prev = raw::loadu(&rk[i - 1]);
         let t0 = bcast_subrot_rcon(tok, prev, RCON[i - 1]);
-        rk[i] = raw::storeu(tok, raw::xor(tok, chain_words(tok, prev), t0));
+        rk[i] = raw::storeu(raw::xor(chain_words(prev), t0));
     }
     rk
 }
@@ -206,18 +206,18 @@ fn expand_256(tok: &AesNi, key: &[u8; 32]) -> [[u8; 16]; 15] {
     rk[0] = key[..16].try_into().expect("16 bytes");
     rk[1] = key[16..].try_into().expect("16 bytes");
     for i in 0..6 {
-        let a = raw::loadu(tok, &rk[2 * i]);
-        let b = raw::loadu(tok, &rk[2 * i + 1]);
+        let a = raw::loadu(&rk[2 * i]);
+        let b = raw::loadu(&rk[2 * i + 1]);
         let t0 = bcast_subrot_rcon(tok, b, RCON[i]);
-        rk[2 * i + 2] = raw::storeu(tok, raw::xor(tok, chain_words(tok, a), t0));
-        let s = bcast_sub(tok, raw::loadu(tok, &rk[2 * i + 2]));
-        rk[2 * i + 3] = raw::storeu(tok, raw::xor(tok, chain_words(tok, b), s));
+        rk[2 * i + 2] = raw::storeu(raw::xor(chain_words(a), t0));
+        let s = bcast_sub(tok, raw::loadu(&rk[2 * i + 2]));
+        rk[2 * i + 3] = raw::storeu(raw::xor(chain_words(b), s));
     }
     // 第 60 字起只剩偶数步：rk[14] 基于 rk[12]，Rcon 取表尾。
-    let a = raw::loadu(tok, &rk[12]);
-    let b = raw::loadu(tok, &rk[13]);
+    let a = raw::loadu(&rk[12]);
+    let b = raw::loadu(&rk[13]);
     let t0 = bcast_subrot_rcon(tok, b, RCON[6]);
-    rk[14] = raw::storeu(tok, raw::xor(tok, chain_words(tok, a), t0));
+    rk[14] = raw::storeu(raw::xor(chain_words(a), t0));
     rk
 }
 
@@ -226,18 +226,18 @@ fn expand_256(tok: &AesNi, key: &[u8; 32]) -> [[u8; 16]; 15] {
 /// 加密单个 16 字节块（轮密钥已加载为向量）。
 #[inline]
 fn encrypt_with(tok: &AesNi, keys: &[__m128i], block: [u8; 16]) -> [u8; 16] {
-    let mut b = raw::xor(tok, raw::loadu(tok, &block), keys[0]);
+    let mut b = raw::xor(raw::loadu(&block), keys[0]);
     for k in &keys[1..keys.len() - 1] {
         b = raw::aesenc(tok, b, *k);
     }
     b = raw::aesenclast(tok, b, keys[keys.len() - 1]);
-    raw::storeu(tok, b)
+    raw::storeu(b)
 }
 
 /// 加密单个块（从字节形态的轮密钥加载；低频路径，如 H 的计算）。
 #[inline]
 fn encrypt_block(tok: &AesNi, rk: &[[u8; 16]], block: [u8; 16]) -> [u8; 16] {
-    let keys: Vec<__m128i> = rk.iter().map(|k| raw::loadu(tok, k)).collect();
+    let keys: Vec<__m128i> = rk.iter().map(raw::loadu).collect();
     encrypt_with(tok, &keys, block)
 }
 
@@ -289,9 +289,9 @@ fn rev128(v: u128) -> u128 {
 /// PCLMULQDQ 64 位无进位乘（原生约定：位 k = X^k）。
 #[inline]
 fn clmul64(tok: &AesNi, a: u64, b: u64) -> u128 {
-    let va = raw::from_u64(tok, 0, a);
-    let vb = raw::from_u64(tok, 0, b);
-    u128::from_le_bytes(raw::storeu(tok, raw::clmul00(tok, va, vb)))
+    let va = raw::from_u64(0, a);
+    let vb = raw::from_u64(0, b);
+    u128::from_le_bytes(raw::storeu(raw::clmul00(tok, va, vb)))
 }
 
 /// `a ⊗ 0x87`（无进位乘小常数；0x87 = f 的低位部分 X^7+X^2+X+1）。

@@ -9,7 +9,7 @@
 mod common;
 
 use ferritls_core::gcm::Aes128Gcm;
-use ferritls_core::ops::{self, AeadGcm, AeadOps};
+use ferritls_core::ops::{self, AeadGcm, AeadOps, HashOps};
 use ferritls_core::sha2::Sha256;
 
 // —— mock 后端：行为刻意与任何真密码学不同，使分发路径可观测 ——
@@ -48,7 +48,25 @@ impl AeadOps for MockAead {
     }
 }
 
+struct MockHash;
+
+/// 可观测的压缩函数：把工作变量整体写成 0xEE——摘要必为 32 个 0xEE。
+fn mock_compress(h: &mut [u32; 8], _block: &[u8; 64]) {
+    *h = [0xEEEE_EEEE; 8];
+}
+
+impl HashOps for MockHash {
+    fn name(&self) -> &'static str {
+        "mock-hash"
+    }
+
+    fn sha256_compress(&self) -> ferritls_core::ops::Sha256Compress {
+        mock_compress
+    }
+}
+
 static MOCK_AEAD: MockAead = MockAead;
+static MOCK_HASH: MockHash = MockHash;
 
 /// 软件默认路径 + 分发生效 + 安装语义（非批准构建）。
 ///
@@ -106,6 +124,18 @@ fn dispatch_and_install_semantics() {
         ops::install(&MOCK_AEAD),
         Err(ferritls_core::Error::Unsupported)
     );
+
+    // 4) 哈希注册独立于 AEAD：安装后 one_shot 走 mock 压缩函数。
+    ops::install_hash(&MOCK_HASH).expect("hash install succeeds");
+    assert_eq!(
+        Sha256::one_shot(b"abc"),
+        [0xEE; 32],
+        "hash dispatch via mock"
+    );
+    assert_eq!(
+        ops::install_hash(&MOCK_HASH),
+        Err(ferritls_core::Error::Unsupported)
+    );
 }
 
 /// 批准模式（`fips` feature 构建）：一切安装被拒绝，软件路径固定。
@@ -114,6 +144,10 @@ fn dispatch_and_install_semantics() {
 fn fips_refuses_install() {
     assert_eq!(
         ops::install(&MOCK_AEAD),
+        Err(ferritls_core::Error::Unsupported)
+    );
+    assert_eq!(
+        ops::install_hash(&MOCK_HASH),
         Err(ferritls_core::Error::Unsupported)
     );
     // 软件路径仍然可用。

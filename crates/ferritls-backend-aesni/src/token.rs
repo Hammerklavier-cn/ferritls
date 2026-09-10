@@ -50,3 +50,33 @@ impl std::fmt::Debug for AesNi {
         f.write_str("AesNi")
     }
 }
+
+/// SHA 扩展可用性证明（零大小；语义同 [`AesNi`]）。
+#[derive(Clone, Copy)]
+pub struct ShaNi {
+    _priv: (),
+}
+
+impl ShaNi {
+    /// 运行时探测 SHA 扩展；缺失返回 [`None`]。
+    pub fn detect() -> Option<Self> {
+        if std::arch::is_x86_feature_detected!("sha") {
+            Some(Self { _priv: () })
+        } else {
+            None
+        }
+    }
+
+    /// 交出 SHA-256 块压缩函数（不经全局安装；KAT 由 [`crate::install_hash`]
+    /// 负责，差分测试/诊断可直接使用）。
+    pub fn sha256_compress(&self) -> ferritls_core::ops::Sha256Compress {
+        crate::sha::bind_token(*self);
+        crate::sha::compress_fn()
+    }
+}
+
+impl std::fmt::Debug for ShaNi {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ShaNi")
+    }
+}

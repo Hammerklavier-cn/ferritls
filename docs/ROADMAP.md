@@ -300,10 +300,11 @@ ct 声明；矩阵前后数字记入本节。
 
 ### M8.1 intrinsics 后端（AES-NI + CLMUL，进行中）
 
-范围：core `ops` 分发接线（AES-GCM 整消息 kernel；SHA-256 分发经
-实测推迟——HKDF 短生命周期实例 +2.3% 回归不满足零开销门，随 SHA-NI
-kernel 一并落地）；新 crate `ferritls-backend-aesni`（仅 x86_64，
-unsafe 限于唯一叶子模块，借鉴 fearless_simd 模式零依赖）；
+范围：core `ops` 分发接线（AES-GCM 整消息 kernel + SHA-256 函数
+分发——对象分发形态曾因 HKDF 短命实例 +2.3% 被零回归门否决，函数
+分发形态归零）；新 crate `ferritls-backend-aesni`（仅 x86_64，
+unsafe 限于唯一叶子模块 + kernel 单点 trampoline，借鉴 fearless_simd
+模式零依赖）；
 `ops::install()` 应用侧显式注册 + 安装 KAT + 批准模式拒绝；软/Ni
 差分与向量锚定测试；interop 三方 A/B 握手；量化数据入
 docs/BENCHMARKS.md。
@@ -323,5 +324,6 @@ docs/BENCHMARKS.md。
 - [ ] fmt / clippy -D warnings / 三平台 test 全绿（本地 Windows 全绿，
       三平台待首次 CI 运行确认）。
 
-SHA-NI（`ShaNi` token + `HashOps` kernel）为 M8.1 的可选后续，另行
-排期；CCM/ChaCha/P-256/Ed25519 加速与 aarch64 后端明确不在本节范围。
+SHA-NI 已随 M8.2 落地（`ShaNi` token + `HashOps` 函数分发 kernel：
+流式 ~6×、HKDF ~5×、握手 X25519 双 Ni ~2.35×，见 BENCHMARKS §5.1）；
+CCM/ChaCha/P-256/Ed25519 加速与 aarch64 后端明确不在本节范围。

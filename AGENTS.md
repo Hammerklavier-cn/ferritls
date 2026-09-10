@@ -234,7 +234,6 @@ targets 在 M6 建立，语料进 `fuzz/`），零 panic。
 
 - **先正确，后快**：向量全绿 + 常数时间审查通过之前，禁止任何
   “性能优化”提交（包括看似无害的循环展开）。
-<<<<<<< HEAD
 - 优化有两条入口：① **软件后端自身的重构**（stable 工具链、零
   unsafe、边界内——如 P1 性能轮的批量 XOR / H 倍数表 / 位切片 /
   批处理形状重排，P2 起含默认 feature `simd` 的显式 `core::simd`
@@ -242,6 +241,14 @@ targets 在 M6 建立，语料进 `fuzz/`），零 panic。
   rustls 适配层不动；② **新增硬件后端**的唯一入口是
   `ferritls-core::ops` 的 trait 分发（模式见 `docs/ARCHITECTURE.md`
   §4），以边界外独立 crate 存在。
+- **硬件后端 crate（`ferritls-backend-aesni`）的 unsafe 纪律**：crate 根
+  `#![deny(unsafe_code)]`，unsafe 只出现在唯一 `#[allow(unsafe_code)]`
+  私有叶子模块与各 kernel 文件的单点 trampoline（进入
+  `#[target_feature]` kernel 的调用）；CPU 能力 token 只能经运行时
+  探测构造；**kernel 必须标记 `#[target_feature]` 并在上下文内直接
+  调用 intrinsic**——从无 feature 上下文调用该工具链的安全 intrinsic
+  不得内联，硬件收益会被调用开销吃光（借鉴 fearless_simd 的模式，
+  零依赖自建）。安装前后端须通过自身 KAT。
 - **`simd` feature（P2 起，默认启用）**：显式 `core::simd`
   （portable_simd）代码经 `#![cfg_attr(feature = "simd",
   feature(portable_simd))]` 启用，在 stable 工具链上依赖
@@ -264,19 +271,8 @@ targets 在 M6 建立，语料进 `fuzz/`），零 panic。
   `RUSTFLAGS="-C target-feature=+avx2"`（及 +avx512f,+avx512vl）
   变体——自动向量化在宽 ISA 下常常不加宽，效率判定以同 ISA 对照
   为准，不以 x86-64 默认 SSE2 宽度为唯一标尺）。
-- 批准模式下后端固定为软件后端（边界稳定优先，见 `ops.rs` 文档）。
-=======
-- 优化的唯一入口是 `ferritls-core::ops` 的 trait 分发（模式见
-  `docs/ARCHITECTURE.md` §4）；公开 API 与 rustls 适配层不动。
-- 硬件后端 crate（`ferritls-backend-aesni`）的 unsafe 纪律：crate 根
-  `#![deny(unsafe_code)]`，unsafe 只出现在唯一 `#[allow(unsafe_code)]`
-  私有叶子模块；CPU 能力 token 只能经运行时探测构造；kernel 以安全
-  签名书写、由本地宏生成 `#[target_feature]` 包装（借鉴 fearless_simd
-  的模式，零依赖自建）。安装前后端须通过自身 KAT。
-- 任何优化不得引入以秘密为条件的分支/访存（§5.1），PR 里要说明。
 - 批准模式下后端固定为软件后端（边界稳定优先，`ops::install()` 在
   `fips` 构建下拒绝，见 `ops.rs` 文档）。
->>>>>>> 5a8264f (docs: specify real ops dispatch API and ferritls-backend-aesni (M8.1, docs-first))
 
 ---
 

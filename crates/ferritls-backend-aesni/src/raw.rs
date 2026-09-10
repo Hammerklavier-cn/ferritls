@@ -1,12 +1,12 @@
 //! 唯一允许 unsafe 的叶子模块（AGENTS.md §5.5、docs/ARCHITECTURE.md §4）。
 //!
-//! 本 crate 根部 `#![deny(unsafe_code)]`，全部 unsafe 集中于此：每个
+//! 本 crate 根部 `#![deny(unsafe_code)]`，unsafe 集中于此：每个
 //! intrinsic 一个单行安全包装。安全论证分两层，对所有包装一致：
 //!
-//! 1. **目标扩展可用**：每个包装的第一参数是 [`AesNi`]——该 token
-//!    只能经运行时探测成功构造（见 [`crate::token`]），持有即证明
-//!    本机 CPU 支持 `aes` 与 `pclmulqdq`（SSE2/SSSE3 为 x86_64 基线，
-//!    恒可用）；
+//! 1. **目标扩展可用**：AES/CLMUL 专属包装的第一参数是 [`AesNi`]——
+//!    该 token 只能经运行时探测成功构造（见 [`crate::token`]），持有
+//!    即证明本机 CPU 支持 `aes` 与 `pclmulqdq`（SSE2/SSSE3 为 x86_64
+//!    基线，恒可用）；
 //! 2. **输入无关**：下列 intrinsic 全部是纯寄存器运算（不访问内存、
 //!    无越界语义、无数值陷阱），对任意位模式输入都没有内存安全
 //!    后果。当前工具链把这些 intrinsic 定义为带 `#[target_feature]`
@@ -15,7 +15,13 @@
 //!    合同，由 token 保证。
 //!
 //! 约定：包装一律 `#[inline]`，不做组合逻辑——组合逻辑属于安全代码
-//! （[`crate::gcm`]）。
+//! （[`crate::gcm`] / [`crate::sha`]）。**内存读写**（`loadu`/`storeu`）
+//! 也在此包装（裸指针语义）。AES kernel 与 SHA kernel 均以
+//! `#[target_feature]` 进入 feature 上下文后在 kernel 内部直接调用
+//! intrinsic（安全、编译为裸指令，无包装调用开销；见
+//! `crate::sha::compress_kernel` 文档）——因此 SHA-NI 的寄存器
+//! intrinsic（`SHA256RNDS2/MSG1/MSG2`、`PSHUFB`、`PADDD`、`PBLENDW`）
+//! 无本模块包装，它们只在 feature 上下文中被调用。
 
 #![allow(unsafe_code)]
 
@@ -56,8 +62,8 @@ pub fn aeskeygenassist(_p: &AesNi, a: __m128i, rcon: u8) -> __m128i {
             0x80 => kg::<0x80>(a),
             0x1B => kg::<0x1B>(a),
             0x36 => kg::<0x36>(a),
-            // RCON 表由本模块调用方控制（expand_128/256 的常量表），
-            // 到达此分支即内部 bug：以 0 结尾的值让 KAT 必然失败。
+            // RCON 表由调用方控制（expand_128/256 的常量表），到达此
+            // 分支即内部 bug：以 0 收尾的扩展结果让 KAT 必然失败。
             _ => kg::<0x00>(a),
         }
     }
@@ -72,42 +78,42 @@ pub fn clmul00(_p: &AesNi, a: __m128i, b: __m128i) -> __m128i {
 
 /// 逐位异或（SSE2 基线）。
 #[inline]
-pub fn xor(_p: &AesNi, a: __m128i, b: __m128i) -> __m128i {
+pub fn xor(a: __m128i, b: __m128i) -> __m128i {
     // SAFETY: sse2 为 x86_64 基线；纯寄存器运算。
     unsafe { core::arch::x86_64::_mm_xor_si128(a, b) }
 }
 
 /// 按 `MASK`（每 2 位选一个源字）重排 32 位字（SSE2 基线）。
 #[inline]
-pub fn shuffle_epi32<const MASK: i32>(_p: &AesNi, a: __m128i) -> __m128i {
+pub fn shuffle_epi32<const MASK: i32>(a: __m128i) -> __m128i {
     // SAFETY: sse2 为 x86_64 基线；纯寄存器运算。
     unsafe { core::arch::x86_64::_mm_shuffle_epi32::<MASK>(a) }
 }
 
 /// 向高位移动 `N` 字节（低位补零；SSSE3 基线）。
 #[inline]
-pub fn slli_bytes<const N: i32>(_p: &AesNi, a: __m128i) -> __m128i {
+pub fn slli_bytes<const N: i32>(a: __m128i) -> __m128i {
     // SAFETY: ssse3 为 x86_64 基线（自 v1 起）；纯寄存器运算。
     unsafe { core::arch::x86_64::_mm_slli_si128::<N>(a) }
 }
 
 /// 由 `(hi, lo)` 两个 64 位 lane 构造向量（SSE2 基线）。
 #[inline]
-pub fn from_u64(_p: &AesNi, hi: u64, lo: u64) -> __m128i {
+pub fn from_u64(hi: u64, lo: u64) -> __m128i {
     // SAFETY: sse2 为 x86_64 基线；纯构造。
     unsafe { core::arch::x86_64::_mm_set_epi64x(hi as i64, lo as i64) }
 }
 
 /// 从 16 字节读取向量（无对齐要求；长度恰为 16）。
 #[inline]
-pub fn loadu(_p: &AesNi, src: &[u8; 16]) -> __m128i {
+pub fn loadu(src: &[u8; 16]) -> __m128i {
     // SAFETY: 读取恰 16 字节，引用保证存活与可读；loadu 无对齐要求。
     unsafe { core::arch::x86_64::_mm_loadu_si128(src.as_ptr().cast()) }
 }
 
 /// 写出向量到 16 字节数组。
 #[inline]
-pub fn storeu(_p: &AesNi, src: __m128i) -> [u8; 16] {
+pub fn storeu(src: __m128i) -> [u8; 16] {
     let mut out = [0u8; 16];
     // SAFETY: 目标是本地数组，恰 16 字节且可写；storeu 无对齐要求。
     unsafe { core::arch::x86_64::_mm_storeu_si128(out.as_mut_ptr().cast(), src) };

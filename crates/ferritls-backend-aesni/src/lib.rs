@@ -45,13 +45,14 @@
 
 mod gcm;
 mod raw;
+mod sha;
 mod token;
 
 use std::sync::OnceLock;
 
 use ferritls_core::ops;
 
-pub use token::AesNi;
+pub use token::{AesNi, ShaNi};
 
 /// 后端单例（唯一向 core 注册的对象）。
 struct Backend {
@@ -91,6 +92,40 @@ impl ops::AeadOps for Backend {
 /// 供需要自定义装配/诊断的调用方使用；常规路径直接 [`install`]。
 pub fn detect() -> Option<AesNi> {
     AesNi::detect()
+}
+
+/// SHA-256 后端单例（函数分发形态：唯一状态是能力证明）。
+struct ShaBackend {
+    tok: OnceLock<ShaNi>,
+}
+
+static SHA_BACKEND: ShaBackend = ShaBackend {
+    tok: OnceLock::new(),
+};
+
+impl ferritls_core::ops::HashOps for ShaBackend {
+    fn name(&self) -> &'static str {
+        "sha-ni"
+    }
+
+    fn sha256_compress(&self) -> ferritls_core::ops::Sha256Compress {
+        let tok = self
+            .tok
+            .get()
+            .expect("sha-ni token set before registration");
+        tok.sha256_compress()
+    }
+}
+
+/// 探测 SHA 扩展 → KAT 自检 → 安装 SHA-256 压缩后端（进程级一次）。
+///
+/// 语义同 [`install`]：CPU 不支持 / KAT 失败 / 批准模式 / 重复安装
+/// 分别以对应错误拒绝。与 [`install`] 相互独立（CPU 可能只具备其一）。
+pub fn install_hash() -> Result<(), ferritls_core::Error> {
+    let tok = ShaNi::detect().ok_or(ferritls_core::Error::Unsupported)?;
+    sha::power_up_kat(&tok)?;
+    let _ = SHA_BACKEND.tok.set(tok);
+    ferritls_core::ops::install_hash(&SHA_BACKEND)
 }
 
 /// 探测 → 上电 KAT 自检 → 安装到 ferritls-core（进程级一次）。
