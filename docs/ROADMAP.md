@@ -310,14 +310,18 @@ docs/BENCHMARKS.md。
 
 出口条件：
 
-- [ ] core 仍 `#![forbid(unsafe_code)]`，全部既有向量测试零改动仍绿
-      （软件默认路径逐字节不变）；
-- [ ] 后端 crate：Ni 路径过 GCMVS/RFC 向量子集 + 数千组软/Ni 差分
-      一致 + tag 篡改负例（`VerificationFailed` 且缓冲零化）；
-- [ ] 接线阶段零回归（criterion 同机基线对比）；提升数据记录入
-      BENCHMARKS.md §5；
-- [ ] `--features fips` 构建下 `install()` 拒绝且有测试守护；
-- [ ] fmt / clippy -D warnings / 三平台 test 全绿。
+- [x] core 仍 `#![forbid(unsafe_code)]`，全部既有向量测试零改动仍绿
+      （软件默认路径逐字节不变；criterion 同机 A/B ±1% 噪声带内）；
+- [x] 后端 crate：Ni 路径过 McGrew–Viega TC1/TC5/TC16 向量锚定 +
+      2000 组软/Ni 差分一致（边界长度全覆盖、双向交叉 open）+
+      独立 Python 转写的 AES-256 扩展参照表 + tag 篡改负例；
+- [x] 接线阶段零回归（criterion 同机基线对比，含未改动 CCM 作为
+      噪声对照）；提升数据记录入 BENCHMARKS.md §5.1
+      （GCM 原语 ~120–138×，握手 X25519 −40%/P-256 −17%）；
+- [x] `--features fips` 构建下 `install()` 拒绝且有测试守护
+      （ops_dispatch::fips_refuses_install）；
+- [ ] fmt / clippy -D warnings / 三平台 test 全绿（本地 Windows 全绿，
+      三平台待首次 CI 运行确认）。
 
 SHA-NI（`ShaNi` token + `HashOps` kernel）为 M8.1 的可选后续，另行
 排期；CCM/ChaCha/P-256/Ed25519 加速与 aarch64 后端明确不在本节范围。

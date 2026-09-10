@@ -329,7 +329,8 @@ RUSTFLAGS="-C target-cpu=native" cargo run -p ferritls-interop \
     --release --example perf           # 宽 ISA 性能（本机 CPU 支持 AVX2/512 时）
 cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored 测试
 cargo bench -p ferritls-core           # criterion 基准（aead/hash/ecdh/sign/drbg）
-cargo bench -p ferritls-interop        # 全握手基准（含 ring 基线）
+cargo bench -p ferritls-interop        # 全握手基准（含 ring 基线；handshake_ni = Ni 路径）
+cargo bench -p ferritls-backend-aesni  # 软/Ni 逐记录 A/B（aead_ni）
 ```
 
 基准的完整用法（过滤、快速冒烟、`--save-baseline`/`--baseline` 回归

@@ -19,7 +19,9 @@ M8 intrinsics 后端的价值无从证明，优化本身也无从把关。
 | `ecdh` | ferritls-core | X25519 / P-256 / P-384：`public_key`（纯标量乘）与 `diffie_hellman`（含公钥解析、在曲线检查、盲化） | — |
 | `sign` | ferritls-core | ECDSA P-256/384（RFC 6979）、Ed25519、RSA-2048（PKCS#1 v1.5 与 PSS）sign/verify | — |
 | `drbg` | ferritls-core | CTR-DRBG 生成 32 B——**含每次 generate 的 128 位 OS 熵重播种**（AGENTS.md §5.3 策略），即真实部署成本 | — |
-| `handshake` | ferritls-interop | TLS 1.3 内存全握手（进程内管道驱动，无 TCP/线程噪声）：ferritls × X25519 / P-256 + **ring 同套件基线**，AES-128-GCM，双方钉扎 | Elements |
+| `handshake` | ferritls-interop | TLS 1.3 内存全握手（进程内管道驱动，无 TCP/线程噪声）：ferritls × X25519 / P-256 + **ring 同套件基线**，AES-128-GCM，双方钉扎。**软件路径**（不安装后端） | Elements |
+| `aead_ni` | ferritls-backend-aesni | 软/Ni 逐记录对照：AES-128/256-GCM 的 seal/open，尺寸与 `aead` 一致（不安装，Ni 侧经 token 直构，两路径同进程独立测） | Bytes |
+| `handshake_ni` | ferritls-interop | 与 `handshake` 同法，**启动时安装 AES-NI 后端**（仅 x86_64；与 `handshake` 分属二进制，互不污染） | Elements |
 
 要点：
 
@@ -38,6 +40,8 @@ cargo bench --workspace
 # 单 crate / 单目标
 cargo bench -p ferritls-core --bench aead
 cargo bench -p ferritls-interop --bench handshake
+cargo bench -p ferritls-backend-aesni --bench aead_ni      # 软/Ni 逐记录
+cargo bench -p ferritls-interop --bench handshake_ni       # Ni 全握手
 
 # 子串过滤（跑一组，如全部 GCM 案例）
 cargo bench -p ferritls-core --bench aead -- gcm128
@@ -107,6 +111,32 @@ cargo bench -p ferritls-core --bench sign -- rsa2048 --profile-time 10
 | CTR-DRBG generate 32 B（含 OS 重播种） | ~39 µs |
 | 全握手 ferritls × X25519 / P-256 | ~1.5 ms / ~3.2 ms |
 | 全握手 ring × X25519（基线） | ~0.11 ms（**约 13 倍差距** = M8 intrinsics 后端的目标空间） |
+
+### 5.1 M8.1 软/Ni 对照（2026-09-10，同机同会话，软/Ni 可比）
+
+AES-NI + CLMUL 后端（`ferritls-backend-aesni`，仅 x86_64）相对软件
+默认路径：
+
+| 操作 | 软件路径 | AES-NI/CLMUL | 提升 |
+|---|---|---|---|
+| AES-128-GCM seal 1350 B | ~681 µs | ~5.6 µs | **~120×** |
+| AES-128-GCM open 1350 B | ~697 µs | ~5.6 µs | **~125×** |
+| AES-256-GCM seal 1350 B | ~969 µs | ~7.0 µs | **~138×** |
+| AES-128-GCM seal 16 KiB | ~8.20 ms | ~66.5 µs | **~123×** |
+| AES-128-GCM open 16 KiB | ~8.18 ms | ~65.5 µs | **~125×** |
+| AES-256-GCM seal 16 KiB | ~11.4 ms | ~84.2 µs | **~136×** |
+| 全握手 ferritls × X25519 | ~2.12 ms | ~1.27 ms | **−40%（1.7×）** |
+| 全握手 ferritls × P-256 | ~4.60 ms | ~3.84 ms | −17%（1.2×） |
+
+要点：
+
+- Ni 握手提升比例低于 GCM 原语提升，因为小记录的 GHASH/密钥扩展在
+  软件路径占比低，且 X25519 案例剩余成本以 SHA-256/HKDF/DRBG 为主
+  （SHA-256 分发接线因零回归门推迟，见 ARCHITECTURE §4）；
+- 同日 ring X25519 基线 ~162 µs：ferritls-Ni 握手差距从 ~13× 缩至
+  **~7.8×**（剩余差距 = SHA-256 软实现 + ECDSA/RSA 等软原语）；
+- **跨日绝对值不可比**：不同会话的机器状态差异可达 ±40%+（本次软
+  路径相对上次会话整体漂移 +43%），回归判断只认同会话 A/B。
 
 ## 6. Windows（msys2/windows-gnu）本地注意
 

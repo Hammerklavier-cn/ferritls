@@ -23,7 +23,16 @@ criterion = "0.8.2"
 default = ["simd"]
 simd = ["ferritls-core/simd", "ferritls-rustls/simd"]
 
-# 全握手基准（含 ring 基线对照），`cargo bench -p ferritls-interop`。
+# AES-NI 后端（仅 x86_64）：三方互操作与握手基准的 A/B 对照。
+[target.'cfg(target_arch = "x86_64")'.dev-dependencies]
+ferritls-backend-aesni.workspace = true
+
+# 全握手基准（含 ring 基线对照；软件路径，不安装后端）。
 [[bench]]
 name = "handshake"
+harness = false
+
+# AES-NI 路径对照基准（启动时 install；仅 x86_64 有内容）。
+[[bench]]
+name = "handshake_ni"
 harness = false

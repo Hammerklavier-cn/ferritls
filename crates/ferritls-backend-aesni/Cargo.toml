@@ -12,3 +12,12 @@ description = "AES-NI + CLMUL execution core for ferritls-core (out of the FIPS 
 
 [dependencies]
 ferritls-core = { workspace = true }
+
+[dev-dependencies]
+# 基准为 dev 目标（不进入 FIPS 边界，AGENTS.md 硬性规则 2）。
+criterion = "0.8.2"
+
+# 软/Ni 逐记录 A/B 基准（本地运行；CI 只编译冒烟）。
+[[bench]]
+name = "aead_ni"
+harness = false

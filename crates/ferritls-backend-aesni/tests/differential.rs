@@ -48,7 +48,7 @@ fn differential_aes128() {
         return;
     };
     let mut rng = Rng(0x853c_49e6_748f_ea9b_u64 ^ 0xA128);
-    for round in 0..200u32 {
+    for round in 0..1000u32 {
         let mut key = [0u8; 16];
         rng.fill(&mut key);
         let mut nonce = [0u8; 12];
@@ -94,7 +94,7 @@ fn differential_aes256() {
         return;
     };
     let mut rng = Rng(0x243F_6A88_85A3_08D3_u64 ^ 0xB256);
-    for round in 0..200u32 {
+    for round in 0..1000u32 {
         let mut key = [0u8; 32];
         rng.fill(&mut key);
         let mut nonce = [0u8; 12];
