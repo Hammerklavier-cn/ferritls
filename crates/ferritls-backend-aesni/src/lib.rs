@@ -7,8 +7,12 @@
 //!
 //! ```no_run
 //! # fn main() -> Result<(), ferritls_core::Error> {
-//! // 进程初始化阶段（构造任何密钥之前）一次性安装：
-//! ferritls_backend_aesni::install()?;
+//! #[cfg(target_arch = "x86_64")]
+//! {
+//!     // 进程初始化阶段（构造任何密钥之前）一次性安装。本 crate 仅
+//!     // x86_64 有内容，其他目标上此块被裁掉、示例仍然可编译。
+//!     ferritls_backend_aesni::install()?;
+//! }
 //! // 此后 ferritls_core::gcm::{Aes128Gcm, Aes256Gcm} 的新实例走
 //! // AES-NI/CLMUL 路径；已构造的实例与未安装的环境不受影响。
 //! # Ok(())
