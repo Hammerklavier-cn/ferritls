@@ -8,9 +8,9 @@
 //!
 //! P2（`simd` feature，默认启用）：批处理密钥流的转置通道为显式
 //! `Simd<u32, C>`，通道数按编译期目标特性三档（AVX-512 16 块 /
-//! AVX2 8 块 / 基线 4 块，见 [`CHACHA_BLOCKS`]）——同一份源码在用户
+//! AVX2 8 块 / 基线 4 块，见 `CHACHA_BLOCKS`）——同一份源码在用户
 //! 以 RUSTFLAGS 开启 target-feature 时自动加宽，无运行时分发；
-//! 标量逐块路径（[`chacha20_block`]）与数组版四块批处理
+//! 标量逐块路径（`chacha20_block`）与数组版四块批处理
 //! （`chacha20_blocks4`，no-default-features 回退）原样保留为 oracle
 //! 与降级路径。
 

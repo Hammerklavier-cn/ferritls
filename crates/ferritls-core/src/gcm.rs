@@ -6,11 +6,11 @@
 //! 公开类型是薄壳：未安装后端时**直连**软件实现（零分发开销）；
 //! 安装硬件后端后，新构造的实例经 [`crate::ops`] 取 trait 对象执行
 //! 核心。软件核心的常数时间策略：GHASH 的 GF(2^128) 乘法有两条
-//! 路径——小块（< [`GHASH_TABLE_MIN_BLOCKS`]）走逐位掩码乘；大块构建
+//! 路径——小块（< `GHASH_TABLE_MIN_BLOCKS`）走逐位掩码乘；大块构建
 //! **瞬态** H 倍数 4-bit 表（组内查表索引仅公开的 AAD/密文/长度字节，
 //! 内容含秘密 H，判据见 AGENTS §5.1；表在调用结束前零化丢弃，不常驻
 //! 实例内存）。CTR keystream 走位切片批量路径
-//! （[`crate::aes::CTR_BATCH_BLOCKS`]）。路径选择只依赖公开长度。
+//! （`CTR_BATCH_BLOCKS`）。路径选择只依赖公开长度。
 //! **标签验证在返回任何明文前完成**（open 路径失败统一同一错误码，
 //! 比较经 [`crate::ct::verify_tag`]，失败时明文缓冲零化）。nonce
 //! 唯一性由 rustls 记录层保证。密钥材料（含 GHASH 的 H）Drop 时零化。
@@ -143,8 +143,7 @@ macro_rules! gcm_impl {
             }
 
             /// CTR 密钥流异或覆盖 `buf`（P1 位切片批量路径）：每批
-            /// [`CTR_BATCH_BLOCKS`] 块经
-            /// [`encrypt_ctr_batch`](crate::aes::Aes128::encrypt_ctr_batch)
+            /// [`CTR_BATCH_BLOCKS`] 块经 `encrypt_ctr_batch`
             /// 生成密钥流后整批异或；计数器推进只依赖公开长度。
             fn ctr_xor(&self, j0: u128, buf: &mut [u8]) {
                 let mut ctr = inc32(j0);
