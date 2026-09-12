@@ -28,11 +28,15 @@
 //!
 //! ## unsafe 纪律（借鉴 fearless_simd 的模式，零依赖自建）
 //!
-//! crate 根 `#![deny(unsafe_code)]`；全部 unsafe 集中在唯一叶子模块
-//! [`raw`](self)（每个 intrinsic 一个单行安全包装）。CPU 能力以
-//! [`AesNi`] token 进入类型系统：token 只能经运行时探测构造（其 clone
-//! 同样源自一次成功探测），是调用全部 intrinsics 包装的语法前置条件。
-//! kernel 与本文件的全部代码均为安全代码。
+//! crate 根 `#![deny(unsafe_code)]`；unsafe 只存在于唯一叶子模块
+//! [`raw`](self)（仅内存读写包装）与各 kernel 的进入点 trampoline
+//! （`new`/`seal`/`open` 与 SHA 的压缩函数注册点）。kernel 本体标注
+//! `#[target_feature(enable = ...)]` 并在上下文内直调 intrinsic（安全、
+//! 编译为裸指令）——从无 feature 上下文包装调用会因 feature 不匹配
+//! 被禁止内联，每个调用退化为真实函数调用（见 ARCHITECTURE.md §4）。
+//! CPU 能力以 [`AesNi`] token 进入类型系统：token 只能经运行时探测
+//! 构造（其 clone 同样源自一次成功探测），是进入 trampoline 的安全
+//! 论证。除 trampoline 外的全部代码均为安全代码。
 //!
 //! 常数时间：AES/GCM 指令为固定延迟、数据无关；kernel 内无以秘密为
 //! 条件的分支或访存（轮密钥按公开轮号索引）；标签比较统一由 core 的

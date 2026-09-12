@@ -60,7 +60,8 @@ ferritls/
 │   ├── ferritls-rustls/     # rustls CryptoProvider 适配层（边界外，无密码学）
 │   ├── ferritls-interop/    # 互操作/E2E 测试宿主（publish=false，依赖不受白名单约束）
 │   └── ferritls-backend-aesni/ # AES-NI + CLMUL GHASH 硬件后端（边界外、仅
-│                            #   x86_64；unsafe 限于唯一叶子模块，经 core::ops 注册）
+│                            #   x86_64；unsafe 限于叶子模块与 kernel 进入点
+│                            #   trampoline，经 core::ops 注册）
 ├── docs/                    # ARCHITECTURE / FIPS / ROADMAP
 ├── .github/workflows/ci.yml # fmt / clippy(-D warnings) / 三平台 test / cargo-deny
 │                            #   / fuzz 冒烟 / tag 触发的 crates.io 自动发布

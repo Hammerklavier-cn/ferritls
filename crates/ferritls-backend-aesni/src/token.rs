@@ -2,9 +2,10 @@
 //!
 //! [`AesNi`] 是"AES-NI 与 PCLMULQDQ 已在本机确认可用"的**类型级证明**：
 //! 它没有公开构造器，唯一来源是 [`AesNi::detect`] 的运行时探测。全部
-//! intrinsics 包装（[`crate::raw`]）以 `&AesNi` 为第一参数——持有 token
-//! 是调用 intrinsics 的语法前置条件，CPU 能力因此进入类型系统而非
-//! 留在注释里。
+//! `#[target_feature]` kernel 的 unsafe 进入点（[`crate::gcm`] 的
+//! `new`/`seal`/`open` trampoline）都以持有 token 为前置——CPU 能力
+//! 因此进入类型系统而非留在注释里；kernel 内部直调 intrinsic，无需
+//! 逐调用传递 token（见 [`crate::raw`] 模块文档）。
 
 use ferritls_core::ops::AeadGcm;
 

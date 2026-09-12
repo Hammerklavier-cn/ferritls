@@ -325,5 +325,9 @@ docs/BENCHMARKS.md。
       三平台待首次 CI 运行确认）。
 
 SHA-NI 已随 M8.2 落地（`ShaNi` token + `HashOps` 函数分发 kernel：
-流式 ~6×、HKDF ~5×、握手 X25519 双 Ni ~2.35×，见 BENCHMARKS §5.1）；
-CCM/ChaCha/P-256/Ed25519 加速与 aarch64 后端明确不在本节范围。
+流式 ~6×、HKDF ~5×、握手 X25519 双 Ni ~2.35×，见 BENCHMARKS §5.1）。
+2026-09-13：AES/CLMUL kernel 按同法完成 `#[target_feature]` 直调化
+（kernel 直调 intrinsic，`raw.rs` 收缩为纯内存包装；反汇编实测对
+intrinsic 桩的真实 callq 103 → 0），GCM 原语再提 5.2–6.6×、对软件
+路径 ~750–980×（见 BENCHMARKS §5.2）。CCM/ChaCha/P-256/Ed25519 加速
+与 aarch64 后端明确不在本节范围。
