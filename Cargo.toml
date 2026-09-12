@@ -29,7 +29,7 @@ ferritls-backend-aesni = { version = "0.2.0", path = "crates/ferritls-backend-ae
 rustls = { version = "0.23", default-features = false, features = ["std"] }
 # 边界内依赖白名单仅此三者（见 docs/FIPS.md）。getrandom 自 M3/M5 起由
 # ferritls-core::entropy 使用；在此之前不得引入其他依赖。
-getrandom = "0.2"
+getrandom = "0.4"
 subtle = { version = "2", default-features = false }
 zeroize = { version = "1", default-features = false }
 
