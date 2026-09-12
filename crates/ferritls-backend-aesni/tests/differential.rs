@@ -5,6 +5,9 @@
 //! 块边界前后/多块大缓冲）× 两种密钥长度 × 双向交叉（Ni seal → 软件
 //! open，软件 seal → Ni open）。
 
+// 本 crate 仅 x86_64 有内容（aarch64 等目标为空壳，无 API 可引用）。
+#![cfg(target_arch = "x86_64")]
+
 use ferritls_backend_aesni::AesNi;
 use ferritls_core::gcm::{Aes128Gcm, Aes256Gcm};
 

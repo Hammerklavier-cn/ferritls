@@ -8,6 +8,9 @@
 //! 注意：安装是进程级的——本二进制只含 Ni 路径测试；软件默认路径的
 //! 同一批向量在 ferritls-core 的测试里独立运行。
 
+// 本 crate 仅 x86_64 有内容（aarch64 等目标为空壳，无 API 可引用）。
+#![cfg(target_arch = "x86_64")]
+
 mod common;
 
 use common::{assert_hex, hex};

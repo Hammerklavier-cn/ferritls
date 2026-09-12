@@ -4,6 +4,9 @@
 //! `Sha256` 公开 API 走 SHA-NI 压缩路径，用著名向量与流式一致性
 //! 锚定整条公开链路（缓冲/填充/分发/kernel）。CPU 不支持时跳过。
 
+// 本 crate 仅 x86_64 有内容（aarch64 等目标为空壳，无 API 可引用）。
+#![cfg(target_arch = "x86_64")]
+
 mod common;
 
 use common::assert_hex;

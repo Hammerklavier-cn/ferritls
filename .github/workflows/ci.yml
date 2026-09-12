@@ -157,7 +157,7 @@ jobs:
       - name: Generate coverage (lcov)
         run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
       - name: Print summary to job log
-        run: cargo llvm-cov report --summary
+        run: cargo llvm-cov report
       - uses: actions/upload-artifact@v4
         with:
           name: coverage-lcov
@@ -177,6 +177,11 @@ jobs:
         with:
           tool: cargo-audit
       - run: cargo audit
+      # fuzz/Cargo.lock 刻意不跟踪（fuzz/.gitignore，M7 决定）——审计前
+      # 现场生成；cargo fuzz build 同样每次新鲜解析，扫描口径一致。
+      - name: Generate fuzz lockfile
+        run: cargo generate-lockfile
+        working-directory: fuzz
       - run: cargo audit --file fuzz/Cargo.lock
 
   # 公开 API 兼容性门禁：两个发布 crate 的 semver 违例在 PR 阶段拦截

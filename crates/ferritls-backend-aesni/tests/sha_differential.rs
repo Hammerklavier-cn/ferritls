@@ -5,6 +5,9 @@
 //! （未安装 → 软件默认路径）。两者在数千组确定性伪随机输入上逐字节
 //! 一致，并以 FIPS 180-4 / RFC 6234 的著名向量绝对锚定。
 
+// 本 crate 仅 x86_64 有内容（aarch64 等目标为空壳，无 API 可引用）。
+#![cfg(target_arch = "x86_64")]
+
 mod common;
 
 use ferritls_backend_aesni::ShaNi;
