@@ -209,39 +209,59 @@ macro_rules! ecdsa_curve {
                 Ok((rb, sb))
             }
 
-            /// 验证 DER 编码的 ECDSA 签名（公钥为未压缩 SEC1）。
-            pub fn verify(
-                public_sec1: &[u8],
-                message: &[u8],
-                signature_der: &[u8],
-            ) -> Result<(), crate::Error> {
-                let (qx, qy) = crv::parse_public(public_sec1)?;
-                let (rb, sb) = parse_sig(signature_der)?;
-                let digest = $hash::one_shot(message);
-                let z = S::from_bytes_be_mod(&digest);
-                let r_s = S::from_bytes_be_mod(&rb);
-                let s_s = S::from_bytes_be_mod(&sb);
+            /// ECDSA 验证公钥。
+            ///
+            /// 唯一构造路径 [`VerifyKey::from_sec1_point`]：输入必须是
+            /// **未压缩 SEC1 点**（`0x04 ‖ X ‖ Y`，RFC 5480），不含
+            /// SPKI/AlgorithmIdentifier 包装——X.509 剥离由调用方完成
+            /// （rustls 适配层直接透传 webpki 的 `key_value`）。
+            pub struct VerifyKey {
+                qx: crv::F,
+                qy: crv::F,
+            }
 
-                let w = s_s.invert();
-                let u1 = z.mul(&w);
-                let u2 = r_s.mul(&w);
+            impl VerifyKey {
+                /// 解析未压缩 SEC1 点（含规范性与在曲线校验）。
+                pub fn from_sec1_point(bytes: &[u8]) -> Result<Self, crate::Error> {
+                    let (qx, qy) = crv::parse_public(bytes)?;
+                    Ok(Self { qx, qy })
+                }
 
-                let g = (crv::gx(), crv::gy());
-                let p1 = crv::mul_point_pub(&u1.to_raw(), &g.0, &g.1);
-                if p1.is_infinity() {
-                    return Err(crate::Error::VerificationFailed);
-                }
-                let p2 = crv::mul_point_pub(&u2.to_raw(), &qx, &qy);
-                if p2.is_infinity() {
-                    return Err(crate::Error::VerificationFailed);
-                }
-                let (x, _) =
-                    crv::add_points_affine_pub(&crv::to_affine_pub(&p1), &crv::to_affine_pub(&p2))?;
-                let r_prime = S::from_bytes_be_mod(&x.to_bytes_be());
-                if r_prime == r_s {
-                    Ok(())
-                } else {
-                    Err(crate::Error::VerificationFailed)
+                /// 验证 DER 编码的 ECDSA 签名。
+                pub fn verify(
+                    &self,
+                    message: &[u8],
+                    signature_der: &[u8],
+                ) -> Result<(), crate::Error> {
+                    let (rb, sb) = parse_sig(signature_der)?;
+                    let digest = $hash::one_shot(message);
+                    let z = S::from_bytes_be_mod(&digest);
+                    let r_s = S::from_bytes_be_mod(&rb);
+                    let s_s = S::from_bytes_be_mod(&sb);
+
+                    let w = s_s.invert();
+                    let u1 = z.mul(&w);
+                    let u2 = r_s.mul(&w);
+
+                    let g = (crv::gx(), crv::gy());
+                    let p1 = crv::mul_point_pub(&u1.to_raw(), &g.0, &g.1);
+                    if p1.is_infinity() {
+                        return Err(crate::Error::VerificationFailed);
+                    }
+                    let p2 = crv::mul_point_pub(&u2.to_raw(), &self.qx, &self.qy);
+                    if p2.is_infinity() {
+                        return Err(crate::Error::VerificationFailed);
+                    }
+                    let (x, _) = crv::add_points_affine_pub(
+                        &crv::to_affine_pub(&p1),
+                        &crv::to_affine_pub(&p2),
+                    )?;
+                    let r_prime = S::from_bytes_be_mod(&x.to_bytes_be());
+                    if r_prime == r_s {
+                        Ok(())
+                    } else {
+                        Err(crate::Error::VerificationFailed)
+                    }
                 }
             }
         }
@@ -531,56 +551,84 @@ pub mod ed25519 {
         }
     }
 
-    /// 验证 Ed25519 签名（公钥 32 字节，签名 64 字节）。
-    pub fn verify(public_key: &[u8], message: &[u8], signature: &[u8]) -> Result<(), crate::Error> {
-        if public_key.len() != 32 || signature.len() != 64 {
-            return Err(crate::Error::InvalidInput);
+    /// Ed25519 验证公钥。
+    ///
+    /// 唯一构造路径 [`VerifyKey::from_raw_bytes`]：输入是 32 字节
+    /// 压缩编码（RFC 8032 §5.1.5，含规范性与在曲线校验）。
+    #[derive(Clone, Copy)]
+    pub struct VerifyKey {
+        bytes: [u8; 32],
+    }
+
+    impl std::fmt::Debug for VerifyKey {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("ed25519::VerifyKey")
         }
-        let mut a_bytes = [0u8; 32];
-        a_bytes.copy_from_slice(public_key);
-        let a_pt = decompress(&a_bytes)?;
+    }
 
-        let mut r_bytes = [0u8; 32];
-        r_bytes.copy_from_slice(&signature[..32]);
-        let r_pt = decompress(&r_bytes)?;
-
-        // S 必须规范（0 ≤ S < L）：LE 字节自最高位比较；全部相等（S == L）也拒绝
-        let l_bytes: [u8; 32] = [
-            0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9,
-            0xde, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10,
-        ];
-        let mut s_lt_l = false;
-        for i in (0..32).rev() {
-            if signature[32 + i] < l_bytes[i] {
-                s_lt_l = true;
-                break;
+    impl VerifyKey {
+        /// 解析 32 字节压缩公钥编码。
+        pub fn from_raw_bytes(public_key: &[u8]) -> Result<Self, crate::Error> {
+            if public_key.len() != PUBLIC_KEY_LEN {
+                return Err(crate::Error::InvalidInput);
             }
-            if signature[32 + i] > l_bytes[i] {
+            let mut bytes = [0u8; PUBLIC_KEY_LEN];
+            bytes.copy_from_slice(public_key);
+            // 构造期校验规范性与在曲线（验证期 decompress 确定性地成功）
+            decompress(&bytes)?;
+            Ok(Self { bytes })
+        }
+
+        /// 验证 64 字节 Ed25519 签名。
+        pub fn verify(&self, message: &[u8], signature: &[u8]) -> Result<(), crate::Error> {
+            if signature.len() != SIGNATURE_LEN {
+                return Err(crate::Error::InvalidInput);
+            }
+            let a_bytes = self.bytes;
+            let a_pt = decompress(&a_bytes)?;
+
+            let mut r_bytes = [0u8; 32];
+            r_bytes.copy_from_slice(&signature[..32]);
+            let r_pt = decompress(&r_bytes)?;
+
+            // S 必须规范（0 ≤ S < L）：LE 字节自最高位比较；全部相等（S == L）也拒绝
+            let l_bytes: [u8; 32] = [
+                0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9,
+                0xde, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10,
+            ];
+            let mut s_lt_l = false;
+            for i in (0..32).rev() {
+                if signature[32 + i] < l_bytes[i] {
+                    s_lt_l = true;
+                    break;
+                }
+                if signature[32 + i] > l_bytes[i] {
+                    return Err(crate::Error::VerificationFailed);
+                }
+            }
+            if !s_lt_l {
                 return Err(crate::Error::VerificationFailed);
             }
-        }
-        if !s_lt_l {
-            return Err(crate::Error::VerificationFailed);
-        }
-        let mut s_bytes = [0u8; 32];
-        s_bytes.copy_from_slice(&signature[32..]);
-        let s_s = ScL::from_bytes_le_mod(&s_bytes);
+            let mut s_bytes = [0u8; 32];
+            s_bytes.copy_from_slice(&signature[32..]);
+            let s_s = ScL::from_bytes_le_mod(&s_bytes);
 
-        let mut kh = Sha512::new();
-        kh.update(&signature[..32]);
-        kh.update(&a_bytes);
-        kh.update(message);
-        let k_digest = kh.finalize();
-        let k = ScL::from_bytes_le_mod(&k_digest);
+            let mut kh = Sha512::new();
+            kh.update(&signature[..32]);
+            kh.update(&a_bytes);
+            kh.update(message);
+            let k_digest = kh.finalize();
+            let k = ScL::from_bytes_le_mod(&k_digest);
 
-        // [S]G == R + [k]A
-        let lhs = scalar_mult(&s_s.to_bytes_le(), &base_point());
-        let ka = scalar_mult(&k.to_bytes_le(), &a_pt);
-        let rhs = r_pt.add(&ka);
-        if lhs.compress() == rhs.compress() {
-            Ok(())
-        } else {
-            Err(crate::Error::VerificationFailed)
+            // [S]G == R + [k]A
+            let lhs = scalar_mult(&s_s.to_bytes_le(), &base_point());
+            let ka = scalar_mult(&k.to_bytes_le(), &a_pt);
+            let rhs = r_pt.add(&ka);
+            if lhs.compress() == rhs.compress() {
+                Ok(())
+            } else {
+                Err(crate::Error::VerificationFailed)
+            }
         }
     }
 }
@@ -1075,8 +1123,18 @@ pub mod rsa {
         }
     }
 
-    /// RSA 公钥（验证用；全部为公开数据）。
-    struct RsaPublicKey {
+    /// RSA 验证公钥（RSASSA-PKCS1-v1_5 / RSASSA-PSS，RFC 8017）。
+    ///
+    /// 两条显式命名的构造路径，名字即契约：
+    /// - [`VerifyKey::from_rsapublickey_der`]：**裸 `RSAPublicKey` DER**
+    ///   （`SEQUENCE { INTEGER n, INTEGER e }`）——X.509 之下的密钥本体；
+    /// - [`VerifyKey::from_spki_der`]：完整 SPKI（`SEQUENCE { AlgId,
+    ///   BIT STRING }`）——X.509 公钥包装，便利入口。
+    ///
+    /// X.509 剥离由调用方选择；rustls 适配层直接透传 webpki 的
+    /// `key_value`（裸格式），见 `ferritls-rustls::verify`。
+    #[derive(Clone)]
+    pub struct VerifyKey {
         n: Vec<u64>,
         e: Vec<u64>,
         n0_n: u64,
@@ -1087,23 +1145,18 @@ pub mod rsa {
         em_mask: u8,
     }
 
-    impl RsaPublicKey {
-        /// 解析 SPKI（SubjectPublicKeyInfo）内的 RSAPublicKey。
-        fn from_spki_der(der: &[u8]) -> Result<Self, crate::Error> {
-            let (seq, rest) = crate::der::sequence(der)?;
-            if !rest.is_empty() {
-                return Err(crate::Error::InvalidInput);
-            }
-            let (alg, rest) = crate::der::sequence(seq)?;
-            let (oid, _params) = crate::der::object_identifier(alg)?;
-            if oid != crate::der::oid::RSA_ENCRYPTION {
-                return Err(crate::Error::InvalidInput);
-            }
-            let (keybits, rest) = crate::der::bit_string(rest)?;
-            if !rest.is_empty() {
-                return Err(crate::Error::InvalidInput);
-            }
-            let (keyseq, krest) = crate::der::sequence(keybits)?;
+    impl std::fmt::Debug for VerifyKey {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("rsa::VerifyKey")
+        }
+    }
+
+    impl VerifyKey {
+        /// 解析裸 `RSAPublicKey` DER（`SEQUENCE { INTEGER n, INTEGER e }`，
+        /// RFC 8017）。结构校验：外层 SEQUENCE 无尾字节、模长 2048–4096
+        /// 位、n 奇、e ≥ 3 且为奇。
+        pub fn from_rsapublickey_der(der: &[u8]) -> Result<Self, crate::Error> {
+            let (keyseq, krest) = crate::der::sequence(der)?;
             if !krest.is_empty() {
                 return Err(crate::Error::InvalidInput);
             }
@@ -1143,6 +1196,27 @@ pub mod rsa {
                 e_len: 1,
                 em_mask: (0xffu32 >> em_left_bits) as u8,
             })
+        }
+
+        /// 解析完整 SPKI（SubjectPublicKeyInfo，`SEQUENCE { AlgId,
+        /// BIT STRING }`）：校验 AlgorithmIdentifier 为 rsaEncryption，
+        /// 再按裸 `RSAPublicKey` 解析 BIT STRING 内容。便利入口——
+        /// 已持有 X.509 公钥包装的调用方（如自检 KAT 向量）可直用。
+        pub fn from_spki_der(spki: &[u8]) -> Result<Self, crate::Error> {
+            let (seq, rest) = crate::der::sequence(spki)?;
+            if !rest.is_empty() {
+                return Err(crate::Error::InvalidInput);
+            }
+            let (alg, rest) = crate::der::sequence(seq)?;
+            let (oid, _params) = crate::der::object_identifier(alg)?;
+            if oid != crate::der::oid::RSA_ENCRYPTION {
+                return Err(crate::Error::InvalidInput);
+            }
+            let (keybits, rest) = crate::der::bit_string(rest)?;
+            if !rest.is_empty() {
+                return Err(crate::Error::InvalidInput);
+            }
+            Self::from_rsapublickey_der(keybits)
         }
 
         /// s^e mod n，返回 I2OSP 定长编码（含签名长度与 s < n 校验）。
@@ -1219,79 +1293,80 @@ pub mod rsa {
         Ok(())
     }
 
-    /// 验证 RSA-PSS 签名。公钥为 DER SPKI（SubjectPublicKeyInfo）。
-    pub fn verify_pss(
-        hash_bits: u16,
-        public_key_der: &[u8],
-        message: &[u8],
-        signature: &[u8],
-    ) -> Result<(), crate::Error> {
-        let pk = RsaPublicKey::from_spki_der(public_key_der)?;
-        let em = pk.public_exponentiate(signature)?;
-        let mhash = hash_msg(hash_bits, message)?;
-        let hlen = mhash.len();
-        let emlen = em.len();
-        // 一切 padding 失败归一化为同一错误（不泄露失败阶段）
-        if emlen < 2 * hlen + 2 || em[emlen - 1] != 0xbc {
-            return Err(crate::Error::VerificationFailed);
+    impl VerifyKey {
+        /// 验证 RSA-PSS 签名（RFC 8017 §9.1，salt 长度 = 哈希长度）。
+        /// 重复验证同一把公钥时应复用 `VerifyKey`，模幂前的解析开销均摊。
+        pub fn verify_pss(
+            &self,
+            hash_bits: u16,
+            message: &[u8],
+            signature: &[u8],
+        ) -> Result<(), crate::Error> {
+            let em = self.public_exponentiate(signature)?;
+            let mhash = hash_msg(hash_bits, message)?;
+            let hlen = mhash.len();
+            let emlen = em.len();
+            // 一切 padding 失败归一化为同一错误（不泄露失败阶段）
+            if emlen < 2 * hlen + 2 || em[emlen - 1] != 0xbc {
+                return Err(crate::Error::VerificationFailed);
+            }
+            if em[0] & !self.em_mask != 0 {
+                return Err(crate::Error::VerificationFailed);
+            }
+            let h = &em[emlen - hlen - 1..emlen - 1];
+            let dblen = emlen - hlen - 1;
+            let mut db = em[..dblen].to_vec();
+            let mut dbmask = vec![0u8; dblen];
+            mgf1(hash_bits, h, &mut dbmask)?;
+            for i in 0..dblen {
+                db[i] ^= dbmask[i];
+            }
+            db[0] &= self.em_mask;
+            let ps_len = dblen - hlen - 1;
+            if db[..ps_len].iter().any(|&b| b != 0) || db[ps_len] != 0x01 {
+                return Err(crate::Error::VerificationFailed);
+            }
+            let salt = &db[ps_len + 1..];
+            let mut mprime = vec![0u8; 8 + 2 * hlen];
+            mprime[8..8 + hlen].copy_from_slice(&mhash);
+            mprime[8 + hlen..].copy_from_slice(salt);
+            let h2 = hash_msg(hash_bits, &mprime)?;
+            if h2[..] != *h {
+                return Err(crate::Error::VerificationFailed);
+            }
+            Ok(())
         }
-        if em[0] & !pk.em_mask != 0 {
-            return Err(crate::Error::VerificationFailed);
-        }
-        let h = &em[emlen - hlen - 1..emlen - 1];
-        let dblen = emlen - hlen - 1;
-        let mut db = em[..dblen].to_vec();
-        let mut dbmask = vec![0u8; dblen];
-        mgf1(hash_bits, h, &mut dbmask)?;
-        for i in 0..dblen {
-            db[i] ^= dbmask[i];
-        }
-        db[0] &= pk.em_mask;
-        let ps_len = dblen - hlen - 1;
-        if db[..ps_len].iter().any(|&b| b != 0) || db[ps_len] != 0x01 {
-            return Err(crate::Error::VerificationFailed);
-        }
-        let salt = &db[ps_len + 1..];
-        let mut mprime = vec![0u8; 8 + 2 * hlen];
-        mprime[8..8 + hlen].copy_from_slice(&mhash);
-        mprime[8 + hlen..].copy_from_slice(salt);
-        let h2 = hash_msg(hash_bits, &mprime)?;
-        if h2[..] != *h {
-            return Err(crate::Error::VerificationFailed);
-        }
-        Ok(())
-    }
 
-    /// 验证 RSA PKCS#1 v1.5 签名（严格 padding 检查，防 Bleichenbacher）。
-    pub fn verify_pkcs1v15(
-        hash_bits: u16,
-        public_key_der: &[u8],
-        message: &[u8],
-        signature: &[u8],
-    ) -> Result<(), crate::Error> {
-        let pk = RsaPublicKey::from_spki_der(public_key_der)?;
-        let em = pk.public_exponentiate(signature)?;
-        let mhash = hash_msg(hash_bits, message)?;
-        let prefix = digestinfo_prefix(hash_bits)?;
-        let tlen = prefix.len() + mhash.len();
-        let emlen = em.len();
-        if emlen < tlen + 11 {
-            return Err(crate::Error::VerificationFailed);
+        /// 验证 RSA PKCS#1 v1.5 签名（严格 padding 检查，防 Bleichenbacher）。
+        pub fn verify_pkcs1v15(
+            &self,
+            hash_bits: u16,
+            message: &[u8],
+            signature: &[u8],
+        ) -> Result<(), crate::Error> {
+            let em = self.public_exponentiate(signature)?;
+            let mhash = hash_msg(hash_bits, message)?;
+            let prefix = digestinfo_prefix(hash_bits)?;
+            let tlen = prefix.len() + mhash.len();
+            let emlen = em.len();
+            if emlen < tlen + 11 {
+                return Err(crate::Error::VerificationFailed);
+            }
+            // 逐字节重构期望 EM 并全等比较（拒绝非规范 0xFF 串等一切变体）
+            let mut expected = vec![0u8; emlen];
+            expected[0] = 0x00;
+            expected[1] = 0x01;
+            for b in expected[2..emlen - tlen - 1].iter_mut() {
+                *b = 0xff;
+            }
+            expected[emlen - tlen - 1] = 0x00;
+            expected[emlen - tlen..emlen - mhash.len()].copy_from_slice(prefix);
+            expected[emlen - mhash.len()..].copy_from_slice(&mhash);
+            if em != expected {
+                return Err(crate::Error::VerificationFailed);
+            }
+            Ok(())
         }
-        // 逐字节重构期望 EM 并全等比较（拒绝非规范 0xFF 串等一切变体）
-        let mut expected = vec![0u8; emlen];
-        expected[0] = 0x00;
-        expected[1] = 0x01;
-        for b in expected[2..emlen - tlen - 1].iter_mut() {
-            *b = 0xff;
-        }
-        expected[emlen - tlen - 1] = 0x00;
-        expected[emlen - tlen..emlen - mhash.len()].copy_from_slice(prefix);
-        expected[emlen - mhash.len()..].copy_from_slice(&mhash);
-        if em != expected {
-            return Err(crate::Error::VerificationFailed);
-        }
-        Ok(())
     }
 }
 

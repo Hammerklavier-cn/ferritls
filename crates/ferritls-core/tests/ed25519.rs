@@ -28,10 +28,11 @@ fn ed25519_rfc8032_test1_empty_message() {
          fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
         "TEST1 signature",
     );
-    assert!(ed25519::verify(&sk.public_key(), b"", &sig).is_ok());
+    let vk = ed25519::VerifyKey::from_raw_bytes(&sk.public_key()).expect("pubkey");
+    assert!(vk.verify(b"", &sig).is_ok());
     // 篡改消息必须验证失败。
     assert_eq!(
-        ed25519::verify(&sk.public_key(), b"x", &sig),
+        vk.verify(b"x", &sig),
         Err(ferritls_core::Error::VerificationFailed)
     );
 }
@@ -77,7 +78,8 @@ fn ed25519_rfc8032_test3_two_byte_message() {
          18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a",
         "TEST3 signature",
     );
-    assert!(ed25519::verify(&sk.public_key(), &[0xaf, 0x82], &sig).is_ok());
+    let vk = ed25519::VerifyKey::from_raw_bytes(&sk.public_key()).expect("pubkey");
+    assert!(vk.verify(&[0xaf, 0x82], &sig).is_ok());
 }
 
 #[test]
@@ -108,12 +110,13 @@ fn ed25519_rfc8032_test_sha_abc() {
          09351fc9ac90b3ecfdfbc7c66431e0303dca179c138ac17ad9bef1177331a704",
         "SHA(abc) signature",
     );
-    assert!(ed25519::verify(&sk.public_key(), &msg, &sig).is_ok());
+    let vk = ed25519::VerifyKey::from_raw_bytes(&sk.public_key()).expect("pubkey");
+    assert!(vk.verify(&msg, &sig).is_ok());
     // 篡改签名首字节必须失败（无效曲线点也应拒绝而非 panic）
     let mut bad = sig;
     bad[0] ^= 1;
     assert_eq!(
-        ed25519::verify(&sk.public_key(), &msg, &bad),
+        vk.verify(&msg, &bad),
         Err(ferritls_core::Error::VerificationFailed)
     );
 }
@@ -187,5 +190,7 @@ fn ed25519_rfc8032_test1024_large_message() {
         "50aa5371b1508f9f4528ecea23c436d94b5e8fcd4f681e30a6ac00a9704a18",
         "8a03"
     ));
-    ed25519::verify(&pk, &msg, &sig_bytes).expect("TEST1024 official signature verifies");
+    let vk = ed25519::VerifyKey::from_raw_bytes(&pk).expect("pubkey");
+    vk.verify(&msg, &sig_bytes)
+        .expect("TEST1024 official signature verifies");
 }

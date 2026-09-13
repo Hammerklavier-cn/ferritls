@@ -51,46 +51,51 @@ fn rsa_sign_pkcs1v15_sha256_openssl_anchor() {
     let sig = sk.sign_pkcs1v15(256, MSG).expect("sign");
     common::assert_hex(&sig, SIG_V15_SHA256, "v1.5 sha256 signature");
     // openssl 产物的验证方向
-    rsa::verify_pkcs1v15(256, &hex(PUB_SPKI), MSG, &sig).expect("verify self");
+    let pk = rsa::VerifyKey::from_spki_der(&hex(PUB_SPKI)).expect("parse pubkey");
+    pk.verify_pkcs1v15(256, MSG, &sig).expect("verify self");
     // 篡改签名 → 失败
     let mut bad = sig.clone();
     bad[128] ^= 1;
     assert_eq!(
-        rsa::verify_pkcs1v15(256, &hex(PUB_SPKI), MSG, &bad),
+        pk.verify_pkcs1v15(256, MSG, &bad),
         Err(ferritls_core::Error::VerificationFailed)
     );
 }
 
 #[test]
 fn rsa_verify_pkcs1v15_sha384_openssl_anchor() {
+    let pk = rsa::VerifyKey::from_spki_der(&hex(PUB_SPKI)).expect("parse pubkey");
     let sig = hex(SIG_V15_SHA384);
-    rsa::verify_pkcs1v15(384, &hex(PUB_SPKI), MSG, &sig).expect("verify sha384");
+    pk.verify_pkcs1v15(384, MSG, &sig).expect("verify sha384");
     // 篡改消息 → 失败
     assert_eq!(
-        rsa::verify_pkcs1v15(384, &hex(PUB_SPKI), b"sample!", &sig),
+        pk.verify_pkcs1v15(384, b"sample!", &sig),
         Err(ferritls_core::Error::VerificationFailed)
     );
 }
 
 #[test]
 fn rsa_pss_openssl_verify_and_round_trip() {
+    let pk = rsa::VerifyKey::from_spki_der(&hex(PUB_SPKI)).expect("parse pubkey");
     // openssl 生成的 PSS 签名（salt = 哈希长度）验证方向锚定
-    rsa::verify_pss(256, &hex(PUB_SPKI), MSG, &hex(SIG_PSS_SHA256)).expect("pss sha256");
-    rsa::verify_pss(512, &hex(PUB_SPKI), MSG, &hex(SIG_PSS_SHA512)).expect("pss sha512");
+    pk.verify_pss(256, MSG, &hex(SIG_PSS_SHA256))
+        .expect("pss sha256");
+    pk.verify_pss(512, MSG, &hex(SIG_PSS_SHA512))
+        .expect("pss sha512");
     // 自洽往返（PSS 签名含随机 salt，不做逐字节比较）
     let sk = rsa::SigningKey::from_pkcs8_der(&hex(KEY_PKCS8)).expect("parse key");
     let sig = sk.sign_pss(256, MSG).expect("sign pss");
-    rsa::verify_pss(256, &hex(PUB_SPKI), MSG, &sig).expect("verify self pss");
+    pk.verify_pss(256, MSG, &sig).expect("verify self pss");
     // 篡改消息 → 失败
     assert_eq!(
-        rsa::verify_pss(256, &hex(PUB_SPKI), b"sample!", &sig),
+        pk.verify_pss(256, b"sample!", &sig),
         Err(ferritls_core::Error::VerificationFailed)
     );
     // 篡改签名首字节 → 失败
     let mut bad = sig.clone();
     bad[0] ^= 1;
     assert_eq!(
-        rsa::verify_pss(256, &hex(PUB_SPKI), MSG, &bad),
+        pk.verify_pss(256, MSG, &bad),
         Err(ferritls_core::Error::VerificationFailed)
     );
 }
@@ -112,7 +117,8 @@ fn rsa_blinded_pss_round_trips() {
     let sk = rsa::SigningKey::from_pkcs8_der(&hex(KEY_PKCS8)).expect("parse key");
     for _ in 0..8 {
         let sig = sk.sign_pss(384, MSG).expect("sign pss");
-        rsa::verify_pss(384, &hex(PUB_SPKI), MSG, &sig).expect("verify self pss");
+        let pk = rsa::VerifyKey::from_spki_der(&hex(PUB_SPKI)).expect("parse pubkey");
+        pk.verify_pss(384, MSG, &sig).expect("verify self pss");
     }
 }
 

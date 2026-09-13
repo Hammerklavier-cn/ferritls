@@ -77,11 +77,12 @@ fn p384_ecdsa_rfc6979_sample() {
     );
 
     // 验证路径
-    ecdsa::p384::verify(&q_expected, b"sample", &sig).expect("verify");
+    let vk = ecdsa::p384::VerifyKey::from_sec1_point(&q_expected).expect("pubkey");
+    vk.verify(b"sample", &sig).expect("verify");
 
     // 篡改消息必须失败
     assert_eq!(
-        ecdsa::p384::verify(&q_expected, b"sample!", &sig),
+        vk.verify(b"sample!", &sig),
         Err(ferritls_core::Error::VerificationFailed)
     );
 }

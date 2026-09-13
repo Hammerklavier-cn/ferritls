@@ -39,7 +39,8 @@ fn bench_sign(c: &mut Criterion) {
         b.iter(|| sk256.sign(&msg).expect("p256 sign"))
     });
     group.bench_function("ecdsa-p256-verify", |b| {
-        b.iter(|| sign::ecdsa::p256::verify(&pub256, &msg, &sig256).expect("p256 verify"))
+        let vk = sign::ecdsa::p256::VerifyKey::from_sec1_point(&pub256).expect("p256 key");
+        b.iter(|| vk.verify(&msg, &sig256).expect("p256 verify"))
     });
 
     // ECDSA P-384（SHA-384，RFC 6979）
@@ -50,7 +51,8 @@ fn bench_sign(c: &mut Criterion) {
         b.iter(|| sk384.sign(&msg).expect("p384 sign"))
     });
     group.bench_function("ecdsa-p384-verify", |b| {
-        b.iter(|| sign::ecdsa::p384::verify(&pub384, &msg, &sig384).expect("p384 verify"))
+        let vk = sign::ecdsa::p384::VerifyKey::from_sec1_point(&pub384).expect("p384 key");
+        b.iter(|| vk.verify(&msg, &sig384).expect("p384 verify"))
     });
 
     // Ed25519（非批准，但为 TLS 1.3 实际提供的验证算法之一）
@@ -59,13 +61,14 @@ fn bench_sign(c: &mut Criterion) {
     let esig = esk.sign(&msg);
     group.bench_function("ed25519-sign", |b| b.iter(|| esk.sign(&msg)));
     group.bench_function("ed25519-verify", |b| {
-        b.iter(|| sign::ed25519::verify(&epk, &msg, &esig).expect("ed25519 verify"))
+        let vk = sign::ed25519::VerifyKey::from_raw_bytes(&epk).expect("ed25519 key");
+        b.iter(|| vk.verify(&msg, &esig).expect("ed25519 verify"))
     });
 
     // RSA-2048：私钥运算较慢，调低 sample_size 控制总时长。
     group.sample_size(20);
     let rsa_sk = sign::rsa::SigningKey::from_pkcs8_der(&hex(RSA_PKCS8_HEX)).expect("rsa key");
-    let rsa_pk = hex(RSA_SPKI_HEX);
+    let rsa_pk = sign::rsa::VerifyKey::from_spki_der(&hex(RSA_SPKI_HEX)).expect("rsa pubkey");
     let rsa_sig15 = rsa_sk.sign_pkcs1v15(256, &msg).expect("rsa pkcs1v15 sign");
     let rsa_sig_pss = rsa_sk.sign_pss(256, &msg).expect("rsa pss sign");
     group.bench_function("rsa2048-pkcs1v15-sign", |b| {
@@ -73,14 +76,20 @@ fn bench_sign(c: &mut Criterion) {
     });
     group.bench_function("rsa2048-pkcs1v15-verify", |b| {
         b.iter(|| {
-            sign::rsa::verify_pkcs1v15(256, &rsa_pk, &msg, &rsa_sig15).expect("rsa pkcs1v15 verify")
+            rsa_pk
+                .verify_pkcs1v15(256, &msg, &rsa_sig15)
+                .expect("rsa pkcs1v15 verify")
         })
     });
     group.bench_function("rsa2048-pss-sign", |b| {
         b.iter(|| rsa_sk.sign_pss(256, &msg).expect("rsa pss sign"))
     });
     group.bench_function("rsa2048-pss-verify", |b| {
-        b.iter(|| sign::rsa::verify_pss(256, &rsa_pk, &msg, &rsa_sig_pss).expect("rsa pss verify"))
+        b.iter(|| {
+            rsa_pk
+                .verify_pss(256, &msg, &rsa_sig_pss)
+                .expect("rsa pss verify")
+        })
     });
 
     group.finish();

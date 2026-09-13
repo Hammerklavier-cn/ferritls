@@ -71,11 +71,12 @@ fn p256_ecdsa_rfc6979_sample() {
     );
 
     // 验证路径
-    ecdsa::p256::verify(&q_expected, b"sample", &sig).expect("verify");
+    let vk = ecdsa::p256::VerifyKey::from_sec1_point(&q_expected).expect("pubkey");
+    vk.verify(b"sample", &sig).expect("verify");
 
     // 篡改消息必须失败
     assert_eq!(
-        ecdsa::p256::verify(&q_expected, b"sample!", &sig),
+        vk.verify(b"sample!", &sig),
         Err(ferritls_core::Error::VerificationFailed)
     );
 }
@@ -100,5 +101,8 @@ fn p256_ecdsa_rfc6979_test() {
         hex("019F4113742A2B14BD25926B49C649155F267E60D3814B4C0CC84250E46F0083"),
         "s"
     );
-    ecdsa::p256::verify(&q, b"test", &sig).expect("verify");
+    ecdsa::p256::VerifyKey::from_sec1_point(&q)
+        .expect("pubkey")
+        .verify(b"test", &sig)
+        .expect("verify");
 }

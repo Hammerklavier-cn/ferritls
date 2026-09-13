@@ -25,8 +25,20 @@ const ZERO48: &str = concat!(
     "000000000000000000000000000000000000000000000000"
 );
 
-/// ECDSA 验证函数指针（p256/p384 同形）。
+/// ECDSA 验证函数指针（p256/p384 同形；构造 + 验证一步到位）。
 type EcdsaVerify = fn(&[u8], &[u8], &[u8]) -> Result<(), ferritls_core::Error>;
+
+fn v_ecdsa_p256(pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), ferritls_core::Error> {
+    sign::ecdsa::p256::VerifyKey::from_sec1_point(pk)?.verify(msg, sig)
+}
+
+fn v_ecdsa_p384(pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), ferritls_core::Error> {
+    sign::ecdsa::p384::VerifyKey::from_sec1_point(pk)?.verify(msg, sig)
+}
+
+fn v_ed25519(pk: &[u8], msg: &[u8], sig: &[u8]) -> Result<(), ferritls_core::Error> {
+    sign::ed25519::VerifyKey::from_raw_bytes(pk)?.verify(msg, sig)
+}
 
 fn load(name: &str) -> serde_json::Value {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors").to_string() + "/" + name;
@@ -205,18 +217,12 @@ fn ecdsa_suite(file: &str, verify: EcdsaVerify) {
 
 #[test]
 fn wycheproof_ecdsa_secp256r1_sha256() {
-    ecdsa_suite(
-        "ecdsa_secp256r1_sha256_test.json",
-        sign::ecdsa::p256::verify,
-    );
+    ecdsa_suite("ecdsa_secp256r1_sha256_test.json", v_ecdsa_p256);
 }
 
 #[test]
 fn wycheproof_ecdsa_secp384r1_sha384() {
-    ecdsa_suite(
-        "ecdsa_secp384r1_sha384_test.json",
-        sign::ecdsa::p384::verify,
-    );
+    ecdsa_suite("ecdsa_secp384r1_sha384_test.json", v_ecdsa_p384);
 }
 
 #[test]
@@ -231,7 +237,7 @@ fn wycheproof_ed25519() {
             let msg = hex(str_field(t, "msg"));
             let sig = hex(str_field(t, "sig"));
             let result = str_field(t, "result");
-            let got = sign::ed25519::verify(&pk, &msg, &sig);
+            let got = v_ed25519(&pk, &msg, &sig);
             match result {
                 "valid" => {
                     got.unwrap_or_else(|e| {
@@ -259,13 +265,15 @@ fn rsa_pkcs1_suite(file: &str, hash_bits: u16) {
     let (mut n_ok, mut n_err) = (0u32, 0u32);
     for group in arr(&doc, "testGroups") {
         let spki = hex(str_field(group, "publicKeyDer"));
+        let pk = sign::rsa::VerifyKey::from_spki_der(&spki)
+            .unwrap_or_else(|e| panic!("group pubkey parse: {e:?}"));
         for t in arr(group, "tests") {
             let id = tcid(t);
             let comment = str_field(t, "comment");
             let msg = hex(str_field(t, "msg"));
             let sig = hex(str_field(t, "sig"));
             let result = str_field(t, "result");
-            let got = sign::rsa::verify_pkcs1v15(hash_bits, &spki, &msg, &sig);
+            let got = pk.verify_pkcs1v15(hash_bits, &msg, &sig);
             match result {
                 "valid" => {
                     got.unwrap_or_else(|e| {
@@ -315,6 +323,8 @@ fn wycheproof_rsa_pss_sha256() {
     let (mut n_ok, mut n_err) = (0u32, 0u32);
     for group in arr(&doc, "testGroups") {
         let spki = hex(str_field(group, "publicKeyDer"));
+        let pk = sign::rsa::VerifyKey::from_spki_der(&spki)
+            .unwrap_or_else(|e| panic!("group pubkey parse: {e:?}"));
         assert_eq!(str_field(group, "sha"), "SHA-256");
         assert_eq!(str_field(group, "mgfSha"), "SHA-256");
         for t in arr(group, "tests") {
@@ -323,7 +333,7 @@ fn wycheproof_rsa_pss_sha256() {
             let msg = hex(str_field(t, "msg"));
             let sig = hex(str_field(t, "sig"));
             let result = str_field(t, "result");
-            let got = sign::rsa::verify_pss(256, &spki, &msg, &sig);
+            let got = pk.verify_pss(256, &msg, &sig);
             match result {
                 "valid" => {
                     got.unwrap_or_else(|e| {

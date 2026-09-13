@@ -17,6 +17,13 @@
 //! - RSA PKCS#1：公钥 = rsaEncryption + NULL；签名 = sha*WithRSA + NULL；
 //! - RSA-PSS：公钥同 RSA；签名 = RSASSA-PSS OID + PSS 参数
 //!   （RFC 4055：hash/MGF1-SHA*/salt=哈希长）。
+//!
+//! `verify_signature` 的 `public_key` 参数语义（rustls-webpki 0.103.x
+//! `signed_data.rs` 实测）：webpki 传入的是 **subjectPublicKey 的
+//! BIT STRING 内容（key_value）**——即裸密钥本体（RSA = 裸
+//! `RSAPublicKey` DER；EC = 未压缩 SEC1 点；Ed25519 = 32 字节裸
+//! 公钥），**不含** SPKI/AlgorithmIdentifier 包装。ferritls-core
+//! 的 `VerifyKey` 构造器即按该裸格式定义，此处直接透传。
 
 use rustls::SignatureScheme;
 use rustls::crypto::WebPkiSupportedAlgorithms;
@@ -122,7 +129,7 @@ fn v_ecdsa_p256(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), ferritls_core::Error> {
-    ecdsa::p256::verify(public_key, message, signature)
+    ecdsa::p256::VerifyKey::from_sec1_point(public_key)?.verify(message, signature)
 }
 
 fn v_ecdsa_p384(
@@ -130,7 +137,7 @@ fn v_ecdsa_p384(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), ferritls_core::Error> {
-    ecdsa::p384::verify(public_key, message, signature)
+    ecdsa::p384::VerifyKey::from_sec1_point(public_key)?.verify(message, signature)
 }
 
 fn v_ed25519(
@@ -138,15 +145,18 @@ fn v_ed25519(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), ferritls_core::Error> {
-    ed25519::verify(public_key, message, signature)
+    ed25519::VerifyKey::from_raw_bytes(public_key)?.verify(message, signature)
 }
 
+/// 解析裸 `RSAPublicKey` DER（webpki 传入的 key_value 格式）。
+/// 解析失败统一归一化为 `InvalidSignature`，不区分密钥格式错误
+/// 与签名验证失败。
 fn v_rsa_pkcs1_256(
     public_key: &[u8],
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), ferritls_core::Error> {
-    rsa::verify_pkcs1v15(256, public_key, message, signature)
+    rsa::VerifyKey::from_rsapublickey_der(public_key)?.verify_pkcs1v15(256, message, signature)
 }
 
 fn v_rsa_pkcs1_384(
@@ -154,7 +164,7 @@ fn v_rsa_pkcs1_384(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), ferritls_core::Error> {
-    rsa::verify_pkcs1v15(384, public_key, message, signature)
+    rsa::VerifyKey::from_rsapublickey_der(public_key)?.verify_pkcs1v15(384, message, signature)
 }
 
 fn v_rsa_pkcs1_512(
@@ -162,7 +172,7 @@ fn v_rsa_pkcs1_512(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), ferritls_core::Error> {
-    rsa::verify_pkcs1v15(512, public_key, message, signature)
+    rsa::VerifyKey::from_rsapublickey_der(public_key)?.verify_pkcs1v15(512, message, signature)
 }
 
 fn v_rsa_pss_256(
@@ -170,7 +180,7 @@ fn v_rsa_pss_256(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), ferritls_core::Error> {
-    rsa::verify_pss(256, public_key, message, signature)
+    rsa::VerifyKey::from_rsapublickey_der(public_key)?.verify_pss(256, message, signature)
 }
 
 fn v_rsa_pss_384(
@@ -178,7 +188,7 @@ fn v_rsa_pss_384(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), ferritls_core::Error> {
-    rsa::verify_pss(384, public_key, message, signature)
+    rsa::VerifyKey::from_rsapublickey_der(public_key)?.verify_pss(384, message, signature)
 }
 
 fn v_rsa_pss_512(
@@ -186,7 +196,7 @@ fn v_rsa_pss_512(
     message: &[u8],
     signature: &[u8],
 ) -> Result<(), ferritls_core::Error> {
-    rsa::verify_pss(512, public_key, message, signature)
+    rsa::VerifyKey::from_rsapublickey_der(public_key)?.verify_pss(512, message, signature)
 }
 
 verifier!(

@@ -5,10 +5,13 @@
 //! `SignatureVerificationAlgorithm` 首次在真实证书链下被 webpki 驱动
 //! （链上签名、CertificateVerify、时间与 EKU/SAN 校验）。
 //!
-//! 证书链（tests/certs/，openssl 3.2 生成，P-256 全链）：
-//! root（CA:TRUE pathlen:1）→ intermediate（CA:TRUE pathlen:0）→
-//! leaf（CN=localhost，EKU serverAuth，SAN DNS:localhost）；
-//! root2 为无关自签根，用于「不可信根」负例。
+//! 证书链（tests/certs/，openssl 生成）：
+//! - P-256 链：root（CA:TRUE pathlen:1）→ intermediate（CA:TRUE
+//!   pathlen:0）→ leaf（CN=localhost，EKU serverAuth，SAN DNS:localhost）；
+//!   root2 为无关自签根，用于「不可信根」负例。
+//! - RSA 链：rsa_root → rsa_int（2048 位全链）→ rsa_leaf
+//!   （CN=localhost，SAN DNS:localhost）——驱动 6 条 RSA 验证路径
+//!   （PKCS#1 v1.5 / PSS × SHA-256/384/512）在真实 webpki 链校验下执行。
 
 use std::io::Read;
 use std::io::Write;
@@ -31,17 +34,38 @@ fn leaf_key() -> PrivateKeyDer<'static> {
     PrivateKeyDer::Pkcs8(der.into())
 }
 
+fn rsa_leaf_key() -> PrivateKeyDer<'static> {
+    let path = format!("{CERTS}/rsa_leaf.key.der");
+    let der = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    PrivateKeyDer::Pkcs8(der.into())
+}
+
 fn provider() -> rustls::crypto::CryptoProvider {
     ferritls_rustls::default_provider()
 }
 
-/// 服务端配置：叶 + 中间证书链，ferritls provider 签名。
+/// 服务端配置（P-256 链）：叶 + 中间证书，ferritls provider 签名。
 fn server_config() -> rustls::ServerConfig {
+    server_config_from(vec![pem("leaf.pem"), pem("int.pem")], leaf_key())
+}
+
+/// 服务端配置（RSA 链）。
+fn server_config_rsa() -> rustls::ServerConfig {
+    server_config_from(
+        vec![pem("rsa_leaf.pem"), pem("rsa_int.pem")],
+        rsa_leaf_key(),
+    )
+}
+
+fn server_config_from(
+    chain: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+) -> rustls::ServerConfig {
     rustls::ServerConfig::builder_with_provider(Arc::new(provider()))
         .with_safe_default_protocol_versions()
         .unwrap()
         .with_no_client_auth()
-        .with_single_cert(vec![pem("leaf.pem"), pem("int.pem")], leaf_key())
+        .with_single_cert(chain, key)
         .expect("server config")
 }
 
@@ -58,6 +82,10 @@ fn client_config(root: &str) -> rustls::ClientConfig {
 
 /// 驱动一次完整握手并交换 ping/pong；任何失败即 panic。
 fn assert_handshake_ok(client_cfg: rustls::ClientConfig) {
+    assert_handshake_ok_with(client_cfg, server_config())
+}
+
+fn assert_handshake_ok_with(client_cfg: rustls::ClientConfig, server_cfg: rustls::ServerConfig) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let server_io = std::net::TcpStream::connect(addr).expect("connect");
@@ -70,7 +98,7 @@ fn assert_handshake_ok(client_cfg: rustls::ClientConfig) {
     let (tx, rx) = std::sync::mpsc::channel();
     let server = std::thread::spawn(move || -> std::io::Result<()> {
         let r = (|| -> std::io::Result<()> {
-            let mut conn = ServerConnection::new(Arc::new(server_config()))
+            let mut conn = ServerConnection::new(Arc::new(server_cfg))
                 .map_err(|e| std::io::Error::other(e.to_string()))?;
             let mut server_io = server_io;
             while conn.is_handshaking() {
@@ -149,6 +177,14 @@ fn assert_handshake_ok(client_cfg: rustls::ClientConfig) {
 
 /// 驱动握手直到客户端返回证书错误；返回该错误。
 fn assert_handshake_rejected(client_cfg: rustls::ClientConfig, what: &str) -> std::io::Error {
+    assert_handshake_rejected_with(client_cfg, server_config(), what)
+}
+
+fn assert_handshake_rejected_with(
+    client_cfg: rustls::ClientConfig,
+    server_cfg: rustls::ServerConfig,
+    what: &str,
+) -> std::io::Error {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
     let server_io = std::net::TcpStream::connect(addr).expect("connect");
@@ -160,7 +196,7 @@ fn assert_handshake_rejected(client_cfg: rustls::ClientConfig, what: &str) -> st
 
     // 负例中服务端的结果无关紧要：只管驱动到出错/关闭。
     let server = std::thread::spawn(move || {
-        if let Ok(mut conn) = ServerConnection::new(Arc::new(server_config())) {
+        if let Ok(mut conn) = ServerConnection::new(Arc::new(server_cfg)) {
             let mut server_io = server_io;
             for _ in 0..100 {
                 match conn.complete_io(&mut server_io) {
@@ -260,4 +296,54 @@ fn webpki_rejects_tampered_leaf() {
     }
     server.join().ok();
     assert!(rejected, "tampered leaf was not rejected");
+}
+
+// ---------------------------------------------------------------------------
+// RSA 链（rsa_root → rsa_int → rsa_leaf）：驱动 6 条 RSA 验证路径
+// 在真实 webpki 链校验下执行（曾因 core 期望 SPKI 而 webpki 传裸
+// RSAPublicKey 导致全部 RSA 验证失败的回归防线）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn webpki_rsa_chain_handshake_ok() {
+    assert_handshake_ok_with(client_config("rsa_root.pem"), server_config_rsa());
+}
+
+#[test]
+fn webpki_rsa_rejects_untrusted_root() {
+    // 用 P-256 链服务端 + RSA 根信任库：签名算法与信任根都不可信
+    let e = assert_handshake_rejected_with(
+        client_config("rsa_root.pem"),
+        server_config(),
+        "rsa untrusted chain",
+    );
+    assert!(
+        format!("{e}").to_lowercase().contains("cert"),
+        "expected certificate error, got: {e}"
+    );
+}
+
+#[test]
+fn webpki_rsa_rejects_tampered_leaf() {
+    let mut leaf = pem("rsa_leaf.pem").to_vec();
+    let n = leaf.len();
+    leaf[n - 1] ^= 0x01;
+    let leaf = CertificateDer::from(leaf);
+
+    let server_cfg = rustls::ServerConfig::builder_with_provider(Arc::new(provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![leaf, pem("rsa_int.pem")], rsa_leaf_key())
+        .expect("tampered cert still DER-parsable at config time");
+
+    let e = assert_handshake_rejected_with(
+        client_config("rsa_root.pem"),
+        server_cfg,
+        "rsa tampered leaf",
+    );
+    assert!(
+        format!("{e}").to_lowercase().contains("cert"),
+        "expected certificate error, got: {e}"
+    );
 }

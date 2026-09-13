@@ -321,7 +321,7 @@ fn kat_ecdsa_p256() -> Result<(), crate::Error> {
         return Err(crate::Error::SelfTestFailed("ecdsa-p256"));
     }
     let q = sk.public_key_sec1();
-    ecdsa::p256::verify(&q, b"sample", &sig)?;
+    ecdsa::p256::VerifyKey::from_sec1_point(&q)?.verify(b"sample", &sig)?;
     Ok(())
 }
 
@@ -388,7 +388,8 @@ fn kat_rsa_pkcs1v15() -> Result<(), crate::Error> {
     if sig != hex(RSA_KAT_SIG_HEX) {
         return Err(crate::Error::SelfTestFailed("rsa-pkcs1v15"));
     }
-    rsa::verify_pkcs1v15(256, &hex(RSA_KAT_PUB_SPKI), b"sample", &sig)?;
+    let pk = rsa::VerifyKey::from_spki_der(&hex(RSA_KAT_PUB_SPKI))?;
+    pk.verify_pkcs1v15(256, b"sample", &sig)?;
     Ok(())
 }
 
@@ -461,9 +462,7 @@ mod kat_debug {
             )
         );
         let q = sk.public_key_sec1();
-        println!(
-            "verify = {:?}",
-            crate::sign::ecdsa::p256::verify(&q, b"sample", &sig)
-        );
+        let vk = crate::sign::ecdsa::p256::VerifyKey::from_sec1_point(&q).unwrap();
+        println!("verify = {:?}", vk.verify(b"sample", &sig));
     }
 }

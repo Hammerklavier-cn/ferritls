@@ -205,8 +205,8 @@ macro_rules! sw_curve {
         pub mod $modname {
             use super::*;
 
-            type F = $field;
-            type S = $scalar;
+            pub(crate) type F = $field;
+            pub(crate) type S = $scalar;
 
             /// 坐标字节数。
             pub const COORD_LEN: usize = F::LIMBS * 8;

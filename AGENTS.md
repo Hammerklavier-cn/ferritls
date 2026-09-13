@@ -160,6 +160,18 @@ rustls（应用层）
   的 NULL 参数属于内容必须保留，PSS 则为 PSS OID + 参数。权威参照 =
   pki-types `src/data/alg-*.der`（此前“完整 DER”的记录是误读，曾导致
   verify.rs 全部 9 个算法无法通过 webpki 链校验，见 M7 webpki 测试）。
+  **公钥字节语义（0.4.0 实测修正）**：webpki 调用
+  `verify_signature` 时 `public_key` 传的是 subjectPublicKey 的
+  BIT STRING 内容（`signed_data.rs` 的 `key_value`）——裸密钥本体
+  （RSA = 裸 `RSAPublicKey` DER、EC = 未压缩 SEC1 点、Ed25519 = 32
+  字节），**不含** SPKI 包装。因此 core 的验证 API 全部类型化为
+  `VerifyKey`（构造器按格式命名：`rsa::VerifyKey::from_rsapublickey_der`
+  / `from_spki_der` 便利入口、`ecdsa::*::VerifyKey::from_sec1_point`、
+  `ed25519::VerifyKey::from_raw_bytes`），适配层直接透传 key_value。
+  历史坑：0.3.0 的 RSA 验证按 SPKI 解析而 webpki 传裸格式，导致全部
+  RSA 证书链校验失败（`invalid peer certificate: BadSignature`）；
+  P-256 本地测试链掩盖了该缺陷——RSA webpki 链测试（interop
+  `webpki.rs` 的 `webpki_rsa_*`）即为回归防线。
   另：`with_single_cert` 会做密钥/证书 SPKI 匹配检查，仅当 key provider
   的 `SigningKey::public_key()` 返回 `Some` 时触发（ring 会查、我们的
   返回 None 跳过）。

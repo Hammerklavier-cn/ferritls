@@ -54,7 +54,7 @@ AES-GCM/SHA-256 公开类型经 `ops` 分发（§4），硬件后端
 | `Tls13CipherSuite.quic` | `None` | QUIC 是 M8+ |
 | `kx_groups: &[&dyn SupportedKxGroup]` | `kx::{X25519,SecP256R1,SecP384R1,X25519MLKEM768}` | 经典 ECDH 用默认 `start_and_complete`；混合组（0x11EC）覆写 `start_and_complete`（KEM 数据依赖：服务端封装） |
 | `ActiveKeyExchange` | `kx::Active*` 持有 core 的 ECDH/ML-KEM 私钥 | `complete` 消费 `Box<Self>`（混合组客户端在此解封装） |
-| `signature_verification_algorithms` | `verify::SUPPORTED_ALGORITHMS` | webpki 消费；TLS1.3 每 scheme 取首项 |
+| `signature_verification_algorithms` | `verify::SUPPORTED_ALGORITHMS` | webpki 消费；TLS1.3 每 scheme 取首项；webpki 传裸 key_value（无 SPKI 包装），core `VerifyKey` 构造器按该裸格式定义、适配层透传 |
 | `secure_random` | `random::SystemRandom` → core `entropy`/`drbg` | M5 起批准模式走 DRBG |
 | `key_provider` | `sign::KeyLoader` → core `der` + `sign::*Key` | 5 字段中容易漏的一个 |
 | `rustls::sign::{SigningKey,Signer}` | `sign::{EcdsaP256Key,…}` | `sign()` 输入未哈希消息 |
