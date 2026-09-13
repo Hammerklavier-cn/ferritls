@@ -80,6 +80,7 @@ mod fields;
 pub mod gcm;
 pub mod hkdf;
 pub mod hmac;
+pub mod mlkem;
 pub mod ops;
 pub mod policy;
 mod rsabig;
