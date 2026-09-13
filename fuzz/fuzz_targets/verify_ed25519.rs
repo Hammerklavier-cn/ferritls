@@ -9,5 +9,6 @@ fuzz_target!(|data: &[u8]| {
     }
     let (public, rest) = data.split_at(32);
     let (msg, sig) = rest.split_at(rest.len() / 2);
-    let _ = ferritls_core::sign::ed25519::verify(public, msg, sig);
+    let _ = ferritls_core::sign::ed25519::VerifyKey::from_raw_bytes(public)
+        .and_then(|vk| vk.verify(msg, sig));
 });

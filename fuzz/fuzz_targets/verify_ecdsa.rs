@@ -16,8 +16,10 @@ fuzz_target!(|data: &[u8]| {
     };
     let (msg, sig) = rest.split_at(rest.len() / 2);
     let _ = if sel & 1 == 0 {
-        ferritls_core::sign::ecdsa::p256::verify(public, msg, sig)
+        ferritls_core::sign::ecdsa::p256::VerifyKey::from_sec1_point(public)
+            .and_then(|vk| vk.verify(msg, sig))
     } else {
-        ferritls_core::sign::ecdsa::p384::verify(public, msg, sig)
+        ferritls_core::sign::ecdsa::p384::VerifyKey::from_sec1_point(public)
+            .and_then(|vk| vk.verify(msg, sig))
     };
 });
