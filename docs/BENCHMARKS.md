@@ -184,6 +184,32 @@ keystream 异或改走单条 PXOR）；`raw.rs` 收缩为纯内存读写包装�
 软实现（09-10 行的 ~2.35× / ~5.6× 为当日快照，跨会话不可比——本次
 ring 绝对值就快了 ~23%）。
 
+
+### 5.3 ML-KEM-768（M8.3，2026-09-13，windows-gnu 本地同会话）
+
+`cargo bench -p ferritls-core --bench kem`（确定性入口，不含生产路径
+的一次 OS 熵读取）：
+
+| 原语 | 时间 |
+|---|---|
+| keygen | 54 µs |
+| encaps | 53 µs |
+| decaps | 76 µs |
+
+全握手（`cargo bench -p ferritls-interop --bench handshake`，同会话
+对照；软件路径、AES-128-GCM）：
+
+| 案例 | 时间 |
+|---|---|
+| ferritls-x25519（经典） | 1.09 ms |
+| ferritls-x25519-mlkem768（混合，M8.3 新增案例） | 1.22 ms（+12%） |
+| ferritls-p256 | 2.67 ms |
+| ring-baseline-x25519 | 114 µs |
+
+结论：PQ 混合仅使握手 +12%（ML-KEM 三运算 ≈ 183 µs 标量），与
+主流 PQ 过渡的部署经验一致；比 P-256 经典握手仍快约 2.2×。
+跨会话/跨机器波动见 §3 工作流，判定一律以同会话对照为准。
+
 ## 6. Windows（msys2/windows-gnu）本地注意
 
 带 C 构建依赖的 dev-deps（criterion 0.8 → `alloca`）要求 ucrt64 工具链

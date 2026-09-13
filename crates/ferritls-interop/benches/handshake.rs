@@ -36,6 +36,11 @@ fn bench_handshake(c: &mut Criterion) {
             NamedGroup::X25519,
         ),
         (
+            "ferritls-x25519-mlkem768",
+            ferritls_rustls::default_provider,
+            NamedGroup::X25519MLKEM768,
+        ),
+        (
             "ferritls-p256",
             ferritls_rustls::default_provider,
             NamedGroup::secp256r1,

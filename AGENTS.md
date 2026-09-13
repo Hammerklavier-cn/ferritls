@@ -432,7 +432,10 @@ mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——�
       （584→1266）；基线 GCM +28~32%、ChaCha 1.62×（旧数组版连
       SSE2 都未向量化满）。设计、约束、完整矩阵与回退记录见
       `docs/ROADMAP.md` P2 节
-- [ ] M8：TLS 1.2 / QUIC / ML-KEM 混合 / intrinsics 后端
+- [x] M8.3：FIPS 202 SHA-3/SHAKE + FIPS 203 ML-KEM-768 + X25519MLKEM768
+      混合组（完成 2026-09-13；NIST ACVP 向量全绿、上电自检 KAT、
+      interop 混合握手、数字见 docs/ROADMAP.md M8.3 节）
+- [ ] M8 余项：TLS 1.2 / QUIC / ML-KEM-512/1024 参数集 / aarch64 后端
 
 **已知的实现级注记**（修订实现前必读）：
 
@@ -495,6 +498,20 @@ mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——�
   Generate 末次 Update 无条件执行（AI 空则 0^seedlen）；
   官方流程 = Instantiate → Reseed → Generate → Generate。
 
+- `mlkem.rs`（FIPS 203，M8.3）：**encrypt 的 e₁ 必须在 NTT⁻¹ 之后
+  于系数域加入**——曾把系数域 e₁ 与 NTT 域矩阵项混做一次逆变换
+  （keygen 是先 `ntt(e)` 所以没事、v 路径是逆变换后加所以没事），
+  u 全错而 v 全对，由 ACVP 封装向量拦截；**§7.2 模校验不能写成
+  `ByteEncode₁₂∘ByteDecode₁₂` 往返**——12 位位打包下往返恒等，
+  实质检查是解码系数全部 < q（规范原文的往返写法依赖字段元素类型
+  的隐藏规范化），由负例测试拦截；**KAT/向量必须用同一案例的完整
+  五元组（d,z,ek,dk,m,c,ss 同源）**——keyGen 组与 encapDecap 组的
+  tcId 同号但密钥材料无关，跨组拼接会拼出"实现错误"的假象（曾为此
+  误查半天，python 独立复算 G(m‖H(ek)) 后才定位）；NTT⁻¹ 末尾乘
+  3303（= 128⁻¹）是 FIPS 203 原文常量，勿"改正"为 256⁻¹；
+- `sha3.rs`（FIPS 202，M8.3）：SHAKE-128 rate = 168 字节（c=256）、
+  SHAKE-256 rate = 136 字节（c=512）——与 SHA3-256 的 136/SHA3-512
+  的 72 记混即全错（曾实际写错，由官方向量立即拦截）；
 下一步实现者（人或代理）：M0–M7 已完成、crates.io 发布自动化就绪
 （推 tag 即发布），当前方向为 M8 按需排期（TLS 1.2 / QUIC / ML-KEM
 混合 / intrinsics 后端，动手前先在 ROADMAP 补写出口条件）与 FIPS
