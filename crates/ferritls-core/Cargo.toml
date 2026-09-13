@@ -59,3 +59,7 @@ harness = false
 [[bench]]
 name = "drbg"
 harness = false
+
+[[bench]]
+name = "kem"
+harness = false
