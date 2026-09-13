@@ -331,3 +331,46 @@ SHA-NI 已随 M8.2 落地（`ShaNi` token + `HashOps` 函数分发 kernel：
 intrinsic 桩的真实 callq 103 → 0），GCM 原语再提 5.2–6.6×、对软件
 路径 ~750–980×（见 BENCHMARKS §5.2）。CCM/ChaCha/P-256/Ed25519 加速
 与 aarch64 后端明确不在本节范围。
+
+### M8.3 ML-KEM（FIPS 203）+ X25519MLKEM768 混合（进行中 2026-09-13）
+
+范围：core 内自研 **FIPS 202**（Keccak-f[1600] 海绵：SHA3-256/512、
+SHAKE-128/256）与 **FIPS 203 ML-KEM-768**（NTT 域算术 GF(3329)、
+SampleNTT/CBD 采样、K-PKE 与 FO 变换、隐式拒绝、封装密钥模校验，
+零新依赖）——均为边界内模块、`#![forbid(unsafe_code)]`；适配层新增
+X25519MLKEM768 混合组（draft-ietf-tls-ecdhe-mlkem：codepoint 0x11EC，
+客户端 share = ek(1184)‖X25519 pk(32) = 1216 B，服务端 share =
+ct(1088)‖X25519 pk(32) = 1120 B，ss = ML-KEM‖X25519 共 64 B，服务端
+封装 + 封装密钥检查、客户端解封装）。ML-KEM-512/1024 与纯 ML-KEM 组
+（0x0200–0x0202）不在本节范围（可按需追加，实现为参数集常量）。
+
+出口条件：
+
+- [ ] core 仍 `#![forbid(unsafe_code)]`、零新运行时依赖（白名单不变）；
+- [ ] `sha3`：FIPS 202 示例向量（空串/"abc"/填充边界/多块）+
+      FIPS 203 附录 A 的 G/H/J/PRF/XOF 示例值锚定，全绿；
+- [ ] `mlkem`：NIST ACVP ML-KEM-768 向量子集（keyGen 3 例 +
+      encapDecap 封装 3 例 + 解封装 3 例，**含 "modify ciphertext"
+      隐式拒绝用例**），来源与核对记录入 VECTOR-PROVENANCE.md；
+      另有 NTT/编解码/压缩的穷举或代数自洽测试（roundtrip、
+      与 schoolbook 多项式乘法互检）；
+- [ ] 常数时间：decaps 的密文比较与密钥选择走 `subtle::Choice`
+      ct-select；采样/NTT/编解码无以秘密为条件的分支或访存；
+      秘密材料（dk、ss、中间 K/K̄）`ZeroizeOnDrop`；
+- [ ] 适配层：X25519MLKEM768 组装配进 provider（服务端封装走
+      `start_and_complete` 覆写，含 FIPS 203 §7.2 封装密钥模校验）；
+      interop 内存握手矩阵含混合组自互操作（client+server 均为本
+      provider，协商组断言 + 流量收发）；
+- [ ] 上电自检：ML-KEM KAT（种子 → (ek,dk)、encaps → (c,ss)、
+      decaps → ss）加入 `selftest`；
+- [ ] fmt / clippy -D warnings / 双配置（simd 与
+      no-default-features）/ `--features fips` / doc / deny 全绿；
+- [ ] fuzz：`mlkem-decaps`（任意 dk/ct 不 panic）目标进 `fuzz/` 与
+      CI 冒烟清单；
+- [ ] 基准（keygen/encaps/decaps + 混合握手）入 BENCHMARKS.md，
+      ROADMAP 状态更新。
+
+批准状态注记：ML-KEM 本身是 NIST 批准算法（FIPS 203；混合组合的
+批准路径见 SP 800-56C Rev.2 与 SP 800-227，SP 800-52r2 允许
+X25519MLKEM768 进批准 TLS 配置），但 CMVP 认证前 rustls 各 `fips()`
+钩子仍恒返回 `false`（AGENTS.md 规则 3 不变）。

@@ -20,6 +20,8 @@
 | `ed25519.rs` | RFC 8032 §7（TEST1–TEST3、SHA(abc)、TEST 1024） | TEST 1024 消息/签名于 2026-09-07 从 RFC 原文提取；签名另经 python-cryptography 与 OpenSSL 3.2.4 两个独立实现复算一致 |
 | `rsa_and_der.rs` | openssl CLI 交叉生成的自签材料 + NIST CAVP RSA 子集 | openssl 验证器互验 |
 | `drbg.rs` | NIST DRBGVS（AES-256-CTR，无 DF；Instantiate→Reseed→Generate×2 官方流程） | .rsp + .txt 中间值（Key/V）核对 |
+| `sha3.rs` | FIPS 202 示例（空串/"abc"/448·896 位填充边界/多块消息的 SHA3-256/512 与 SHAKE128/256 输出）+ FIPS 203 附录 A 的 G/H/J/PRF/XOF 示例值（"Input to an invocation of …" 固定输入） | 官方示例值逐字节核对（2026-09-13）；附录 A 值另经 RustCrypto `ml-kem`（ACVP 全绿实现）`crypto.rs` 测试常量交叉核对 |
+| `mlkem.rs` | **NIST ACVP-Server** `gen-val/json-files/ML-KEM-keyGen-FIPS203` 与 `ML-KEM-encapDecap-FIPS203`（internal projection，commit 65370b8）的 ML-KEM-768 子集：keyGen 3 例（d,z→ek,dk）+ 封装 3 例（ek,m→c,ss）+ 解封装 3 例（dk,c→ss，含 "modify ciphertext" 隐式拒绝用例） | **程序化提取**（tools/extract_mlkem_acvp.py，从官方 JSON 逐字段转写；子集选择确定）；文件 SHA-256 与获取日期记录于生成脚本头（2026-09-13） |
 | `selftest.rs` | 上表 KAT 的汇编（实现一致性，无独立官方来源） | — |
 | `schedule_rfc8448.rs` | RFC 8448 §3 官方轨迹 | **程序化提取**（tools/extract_rfc8448.py，脚本内含 Python 独立复算比对） |
 | `wycheproof.rs` | C2SP/wycheproof testvectors_v1（裁剪入库） | 文件级入库，见 tests/vectors/README.md |

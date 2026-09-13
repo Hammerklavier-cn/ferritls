@@ -216,6 +216,20 @@ rustls（应用层）
   Poly1305 字组转整数的小端序。
 - **Ed25519**：RFC 8032 逐条实现，包括 SHA-512 两段式与 cofactor
   处理（verify 不接受非规范 s —— 决定跟踪 dalek 严格模式）。
+- **SHA-3/SHAKE（FIPS 202，M8.3）**：Keccak-f[1600] 纯软件标量实现；
+  全部运算数据无关固定延迟，无侧信道敏感面；SHA3 与 SHAKE 的域分隔
+  填充字节（0x06 / 0x1F）不得混用。
+- **ML-KEM-768（FIPS 203，M8.3）**：`Decaps` 的重加密密文比较必须
+  常数时间——`subtle` 比较得 `Choice` 后 ct-select（K' / K̃ = J(z‖c)
+  隐式拒绝），禁止 `if` 分支；封装前必须做 FIPS 203 §7.2 封装密钥
+  检查（长度 + `ByteEncode₁₂∘ByteDecode₁₂` 往返模校验），失败返回
+  `InvalidInput` 不 panic；2400 字节 dk 编码解析时校验 `h = H(ek)`；
+  SampleNTT 的拒绝循环与 CBD 的位运算只依赖公开 XOF/PRF 输出（变量
+  时间可接受，索引均公开）；NTT zeta/γ 表的索引为公开循环计数（表
+  内容是公开常数，非秘密派生）；秘密（dk、ss、K'、K̃、ŝ、r/m 种子）
+  `ZeroizeOnDrop`；矩阵采样 Â[i][j] = SampleNTT(XOF(ρ‖j‖i))（Encrypt
+  用其转置，XOF(ρ‖i‖j)）——这是与 Kyber R3 不兼容的根源，一切以
+  ACVP 向量为最终仲裁。
 
 ### 5.3 DRBG 与熵
 
