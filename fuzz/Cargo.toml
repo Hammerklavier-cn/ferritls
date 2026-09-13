@@ -75,3 +75,10 @@ path = "fuzz_targets/ecdh_peer.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "mlkem-decaps"
+path = "fuzz_targets/mlkem_decaps.rs"
+test = false
+doc = false
+bench = false

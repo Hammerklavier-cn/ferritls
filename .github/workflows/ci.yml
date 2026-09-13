@@ -124,7 +124,7 @@ jobs:
       # OSS-Fuzz 或定期 job 承担（M8+）
       - name: Smoke run
         run: |
-          for t in parse-pkcs8 verify-ecdsa verify-ed25519 verify-rsa aead-open ecdh-peer; do
+          for t in parse-pkcs8 verify-ecdsa verify-ed25519 verify-rsa aead-open ecdh-peer mlkem-decaps; do
             cargo fuzz run --target x86_64-unknown-linux-gnu "$t" -- -max_total_time=60 -runs=50000
           done
 
