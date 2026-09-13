@@ -864,4 +864,36 @@ mod tests {
         let p = sample_ntt(&mut x);
         assert!(p.iter().all(|&c| (0..Q).contains(&i32::from(c))));
     }
+    /// 对抗性输入：任意垃圾 dk/ct 解封装不 panic 且确定性（隐式拒绝
+    /// 语义；与 fuzz 目标 `mlkem-decaps` 的核心断言一致）。
+    #[test]
+    fn decapsulate_garbage_never_panics() {
+        let cases: [(&[u8], &[u8]); 3] = [
+            (&[0u8; DK_BYTES], &[0u8; CT_BYTES]),
+            (&[0xffu8; DK_BYTES], &[0xffu8; CT_BYTES]),
+            (
+                // 合法形状但随机内容（dk 无法通过 h 校验则跳过）
+                &[
+                    0x73, 0x0e, 0x8b, 0x11, 0x92, 0xc4, 0x5d, 0x0a, 0x33, 0xf1, 0x77, 0x62, 0x08,
+                    0xde, 0x91, 0x44,
+                ],
+                &[0x5a, 0xc4, 0x11, 0x99, 0xe2, 0x77, 0x03, 0xbb],
+            ),
+        ];
+        for (dkp, ctp) in cases {
+            let mut dk_bytes = [0u8; DK_BYTES];
+            let n = dkp.len().min(DK_BYTES);
+            dk_bytes[..n].copy_from_slice(&dkp[..n]);
+            let mut ct_bytes = [0u8; CT_BYTES];
+            let n = ctp.len().min(CT_BYTES);
+            ct_bytes[..n].copy_from_slice(&ctp[..n]);
+            let Ok(dk) = Mlkem768DecapsKey::from_bytes(&dk_bytes) else {
+                continue;
+            };
+            let ct = Mlkem768Ciphertext::from_bytes(&ct_bytes).expect("fixed width");
+            let a = decapsulate(&dk, &ct);
+            let b = decapsulate(&dk, &ct);
+            assert_eq!(a.expose_bytes(), b.expose_bytes(), "must be deterministic");
+        }
+    }
 }
