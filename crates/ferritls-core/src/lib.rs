@@ -26,10 +26,12 @@
 //! | 模块 | 内容 | FIPS 批准状态 | 落地里程碑 |
 //! |---|---|---|---|
 //! | [`sha2`] | SHA-256/384/512 | 批准 | M1 |
+//! | [`sha3`] | SHA3-256/512、SHAKE-128/256（FIPS 202） | 批准 | M8.3 |
 //! | [`hmac`] / [`hkdf`] | HMAC、HKDF | 批准 | M1 |
 //! | [`aes`] / [`gcm`] / [`ccm`] | AES、AES-GCM、AES-CCM | 批准 | M2 |
 //! | [`chacha20poly1305`] | ChaCha20-Poly1305 | 非批准 | M2 |
 //! | [`ecdh`] | X25519（非批准）、P-256/384（批准） | 混合 | M3 |
+//! | [`mlkem`] | ML-KEM-768（FIPS 203，批准 KEM） | 批准 | M8.3 |
 //! | [`sign`] | ECDSA、RSA、Ed25519（非批准） | 混合 | M4 |
 //! | [`drbg`] / [`entropy`] | SP 800-90A CTR-DRBG、OS 熵 | 批准 | M5 |
 //! | [`selftest`] | 上电自检（KAT） | 要求项 | M5 |
@@ -83,6 +85,7 @@ pub mod policy;
 mod rsabig;
 pub mod selftest;
 pub mod sha2;
+pub mod sha3;
 pub mod sign;
 
 pub use policy::Approval;
