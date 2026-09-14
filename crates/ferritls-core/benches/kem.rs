@@ -8,7 +8,7 @@
 //! `cargo bench -p ferritls-core --bench kem`。
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use ferritls_core::mlkem::{self, k1024, k512, k768};
+use ferritls_core::mlkem::{self, k512, k1024};
 
 /// 确定性 32 字节种子。
 fn seed32(b: u8) -> [u8; 32] {

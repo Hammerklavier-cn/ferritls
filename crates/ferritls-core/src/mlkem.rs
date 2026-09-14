@@ -10,7 +10,7 @@
 //!
 //! 参数化形态：du = 10、dv = 4、η₂ = 2 三集共享，差异在 k 与 η₁
 //! （512 ↔ k = 2, **η₁ = 3**；768 ↔ k = 3, η₁ = 2；1024 ↔ k = 4,
-//! η₁ = 2）。引擎以**运行时 k 与 η₁** 工作（k 上限 [`K_MAX`]，中间
+//! η₁ = 2）。引擎以**运行时 k 与 η₁** 工作（k 上限 `K_MAX`，中间
 //! 缓冲按最大档定容，零堆分配；两者都是公开的参数集信息，不构成
 //! 侧信道面）；公开类型以**裸 const 长度参数**
 //! （EK/DK/CT 字节数）参数化，per-set 入口在子模块
@@ -462,7 +462,15 @@ fn kpke_keygen(
 /// K-PKE.Encrypt（确定性：外部供给 32 字节消息 m 与随机数 r）。
 /// r 的 CBD/PRF 长度由 η₁ 决定；e₁/e₂ 恒用 η₂ = 2；u/v 的压缩宽度
 /// 由 (du, dv) 决定（1024 为 (11, 5)，每 u 多项式 352 字节）。
-fn kpke_encrypt(ek: &[u8], m: &[u8; 32], r: &[u8; 32], k: usize, eta1: usize, du: usize, dv: usize) -> [u8; CT_MAX] {
+fn kpke_encrypt(
+    ek: &[u8],
+    m: &[u8; 32],
+    r: &[u8; 32],
+    k: usize,
+    eta1: usize,
+    du: usize,
+    dv: usize,
+) -> [u8; CT_MAX] {
     debug_assert_eq!(ek.len(), 384 * k + 32);
     let poly_bytes = 32 * du;
     let ek_len = 384 * k;
@@ -735,7 +743,10 @@ impl<const DK: usize> MlkemDecapsKey<DK> {
     /// [`Error::InvalidInput`]。
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
         let arr: [u8; DK] = bytes.try_into().map_err(|_| Error::InvalidInput)?;
-        debug_assert!(DK >= 96 && (DK - 96) % 768 == 0, "not a valid DK length");
+        debug_assert!(
+            DK >= 96 && (DK - 96).is_multiple_of(768),
+            "not a valid DK length"
+        );
         let k = (DK - 96) / 768; // DK = 384k + (384k + 32) + 64
         let ek_len = 384 * k + 32;
         let ek_start = 384 * k;
@@ -824,10 +835,10 @@ impl std::fmt::Debug for MlkemSharedSecret {
 macro_rules! mlkem_param_set {
     ($k:literal, $name:ident, $ps:literal) => {
         #[doc = concat!(
-            "ML-KEM-", $ps, "（FIPS 203 参数集，k = ", stringify!($k),
-            "；η₁/du/dv 由 [`super::fips203_params`] 参数表给出）：",
-            "本参数集的类型别名与入口函数。"
-        )]
+                                    "ML-KEM-", $ps, "（FIPS 203 参数集，k = ", stringify!($k),
+                                    "；η₁/du/dv 由 `fips203_params` 参数表给出）：",
+                                    "本参数集的类型别名与入口函数。"
+                                )]
         pub mod $name {
             use zeroize::Zeroize;
 
@@ -853,7 +864,10 @@ macro_rules! mlkem_param_set {
             const _: () = {
                 assert!(EK_BYTES == 384 * $k + 32);
                 assert!(DK_BYTES == 384 * $k + EK_BYTES + 64);
-                assert!(CT_BYTES == 32 * (super::fips203_params($k).1 * $k + super::fips203_params($k).2));
+                assert!(
+                    CT_BYTES
+                        == 32 * (super::fips203_params($k).1 * $k + super::fips203_params($k).2)
+                );
             };
 
             /// 本参数集的封装密钥（ek）。
@@ -947,7 +961,9 @@ pub const CT_BYTES: usize = k768::CT_BYTES;
 /// 共享秘密长度（32 字节）。
 pub const SS_BYTES: usize = 32;
 
-pub use k768::{decapsulate, encapsulate, encapsulate_with_seed, generate_keypair, keypair_from_seed};
+pub use k768::{
+    decapsulate, encapsulate, encapsulate_with_seed, generate_keypair, keypair_from_seed,
+};
 
 #[cfg(test)]
 mod tests {
@@ -1065,18 +1081,27 @@ mod tests {
 
         let (ek2, dk2) = k512::keypair_from_seed(&d, &z);
         let (c2, ss2) = k512::encapsulate_with_seed(&ek2, &m).expect("encaps 512");
-        assert_eq!(ss2.expose_bytes(), k512::decapsulate(&dk2, &c2).expose_bytes());
+        assert_eq!(
+            ss2.expose_bytes(),
+            k512::decapsulate(&dk2, &c2).expose_bytes()
+        );
         assert_eq!(k512::EK_BYTES, 800);
         assert_eq!(k512::DK_BYTES, 1632);
         assert_eq!(k512::CT_BYTES, 768);
 
         let (ek3, dk3) = k768::keypair_from_seed(&d, &z);
         let (c3, ss3) = k768::encapsulate_with_seed(&ek3, &m).expect("encaps 768");
-        assert_eq!(ss3.expose_bytes(), k768::decapsulate(&dk3, &c3).expose_bytes());
+        assert_eq!(
+            ss3.expose_bytes(),
+            k768::decapsulate(&dk3, &c3).expose_bytes()
+        );
 
         let (ek4, dk4) = k1024::keypair_from_seed(&d, &z);
         let (c4, ss4) = k1024::encapsulate_with_seed(&ek4, &m).expect("encaps 1024");
-        assert_eq!(ss4.expose_bytes(), k1024::decapsulate(&dk4, &c4).expose_bytes());
+        assert_eq!(
+            ss4.expose_bytes(),
+            k1024::decapsulate(&dk4, &c4).expose_bytes()
+        );
         assert_eq!(k1024::EK_BYTES, 1568);
         assert_eq!(k1024::DK_BYTES, 3168);
         assert_eq!(k1024::CT_BYTES, 1568);
@@ -1104,8 +1129,8 @@ mod tests {
                     (
                         // 合法形状但随机内容（dk 无法通过 h 校验则跳过）
                         &[
-                            0x73, 0x0e, 0x8b, 0x11, 0x92, 0xc4, 0x5d, 0x0a, 0x33, 0xf1, 0x77,
-                            0x62, 0x08, 0xde, 0x91, 0x44,
+                            0x73, 0x0e, 0x8b, 0x11, 0x92, 0xc4, 0x5d, 0x0a, 0x33, 0xf1, 0x77, 0x62,
+                            0x08, 0xde, 0x91, 0x44,
                         ],
                         &[0x5a, 0xc4, 0x11, 0x99, 0xe2, 0x77, 0x03, 0xbb],
                     ),

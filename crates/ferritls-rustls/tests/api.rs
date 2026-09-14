@@ -28,8 +28,14 @@ fn kx_group_names_are_stable() {
         ferritls_rustls::kx::X25519MLKEM768_GROUP.name(),
         NamedGroup::X25519MLKEM768
     );
-    assert_eq!(ferritls_rustls::kx::MLKEM512_GROUP.name(), NamedGroup::MLKEM512);
-    assert_eq!(ferritls_rustls::kx::MLKEM768_GROUP.name(), NamedGroup::MLKEM768);
+    assert_eq!(
+        ferritls_rustls::kx::MLKEM512_GROUP.name(),
+        NamedGroup::MLKEM512
+    );
+    assert_eq!(
+        ferritls_rustls::kx::MLKEM768_GROUP.name(),
+        NamedGroup::MLKEM768
+    );
     assert_eq!(
         ferritls_rustls::kx::MLKEM1024_GROUP.name(),
         NamedGroup::MLKEM1024
@@ -121,16 +127,8 @@ fn pure_mlkem_groups_roundtrip_and_rejects() {
             800, // ek
             768, // ct
         ),
-        (
-            ferritls_rustls::kx::MLKEM768_GROUP,
-            1184,
-            1088,
-        ),
-        (
-            ferritls_rustls::kx::MLKEM1024_GROUP,
-            1568,
-            1568,
-        ),
+        (ferritls_rustls::kx::MLKEM768_GROUP, 1184, 1088),
+        (ferritls_rustls::kx::MLKEM1024_GROUP, 1568, 1568),
     ];
     for (group, ek_bytes, ct_bytes) in cases {
         let client = group.start().expect("client start");

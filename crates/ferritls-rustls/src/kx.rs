@@ -330,12 +330,16 @@ macro_rules! mlkem_pure_group {
 
         impl SupportedKxGroup for $group {
             fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, RustlsError> {
-                let (ek, dk) = ferritls_core::mlkem::$set::generate_keypair().map_err(map_dh_err)?;
+                let (ek, dk) =
+                    ferritls_core::mlkem::$set::generate_keypair().map_err(map_dh_err)?;
                 let share = ek.as_bytes().to_vec();
                 Ok(Box::new($active { dk, share }))
             }
 
-            fn start_and_complete(&self, peer_pub_key: &[u8]) -> Result<CompletedKeyExchange, RustlsError> {
+            fn start_and_complete(
+                &self,
+                peer_pub_key: &[u8],
+            ) -> Result<CompletedKeyExchange, RustlsError> {
                 // 服务端：peer share = ek
                 let invalid = || RustlsError::PeerMisbehaved(PeerMisbehaved::InvalidKeyShare);
                 if peer_pub_key.len() != ferritls_core::mlkem::$set::EK_BYTES {
@@ -390,14 +394,26 @@ macro_rules! mlkem_pure_group {
 }
 
 mlkem_pure_group!(
-    Mlkem512, ActiveMlkem512, MLKEM512_GROUP, k512, NamedGroup::MLKEM512,
+    Mlkem512,
+    ActiveMlkem512,
+    MLKEM512_GROUP,
+    k512,
+    NamedGroup::MLKEM512,
     "MLKEM512（draft-ietf-tls-mlkem-key-agreement，codepoint 0x0200）纯\nML-KEM 密钥交换组（M8.4）：Cat 1 参数集（k = 2，η₁ = 3）。"
 );
 mlkem_pure_group!(
-    Mlkem768, ActiveMlkem768, MLKEM768_GROUP, k768, NamedGroup::MLKEM768,
+    Mlkem768,
+    ActiveMlkem768,
+    MLKEM768_GROUP,
+    k768,
+    NamedGroup::MLKEM768,
     "MLKEM768（draft-ietf-tls-mlkem-key-agreement，codepoint 0x0201）纯\nML-KEM 密钥交换组（M8.4）：Cat 3 参数集（k = 3）。"
 );
 mlkem_pure_group!(
-    Mlkem1024, ActiveMlkem1024, MLKEM1024_GROUP, k1024, NamedGroup::MLKEM1024,
+    Mlkem1024,
+    ActiveMlkem1024,
+    MLKEM1024_GROUP,
+    k1024,
+    NamedGroup::MLKEM1024,
     "MLKEM1024（draft-ietf-tls-mlkem-key-agreement，codepoint 0x0202）纯\nML-KEM 密钥交换组（M8.4）：Cat 5 参数集（k = 4，du = 11）。"
 );
