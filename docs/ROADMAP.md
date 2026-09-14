@@ -295,6 +295,7 @@ ct 声明；矩阵前后数字记入本节。
   （SP 800-52r2 部署面需要）；
 - QUIC packet protection（`quic` 字段 + Header Protection）；
 - ML-KEM（FIPS 203）+ X25519MLKEM768 混合（完成，见 M8.3）；
+- ML-KEM-512/1024 参数集 + 纯 ML-KEM 组（见 M8.4，2026-09-15 排期启动）；
 - intrinsics 后端 crate（完成，见 M8.1/M8.2）；
 - 认证阶段 B/C 启动（见 docs/FIPS.md）。
 
@@ -381,3 +382,41 @@ AGENTS.md 实现级注记。
 批准路径见 SP 800-56C Rev.2 与 SP 800-227，SP 800-52r2 允许
 X25519MLKEM768 进批准 TLS 配置），但 CMVP 认证前 rustls 各 `fips()`
 钩子仍恒返回 `false`（AGENTS.md 规则 3 不变）。
+
+### M8.4 ML-KEM-512/1024 参数集 + 纯 ML-KEM 组（0x0200–0x0202）
+
+范围：core `mlkem` 从 k=3 单参数集泛化为 k ∈ {2, 3, 4}（FIPS 203
+全部三个参数集；du = 10、dv = 4、η₁ = η₂ = 2 三集共享，差异只有
+k）——引擎内 k 为运行时参数（上限 K_MAX = 4，栈上按最大档定容，
+零堆分配），公开类型以裸 const 长度参数（EK/DK/CT 字节数）参数化，
+**不依赖 generic_const_exprs**（stable 工具链约束）；768 的公共
+API 路径（`Mlkem768*` 别名与顶层函数）保持不变。适配层新增纯
+ML-KEM 组 MLKEM512 / MLKEM768 / MLKEM1024（draft-ietf-tls-mlkem-
+key-agreement，codepoint 0x0200–0x0202：客户端 share = ek、服务端
+share = ct、ss = 32 B，服务端仍走 `start_and_complete` 覆写 + §7.2
+封装密钥检查），进默认与批准清单。ACVP 向量扩展到三参数集
+（keyGen / encapsulation / decapsulation 含 modified ciphertext
+隐式拒绝 / encapsulationKeyCheck 与 decapsulationKeyCheck 负例，
+源 = NIST ACVP-Server `internalProjection.json` 原件）。
+
+出口条件：
+
+- [ ] core 仍 `#![forbid(unsafe_code)]`、零新运行时依赖（白名单
+      不变）；ML-KEM-768 全部既有语义不变，并经**新一代 NIST
+      sample 向量**（上游 2026-09 重生成，与 M8.3 所用镜像快照
+      不同代）独立重验；
+- [ ] ACVP 三参数集各 keyGen ×3 + encapsulation ×3 + decapsulation
+      ×3（各含 modified ciphertext 隐式拒绝例）+ KeyCheck 负例
+      （含官方 valid 对照，`from_bytes` 必须**接受对照、拒绝无效**）
+      全绿；VECTOR-PROVENANCE.md 记录新源哈希；
+- [ ] 上电自检 KAT 扩为三参数集（每集一个 encapDecap 同案例五元组
+      的封装 + 解封装断言）；
+- [ ] 常数时间纪律不变：k 的取值与传播为公开参数集信息，不得引入
+      以秘密为条件的分支或访存；dk/ss 零化语义保持；
+- [ ] 适配层：三个纯组装配进 provider（默认与批准清单），api 清单
+      断言与 interop 握手矩阵（含 fips 矩阵）全绿；
+- [ ] 基准：mlkem768 三原语无回退（同机 ±1% 噪声带），512/1024
+      数字入 BENCHMARKS.md；
+- [ ] fmt / clippy -D warnings / 双配置（simd 与
+      no-default-features）/ `--features fips` / doc / deny 全绿；
+      fuzz `mlkem-decaps` 覆盖三参数集。
