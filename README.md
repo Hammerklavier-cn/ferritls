@@ -17,10 +17,11 @@
 - **TLS 1.3 套件**：`TLS_AES_128_GCM_SHA256`、`TLS_AES_256_GCM_SHA384`、
   `TLS_CHACHA20_POLY1305_SHA256`、`TLS_AES_128_CCM_SHA256`
 - **密钥交换**：X25519、secp256r1、secp384r1、X25519MLKEM768 混合
-- **抗量子**：FIPS 202 SHA-3/SHAKE 与 FIPS 203 ML-KEM-768（边界内
-  自研、零新依赖、NIST ACVP 向量锚定）；混合组按
-  draft-ietf-tls-ecdhe-mlkem（codepoint 0x11EC），也是 X25519 进入
-  批准模式的通道
+- **抗量子**：FIPS 202 SHA-3/SHAKE 与 FIPS 203 ML-KEM 全部三个
+  参数集（512/768/1024，边界内自研、零新依赖、NIST ACVP 向量锚定）；
+  密钥交换含 X25519MLKEM768 混合（draft-ietf-tls-ecdhe-mlkem，
+  codepoint 0x11EC，X25519 进入批准模式的通道）与纯 ML-KEM 三组
+  （draft-ietf-tls-mlkem-key-agreement，codepoint 0x0200–0x0202）
 - **签名/验证**：ECDSA P-256/384、RSA-PSS/PKCS#1（SHA-256/384/512）、Ed25519
 - **批准模式**（`fips` feature）：仅 NIST 批准算法 + SP 800-90A
   CTR-DRBG（每次生成混入 OS 熵）+ 上电自检 KAT
@@ -54,7 +55,7 @@ provider.install_default()?;
 ```bash
 # 依赖本仓库时（crates.io / path / git）——二选一：
 export RUSTC_BOOTSTRAP=1                      # ① 保留 simd
-ferritls-core = { version = "0.4", default-features = false }  # ② 标量回退
+ferritls-core = { version = "0.5", default-features = false }  # ② 标量回退
 ```
 
 - 通道宽度按编译目标自动选择：默认 x86-64/aarch64 基线（SSE2/NEON）；

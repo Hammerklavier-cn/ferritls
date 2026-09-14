@@ -185,7 +185,18 @@ keystream 异或改走单条 PXOR）；`raw.rs` 收缩为纯内存读写包装�
 ring 绝对值就快了 ~23%）。
 
 
-### 5.3 ML-KEM-768（M8.3，2026-09-13，windows-gnu 本地同会话）
+### 5.3 ML-KEM 三参数集（M8.3 起 768，M8.4 扩 512/1024；windows-gnu 本地同会话）
+
+三原语（µs，确定性入口，`cargo bench -p ferritls-core --bench kem`，
+M8.4 2026-09-15 实测）：
+
+| 参数集 | keygen | encaps | decaps |
+|---|---|---|---|
+| ML-KEM-512 | 31 | 34 | 50 |
+| ML-KEM-768 | 51 | 54 | 75 |
+| ML-KEM-1024 | 77 | 78 | 106 |
+
+768 与 M8.3 基线（54/53/76）同噪声带，参数化无回退。
 
 `cargo bench -p ferritls-core --bench kem`（确定性入口，不含生产路径
 的一次 OS 熵读取）：

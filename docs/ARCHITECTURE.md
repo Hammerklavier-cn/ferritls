@@ -52,7 +52,7 @@ AES-GCM/SHA-256 公开类型经 `ops` 分发（§4），硬件后端
 | `Tls13CipherSuite.hkdf_provider` | `crypto::tls13::HkdfUsingHmac` + 包装的 `crypto::hmac::Hmac` | **复用 rustls 辅助器**，不手写密钥调度 |
 | `Tls13CipherSuite.aead_alg` | 包装 `core::gcm`/`ccm`/`chacha20poly1305` 为 `Tls13AeadAlgorithm` | `extract_keys` 已支持 key exporter（GCM/ChaCha20；CCM 因 rustls `ConnectionTrafficSecrets` 无对应变体返回 `UnsupportedOperationError`） |
 | `Tls13CipherSuite.quic` | `None` | QUIC 是 M8+ |
-| `kx_groups: &[&dyn SupportedKxGroup]` | `kx::{X25519,SecP256R1,SecP384R1,X25519MLKEM768}` | 经典 ECDH 用默认 `start_and_complete`；混合组（0x11EC）覆写 `start_and_complete`（KEM 数据依赖：服务端封装） |
+| `kx_groups: &[&dyn SupportedKxGroup]` | `kx::{X25519,SecP256R1,SecP384R1,X25519MLKEM768,Mlkem512,Mlkem768,Mlkem1024}` | 经典 ECDH 用默认 `start_and_complete`；混合组（0x11EC）与纯 ML-KEM 组（0x0200–0x0202，M8.4）覆写 `start_and_complete`（KEM 数据依赖：服务端封装 + §7.2 封装密钥检查） |
 | `ActiveKeyExchange` | `kx::Active*` 持有 core 的 ECDH/ML-KEM 私钥 | `complete` 消费 `Box<Self>`（混合组客户端在此解封装） |
 | `signature_verification_algorithms` | `verify::SUPPORTED_ALGORITHMS` | webpki 消费；TLS1.3 每 scheme 取首项；webpki 传裸 key_value（无 SPKI 包装），core `VerifyKey` 构造器按该裸格式定义、适配层透传 |
 | `secure_random` | `random::SystemRandom` → core `entropy`/`drbg` | M5 起批准模式走 DRBG |

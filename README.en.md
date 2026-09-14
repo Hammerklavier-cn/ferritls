@@ -19,11 +19,13 @@ cryptographic module boundary.
   `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`,
   `TLS_AES_128_CCM_SHA256`
 - **Key exchange**: X25519, secp256r1, secp384r1, X25519MLKEM768 hybrid
-- **Post-quantum**: FIPS 202 SHA-3/SHAKE and FIPS 203 ML-KEM-768
-  (implemented in-boundary, zero new dependencies, anchored on NIST
-  ACVP vectors); the hybrid group follows draft-ietf-tls-ecdhe-mlkem
-  (codepoint 0x11EC) and is also the channel through which X25519
-  enters approved mode
+- **Post-quantum**: FIPS 202 SHA-3/SHAKE and all three FIPS 203
+  ML-KEM parameter sets (512/768/1024; implemented in-boundary, zero
+  new dependencies, anchored on NIST ACVP vectors); key exchange
+  covers the X25519MLKEM768 hybrid (draft-ietf-tls-ecdhe-mlkem,
+  codepoint 0x11EC, the channel through which X25519 enters approved
+  mode) and the three pure ML-KEM groups
+  (draft-ietf-tls-mlkem-key-agreement, codepoints 0x0200-0x0202)
 - **Signatures / verification**: ECDSA P-256/384,
   RSA-PSS/PKCS#1 (SHA-256/384/512), Ed25519
 - **Approved mode** (`fips` feature): NIST-approved algorithms only +
@@ -65,7 +67,7 @@ cloned checkout builds out of the box):
 ```bash
 # When depending on this crate (crates.io / path / git) — pick one:
 export RUSTC_BOOTSTRAP=1                      # (a) keep simd
-ferritls-core = { version = "0.4", default-features = false }  # (b) scalar fallback
+ferritls-core = { version = "0.5", default-features = false }  # (b) scalar fallback
 ```
 
 - Vector width follows the compile target: the default x86-64/aarch64

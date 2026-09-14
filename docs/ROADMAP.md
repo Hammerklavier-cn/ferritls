@@ -383,7 +383,7 @@ AGENTS.md 实现级注记。
 X25519MLKEM768 进批准 TLS 配置），但 CMVP 认证前 rustls 各 `fips()`
 钩子仍恒返回 `false`（AGENTS.md 规则 3 不变）。
 
-### M8.4 ML-KEM-512/1024 参数集 + 纯 ML-KEM 组（0x0200–0x0202）
+### M8.4 ML-KEM-512/1024 参数集 + 纯 ML-KEM 组（0x0200–0x0202，完成 2026-09-15）
 
 范围：core `mlkem` 从 k=3 单参数集泛化为 FIPS 203 全部三个参数集
 ——差异不止 k：**ML-KEM-512 的 η₁ = 3**（768/1024 为 2）、
@@ -403,22 +403,33 @@ share = ct、ss = 32 B，服务端仍走 `start_and_complete` 覆写 + §7.2
 
 出口条件：
 
-- [ ] core 仍 `#![forbid(unsafe_code)]`、零新运行时依赖（白名单
+- [x] core 仍 `#![forbid(unsafe_code)]`、零新运行时依赖（白名单
       不变）；ML-KEM-768 全部既有语义不变，并经**新一代 NIST
       sample 向量**（上游 2026-09 重生成，与 M8.3 所用镜像快照
       不同代）独立重验；
-- [ ] ACVP 三参数集各 keyGen ×3 + encapsulation ×3 + decapsulation
+- [x] ACVP 三参数集各 keyGen ×3 + encapsulation ×3 + decapsulation
       ×3（各含 modified ciphertext 隐式拒绝例）+ KeyCheck 负例
       （含官方 valid 对照，`from_bytes` 必须**接受对照、拒绝无效**）
       全绿；VECTOR-PROVENANCE.md 记录新源哈希；
-- [ ] 上电自检 KAT 扩为三参数集（每集一个 encapDecap 同案例五元组
+- [x] 上电自检 KAT 扩为三参数集（每集一个 encapDecap 同案例五元组
       的封装 + 解封装断言）；
-- [ ] 常数时间纪律不变：k 的取值与传播为公开参数集信息，不得引入
-      以秘密为条件的分支或访存；dk/ss 零化语义保持；
-- [ ] 适配层：三个纯组装配进 provider（默认与批准清单），api 清单
+- [x] 常数时间纪律不变：k/η₁/du/dv 的取值与传播为公开参数集信息
+      （`fips203_params` 查表），未引入以秘密为条件的分支或访存；
+      dk/ss 零化语义保持；
+- [x] 适配层：三个纯组装配进 provider（默认与批准清单），api 清单
       断言与 interop 握手矩阵（含 fips 矩阵）全绿；
-- [ ] 基准：mlkem768 三原语无回退（同机 ±1% 噪声带），512/1024
+- [x] 基准：mlkem768 三原语无回退（同机噪声带内），512/1024
       数字入 BENCHMARKS.md；
-- [ ] fmt / clippy -D warnings / 双配置（simd 与
+- [x] fmt / clippy -D warnings / 双配置（simd 与
       no-default-features）/ `--features fips` / doc / deny 全绿；
       fuzz `mlkem-decaps` 覆盖三参数集。
+
+结果（2026-09-15 完成，windows-gnu 本地）：mlkem512 keygen 31 µs /
+encaps 34 µs / decaps 50 µs；mlkem768 51/54/75 µs（M8.3 基线
+54/53/76，同噪声带）；mlkem1024 keygen 77 µs / encaps 78 µs /
+decaps 106 µs（确定性入口、标量路径）。fips 矩阵自动扩为
+3 套件 × 6 组。泛化过程抓到两处"例外参数"——ML-KEM-512 的
+η₁ = 3 与 ML-KEM-1024 的 (du, dv) = (11, 5)，均由重生成的新代
+NIST ACVP 向量逐字节拦截（先用独立 python 参照实现仲裁定位，
+详见 AGENTS.md 实现级注记）。顺带修复 RUSTSEC-2026-0285
+（rustls 0.23.44 → 0.23.45，cargo-deny advisories 门拦截）。

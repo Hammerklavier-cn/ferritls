@@ -231,7 +231,7 @@ rustls（应用层）
 - **SHA-3/SHAKE（FIPS 202，M8.3）**：Keccak-f[1600] 纯软件标量实现；
   全部运算数据无关固定延迟，无侧信道敏感面；SHA3 与 SHAKE 的域分隔
   填充字节（0x06 / 0x1F）不得混用。
-- **ML-KEM-768（FIPS 203，M8.3）**：`Decaps` 的重加密密文比较必须
+- **ML-KEM 三参数集（FIPS 203，M8.3 起 768 / M8.4 全集）**：`Decaps` 的重加密密文比较必须
   常数时间——`subtle` 比较得 `Choice` 后 ct-select（K' / K̃ = J(z‖c)
   隐式拒绝），禁止 `if` 分支；封装前必须做 FIPS 203 §7.2 封装密钥
   检查（长度 + `ByteEncode₁₂∘ByteDecode₁₂` 往返模校验），失败返回
@@ -241,7 +241,9 @@ rustls（应用层）
   内容是公开常数，非秘密派生）；秘密（dk、ss、K'、K̃、ŝ、r/m 种子）
   `ZeroizeOnDrop`；矩阵采样 Â[i][j] = SampleNTT(XOF(ρ‖j‖i))（Encrypt
   用其转置，XOF(ρ‖i‖j)）——这是与 Kyber R3 不兼容的根源，一切以
-  ACVP 向量为最终仲裁。
+  ACVP 向量为最终仲裁；**参数表差异集中在 `mlkem.rs` 的
+  `fips203_params` 单一来源**（k=2 ↔ η₁=3，k=4 ↔ (du,dv)=(11,5)，
+  其余同 768），动参数前先对照该表。
 
 ### 5.3 DRBG 与熵
 
@@ -447,7 +449,12 @@ mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——�
 - [x] M8.3：FIPS 202 SHA-3/SHAKE + FIPS 203 ML-KEM-768 + X25519MLKEM768
       混合组（完成 2026-09-13；NIST ACVP 向量全绿、上电自检 KAT、
       interop 混合握手、数字见 docs/ROADMAP.md M8.3 节）
-- [ ] M8 余项：TLS 1.2 / QUIC / ML-KEM-512/1024 参数集 / aarch64 后端
+- [x] M8.4：ML-KEM-512/1024 参数集 + 纯 ML-KEM 组 0x0200–0x0202
+      （完成 2026-09-15；NIST ACVP 三参数集全绿——新代向量，含
+      KeyCheck 负例、自检 KAT、interop/fips 矩阵；抓到 512 η₁=3 与
+      1024 (du,dv)=(11,5) 两处例外参数，见实现级注记；
+      rustls 0.23.44→0.23.45 修 RUSTSEC-2026-0285）
+- [ ] M8 余项：TLS 1.2 / QUIC / aarch64 后端
 
 **已知的实现级注记**（修订实现前必读）：
 
@@ -524,7 +531,21 @@ mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——�
 - `sha3.rs`（FIPS 202，M8.3）：SHAKE-128 rate = 168 字节（c=256）、
   SHAKE-256 rate = 136 字节（c=512）——与 SHA3-256 的 136/SHA3-512
   的 72 记混即全错（曾实际写错，由官方向量立即拦截）；
-下一步实现者（人或代理）：M0–M7 已完成、crates.io 发布自动化就绪
-（推 tag 即发布），当前方向为 M8 按需排期（TLS 1.2 / QUIC / ML-KEM
-混合 / intrinsics 后端，动手前先在 ROADMAP 补写出口条件）与 FIPS
-阶段 B 准备（docs/FIPS.md §3）。修订实现前重读 §5 与上述注记。
+- `mlkem.rs`（三参数集泛化，M8.4）：**FIPS 203 的参数集差异不止 k**
+  ——ML-KEM-512 的 η₁ = 3（PRF 输出 192 字节 + CBD₃，用于 keygen 的
+  s/e 与 encrypt 的 r），ML-KEM-1024 的 (du, dv) = (11, 5)（ct =
+  1568 字节，u 多项式 352 字节编码）。两处都曾按"三集同参"假设写
+  错，768 全绿而 512/1024 全错——由重生成的新代 NIST ACVP 向量
+  逐字节拦截，独立 python 参照实现仲裁定位；参数表现在收敛在
+  `fips203_params` 单一 const fn，禁止在引擎代码里再硬编码 320/128
+  等 du 派生长度（一律 `32 * du` / `32 * dv`）；stable 工具链下
+  公开类型只能用裸 const 长度参数（`MlkemEncapsKey<EK>`），带
+  表达式的 const 泛型（`384*K+32`）需要 generic_const_exprs，禁用；
+  `MlkemDecapsKey::from_bytes` 的模校验只覆盖 ek 的 t̂ 编码段
+  （前 384k 字节），把尾部 ρ 一并送入 `as_chunks::<384>` 会误拒
+  合法密钥（曾实际发生，768 ACVP keygen 测试拦截）；
+下一步实现者（人或代理）：M0–M7 与 M8.1–M8.4 已完成、crates.io
+发布自动化就绪（推 tag 即发布），当前方向为 M8 余项按需排期
+（TLS 1.2 / QUIC / aarch64 后端，动手前先在 ROADMAP 补写出口条件）
+与 FIPS 阶段 B 准备（docs/FIPS.md §3）。修订实现前重读 §5 与上述
+注记。
