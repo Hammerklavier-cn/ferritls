@@ -273,12 +273,131 @@ pub static SECP384R1_GROUP: &dyn SupportedKxGroup = &SecP384R1;
 /// provider/浏览器实践；1216 B ClientHello share）。
 pub static X25519MLKEM768_GROUP: &dyn SupportedKxGroup = &X25519Mlkem768;
 
-/// 默认（非批准模式）密钥交换组清单；顺序即偏好，首项为 TLS 1.3
-/// 默认 key share（X25519MLKEM768 混合优先，其后经典 X25519）。
-pub static ALL_KX_GROUPS: &[&'static dyn SupportedKxGroup] =
-    &[&X25519Mlkem768, &X25519, &SecP256R1, &SecP384R1];
+/// 默认（非批准模式）密钥交换组清单；顺序即偏好——X25519MLKEM768
+/// 混合优先，其后纯 ML-KEM（768/1024/512）与经典组。注意 rustls 会
+/// 为清单内**每个**组在 ClientHello 里发 key share：全清单 share 约
+/// 4.8 KB（1216 + 1184 + 1568 + 800 + 32 B），只需子集的用户可自行
+/// 装配 provider（`CryptoProvider` 字段公开）。
+pub static ALL_KX_GROUPS: &[&'static dyn SupportedKxGroup] = &[
+    &X25519Mlkem768,
+    &Mlkem768,
+    &Mlkem1024,
+    &Mlkem512,
+    &X25519,
+    &SecP256R1,
+    &SecP384R1,
+];
 
-/// 批准模式密钥交换组清单：混合组（X25519 进批准模式的通道）+
-/// 经典 P-256/P-384；无独立 X25519（SP 800-52r2 口径）。
-pub static FIPS_KX_GROUPS: &[&'static dyn SupportedKxGroup] =
-    &[&X25519Mlkem768, &SecP256R1, &SecP384R1];
+/// 批准模式密钥交换组清单：ML-KEM 全部三个参数集（FIPS 203 批准；
+/// 纯组与 X25519MLKEM768 混合——X25519 进批准模式的通道）+ 经典
+/// P-256/P-384；无独立 X25519（SP 800-52r2 口径）。
+pub static FIPS_KX_GROUPS: &[&'static dyn SupportedKxGroup] = &[
+    &X25519Mlkem768,
+    &Mlkem768,
+    &Mlkem1024,
+    &Mlkem512,
+    &SecP256R1,
+    &SecP384R1,
+];
+
+// ---------------------------------------------------------------------------
+// 纯 ML-KEM 组（draft-ietf-tls-mlkem-key-agreement，0x0200–0x0202）
+// ---------------------------------------------------------------------------
+
+/// 宏展开三个纯 ML-KEM `SupportedKxGroup`。角色与线格式（KEM 角色与
+/// 混合组同构，仅去掉 X25519 分量）：
+/// - 客户端 = 解封装方：share = ek（800/1184/1568 B）；
+/// - 服务端 = 封装方：`start_and_complete` 覆写 + FIPS 203 §7.2 封装
+///   密钥检查，share = ct（768/1088/1568 B）；
+/// - 共享秘密 = ss（32 B）。
+macro_rules! mlkem_pure_group {
+    ($group:ident, $active:ident, $sname:ident, $set:ident, $ng:expr, $doc:expr) => {
+        #[doc = $doc]
+        #[derive(Debug)]
+        pub struct $group;
+
+        /// 进行中的纯 ML-KEM 客户端侧密钥交换（持有解封装密钥）。
+        pub(crate) struct $active {
+            dk: ferritls_core::mlkem::$set::DecapsKey,
+            share: Vec<u8>,
+        }
+
+        impl std::fmt::Debug for $active {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(stringify!($active))
+            }
+        }
+
+        impl SupportedKxGroup for $group {
+            fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, RustlsError> {
+                let (ek, dk) = ferritls_core::mlkem::$set::generate_keypair().map_err(map_dh_err)?;
+                let share = ek.as_bytes().to_vec();
+                Ok(Box::new($active { dk, share }))
+            }
+
+            fn start_and_complete(&self, peer_pub_key: &[u8]) -> Result<CompletedKeyExchange, RustlsError> {
+                // 服务端：peer share = ek
+                let invalid = || RustlsError::PeerMisbehaved(PeerMisbehaved::InvalidKeyShare);
+                if peer_pub_key.len() != ferritls_core::mlkem::$set::EK_BYTES {
+                    return Err(invalid());
+                }
+                // FIPS 203 §7.2 封装密钥检查（含模校验）在此发生
+                let ek = ferritls_core::mlkem::$set::EncapsKey::from_bytes(peer_pub_key)
+                    .map_err(|_| invalid())?;
+                let (ct, ss) = ferritls_core::mlkem::$set::encapsulate(&ek).map_err(map_dh_err)?;
+                Ok(CompletedKeyExchange {
+                    group: $ng,
+                    pub_key: ct.as_bytes().to_vec(),
+                    secret: SharedSecret::from(ss.expose_bytes().to_vec()),
+                })
+            }
+
+            fn name(&self) -> NamedGroup {
+                $ng
+            }
+
+            fn fips(&self) -> bool {
+                // 认证（阶段 C）落地前恒 false（AGENTS.md 规则 3）。
+                false
+            }
+        }
+
+        impl ActiveKeyExchange for $active {
+            fn complete(self: Box<Self>, peer_pub_key: &[u8]) -> Result<SharedSecret, RustlsError> {
+                // 客户端：服务端 share = ct；密文长度不符必须中止
+                let invalid = || RustlsError::PeerMisbehaved(PeerMisbehaved::InvalidKeyShare);
+                if peer_pub_key.len() != ferritls_core::mlkem::$set::CT_BYTES {
+                    return Err(invalid());
+                }
+                let ct = ferritls_core::mlkem::$set::Ciphertext::from_bytes(peer_pub_key)
+                    .map_err(|_| invalid())?;
+                let ss = ferritls_core::mlkem::$set::decapsulate(&self.dk, &ct);
+                Ok(SharedSecret::from(ss.expose_bytes().to_vec()))
+            }
+
+            fn pub_key(&self) -> &[u8] {
+                &self.share
+            }
+
+            fn group(&self) -> NamedGroup {
+                $ng
+            }
+        }
+
+        #[doc = concat!(stringify!($group), " 组单例。")]
+        pub static $sname: &dyn SupportedKxGroup = &$group;
+    };
+}
+
+mlkem_pure_group!(
+    Mlkem512, ActiveMlkem512, MLKEM512_GROUP, k512, NamedGroup::MLKEM512,
+    "MLKEM512（draft-ietf-tls-mlkem-key-agreement，codepoint 0x0200）纯\nML-KEM 密钥交换组（M8.4）：Cat 1 参数集（k = 2，η₁ = 3）。"
+);
+mlkem_pure_group!(
+    Mlkem768, ActiveMlkem768, MLKEM768_GROUP, k768, NamedGroup::MLKEM768,
+    "MLKEM768（draft-ietf-tls-mlkem-key-agreement，codepoint 0x0201）纯\nML-KEM 密钥交换组（M8.4）：Cat 3 参数集（k = 3）。"
+);
+mlkem_pure_group!(
+    Mlkem1024, ActiveMlkem1024, MLKEM1024_GROUP, k1024, NamedGroup::MLKEM1024,
+    "MLKEM1024（draft-ietf-tls-mlkem-key-agreement，codepoint 0x0202）纯\nML-KEM 密钥交换组（M8.4）：Cat 5 参数集（k = 4，du = 11）。"
+);

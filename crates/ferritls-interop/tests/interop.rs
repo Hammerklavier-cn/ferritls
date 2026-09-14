@@ -83,7 +83,34 @@ fn ping_pong_aes256gcm_x25519_mlkem768() {
     );
 }
 
-/// fips_mode_provider 矩阵（批准套件 × 批准组，M8.3 起含混合组）。
+/// 纯 ML-KEM 组（M8.4，0x0200–0x0202）：自互操作（client=解封装方、
+/// server=封装方，同 provider）；ring 无纯 ML-KEM，交叉矩阵不适用。
+#[test]
+fn ping_pong_aes128gcm_mlkem512() {
+    assert_handshake(
+        ferritls_rustls::cipher::tls13_aes_128_gcm_sha256(),
+        ferritls_rustls::kx::MLKEM512_GROUP,
+    );
+}
+
+#[test]
+fn ping_pong_aes128gcm_mlkem768() {
+    assert_handshake(
+        ferritls_rustls::cipher::tls13_aes_128_gcm_sha256(),
+        ferritls_rustls::kx::MLKEM768_GROUP,
+    );
+}
+
+#[test]
+fn ping_pong_aes128gcm_mlkem1024() {
+    assert_handshake(
+        ferritls_rustls::cipher::tls13_aes_128_gcm_sha256(),
+        ferritls_rustls::kx::MLKEM1024_GROUP,
+    );
+}
+
+/// fips_mode_provider 矩阵（批准套件 × 批准组，M8.3 起含混合组，
+/// M8.4 起含纯 ML-KEM 三组：3 套件 × 6 组）。
 #[test]
 fn fips_mode_matrix() {
     for suite in ferritls_rustls::cipher::fips_tls13_suites() {
