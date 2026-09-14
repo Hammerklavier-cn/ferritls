@@ -385,10 +385,12 @@ X25519MLKEM768 进批准 TLS 配置），但 CMVP 认证前 rustls 各 `fips()`
 
 ### M8.4 ML-KEM-512/1024 参数集 + 纯 ML-KEM 组（0x0200–0x0202）
 
-范围：core `mlkem` 从 k=3 单参数集泛化为 k ∈ {2, 3, 4}（FIPS 203
-全部三个参数集；du = 10、dv = 4、η₁ = η₂ = 2 三集共享，差异只有
-k）——引擎内 k 为运行时参数（上限 K_MAX = 4，栈上按最大档定容，
-零堆分配），公开类型以裸 const 长度参数（EK/DK/CT 字节数）参数化，
+范围：core `mlkem` 从 k=3 单参数集泛化为 FIPS 203 全部三个参数集
+——差异不止 k：**ML-KEM-512 的 η₁ = 3**（768/1024 为 2）、
+**ML-KEM-1024 的 (du, dv) = (11, 5)**（其余为 (10, 4)），全部收敛
+到单一 `fips203_params` 参数表（const fn，引擎按 k 查表派生）。
+引擎内 k 为运行时参数（上限 K_MAX = 4，栈上按最大档定容，零堆
+分配），公开类型以裸 const 长度参数（EK/DK/CT 字节数）参数化，
 **不依赖 generic_const_exprs**（stable 工具链约束）；768 的公共
 API 路径（`Mlkem768*` 别名与顶层函数）保持不变。适配层新增纯
 ML-KEM 组 MLKEM512 / MLKEM768 / MLKEM1024（draft-ietf-tls-mlkem-
