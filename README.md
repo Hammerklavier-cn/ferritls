@@ -16,18 +16,28 @@
 
 - **TLS 1.3 套件**：`TLS_AES_128_GCM_SHA256`、`TLS_AES_256_GCM_SHA384`、
   `TLS_CHACHA20_POLY1305_SHA256`、`TLS_AES_128_CCM_SHA256`
-- **密钥交换**：X25519、secp256r1、secp384r1
+- **密钥交换**：X25519、secp256r1、secp384r1、X25519MLKEM768 混合
+- **抗量子**：FIPS 202 SHA-3/SHAKE 与 FIPS 203 ML-KEM-768（边界内
+  自研、零新依赖、NIST ACVP 向量锚定）；混合组按
+  draft-ietf-tls-ecdhe-mlkem（codepoint 0x11EC），也是 X25519 进入
+  批准模式的通道
 - **签名/验证**：ECDSA P-256/384、RSA-PSS/PKCS#1（SHA-256/384/512）、Ed25519
 - **批准模式**（`fips` feature）：仅 NIST 批准算法 + SP 800-90A
   CTR-DRBG（每次生成混入 OS 熵）+ 上电自检 KAT
-- **测试面**：RFC/NIST/CAVP 官方向量、RFC 8448 密钥调度、Wycheproof
-  2349 用例、rustls-ring 交叉互操作、webpki 证书链、cargo-fuzz 六目标
+- **测试面**：RFC/NIST/CAVP 官方向量、NIST ACVP ML-KEM-768 向量、
+  RFC 8448 密钥调度、Wycheproof 2349 用例、rustls-ring 交叉互操作、
+  webpki 证书链、cargo-fuzz 七目标
   （[向量溯源](docs/VECTOR-PROVENANCE.md)）
 - **性能**（P1 自动向量化 + P2 显式 `std::simd`，默认启用，仍零
   `unsafe`）：位切片 AES + 分组 GHASH 表 + 批处理 ChaCha20——AES-GCM
   记录层较纯掩码基线提升约 19–21 倍（基线 ISA）；以
   `RUSTFLAGS="-C target-cpu=native"` 构建可自动启用 AVX2/AVX-512
   宽通道，详见 [docs/ROADMAP.md](docs/ROADMAP.md) P1/P2 节
+- **可选硬件后端**（`ferritls-backend-aesni`，边界外独立 crate，仅
+  x86_64）：AES-NI + CLMUL 的 AES-GCM 整消息 kernel 与 SHA-NI 的
+  SHA-256 分发，运行时 CPU 探测 + 安装 KAT 自检，批准模式固定软件
+  路径——GCM 原语较软件路径约 750–980 倍，详见
+  [docs/BENCHMARKS.md](docs/BENCHMARKS.md) §5
 
 ```rust
 let provider = ferritls_rustls::default_provider();
@@ -44,7 +54,7 @@ provider.install_default()?;
 ```bash
 # 依赖本仓库时（crates.io / path / git）——二选一：
 export RUSTC_BOOTSTRAP=1                      # ① 保留 simd
-ferritls-core = { version = "0.1", default-features = false }  # ② 标量回退
+ferritls-core = { version = "0.4", default-features = false }  # ② 标量回退
 ```
 
 - 通道宽度按编译目标自动选择：默认 x86-64/aarch64 基线（SSE2/NEON）；
@@ -66,6 +76,7 @@ crate），**尚未通过 CMVP 认证**：一切 `fips()` 钩子在认证落地�
 |---|---|
 | `ferritls-core` | 密码学核心 = FIPS 模块边界（`#![forbid(unsafe_code)]`） |
 | `ferritls-rustls` | rustls CryptoProvider 适配层 |
+| `ferritls-backend-aesni` | AES-NI/SHA-NI 硬件后端（边界外，仅 x86_64，经 `ops` 注册） |
 | `ferritls-interop` | 互操作/E2E 测试宿主 |
 
 贡献（人类或 AI 代理）请先读 [AGENTS.md](AGENTS.md)。
