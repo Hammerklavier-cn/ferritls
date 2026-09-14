@@ -294,11 +294,11 @@ ct 声明；矩阵前后数字记入本节。
 - TLS 1.2：`tls12` feature、PRF（`PrfUsingHmac`）、ECDHE-GCM 套件
   （SP 800-52r2 部署面需要）；
 - QUIC packet protection（`quic` 字段 + Header Protection）；
-- ML-KEM（FIPS 203）+ X25519MLKEM768 混合（X25519 进批准模式的通道）；
-- intrinsics 后端 crate（见 M8.1，2026-09 排期启动）；
+- ML-KEM（FIPS 203）+ X25519MLKEM768 混合（完成，见 M8.3）；
+- intrinsics 后端 crate（完成，见 M8.1/M8.2）；
 - 认证阶段 B/C 启动（见 docs/FIPS.md）。
 
-### M8.1 intrinsics 后端（AES-NI + CLMUL，进行中）
+### M8.1 intrinsics 后端（AES-NI + CLMUL，完成 2026-09-13）
 
 范围：core `ops` 分发接线（AES-GCM 整消息 kernel + SHA-256 函数
 分发——对象分发形态曾因 HKDF 短命实例 +2.3% 被零回归门否决，函数
@@ -321,8 +321,9 @@ docs/BENCHMARKS.md。
       （GCM 原语 ~120–138×，握手 X25519 −40%/P-256 −17%）；
 - [x] `--features fips` 构建下 `install()` 拒绝且有测试守护
       （ops_dispatch::fips_refuses_install）；
-- [ ] fmt / clippy -D warnings / 三平台 test 全绿（本地 Windows 全绿，
-      三平台待首次 CI 运行确认）。
+- [x] fmt / clippy -D warnings / 三平台 test 全绿（本地 Windows 全绿；
+      2026-09-13 main push 与 2026-09-14 schedule 的 CI 运行均绿，
+      三平台确认）。
 
 SHA-NI 已随 M8.2 落地（`ShaNi` token + `HashOps` 函数分发 kernel：
 流式 ~6×、HKDF ~5×、握手 X25519 双 Ni ~2.35×，见 BENCHMARKS §5.1）。
