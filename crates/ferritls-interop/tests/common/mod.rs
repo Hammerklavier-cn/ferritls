@@ -1,9 +1,11 @@
 //! 互操作测试共享助手（每个集成测试通过 `mod common;` 引入）。
 //!
 //! 仅测试基础设施：证书、AcceptAll 验证器、provider 钉扎、TCP 握手
-//! 驱动。真正的密码学实现绝不出现在 tests/ 下。
+//! 驱动、QUIC 内存回环。真正的密码学实现绝不出现在 tests/ 下。
 
 #![allow(dead_code)]
+
+pub mod quic;
 
 use std::io::{Read, Write};
 use std::sync::Arc;
