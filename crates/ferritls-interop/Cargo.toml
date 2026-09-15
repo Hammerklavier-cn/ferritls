@@ -18,6 +18,15 @@ ferritls-rustls.workspace = true
 # 的盲区）；interop 不发布，dev-deps 不受白名单约束。
 rustls = { workspace = true, features = ["ring"] }
 criterion = "0.8.2"
+# reqwest 0.12 回归防线（tests/reqwest.rs）：manual-roots-no-provider
+# 链启用内部 __rustls 而不带任何内建 provider——进程默认必须是
+# ferritls（install_default 路径）或显式 use_preconfigured_tls。
+# 与 workspace rustls "0.23" 同线，Cargo 统一为同一实例。
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls-manual-roots-no-provider",
+    "http2",
+    "blocking",
+] }
 
 [features]
 default = ["simd"]
