@@ -159,7 +159,12 @@ fn keystream_xor_scalar(key: &[u8; 32], nonce: &[u8; 12], input: &[u8], out: &mu
 }
 
 /// ChaCha20 单块（RFC 8439 §2.3）：64 字节密钥流。
-pub(crate) fn chacha20_block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u8; 64] {
+///
+/// `counter` / `nonce` 显式入参：AEAD 内部路径（RFC 8439 §2.4）
+/// 以 counter = 1 起始并按消耗推进；QUIC 头保护（RFC 9001 §5.4.3）
+/// 以 counter = sample 前 4 字节（LE）、nonce = sample 后 12 字节
+/// 调用——两者均为公开量，变量时间无侧信道敏感面。
+pub fn chacha20_block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> [u8; 64] {
     let mut s = [0u32; 16];
     s[0] = 0x6170_7865;
     s[1] = 0x3320_646e;
