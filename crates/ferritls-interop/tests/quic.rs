@@ -17,7 +17,7 @@ use std::sync::Arc;
 use rustls::crypto::{CryptoProvider, ring};
 use rustls::pki_types::ServerName;
 use rustls::quic::{ClientConnection, Version};
-use rustls::{ClientConfig, CipherSuite};
+use rustls::{CipherSuite, ClientConfig};
 
 use common::client_config;
 use common::quic::quic_handshake;

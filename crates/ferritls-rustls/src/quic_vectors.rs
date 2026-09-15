@@ -8,32 +8,25 @@
 #![allow(dead_code)]
 
 /// §A.5 ChaCha20 应用写密钥（32 字节）。
-pub(crate) const A5_KEY: &str =
-    "c6d98ff3441c3fe1b2182094f69caa2ed4b716b65488960a7a984979fb23e1c8";
+pub(crate) const A5_KEY: &str = "c6d98ff3441c3fe1b2182094f69caa2ed4b716b65488960a7a984979fb23e1c8";
 
 /// §A.5 packet IV（12 字节）。
-pub(crate) const A5_IV: &str =
-    "e0459b3474bdd0e44a41c144";
+pub(crate) const A5_IV: &str = "e0459b3474bdd0e44a41c144";
 
 /// §A.5 头保护密钥（32 字节）。
-pub(crate) const A5_HP: &str =
-    "25a282b9e82f06f21f488917a4fc8f1b73573685608597d0efcb076b0ab7a7a4";
+pub(crate) const A5_HP: &str = "25a282b9e82f06f21f488917a4fc8f1b73573685608597d0efcb076b0ab7a7a4";
 
 /// §A.5 未保护包头（短头 + 3 字节包号）。
-pub(crate) const A5_HEADER: &str =
-    "4200bff4";
+pub(crate) const A5_HEADER: &str = "4200bff4";
 
 /// §A.5 最终受保护包（21 字节）。
-pub(crate) const A5_PROTECTED: &str =
-    "4cfe4189655e5cd55c41f69080575d7999c25a5bfb";
+pub(crate) const A5_PROTECTED: &str = "4cfe4189655e5cd55c41f69080575d7999c25a5bfb";
 
 /// §A.5 载荷密文（1 字节 PING 帧 + 16 字节 tag；头保护前）。
-pub(crate) const A5_CT: &str =
-    "655e5cd55c41f69080575d7999c25a5bfb";
+pub(crate) const A5_CT: &str = "655e5cd55c41f69080575d7999c25a5bfb";
 
 /// §A.5 头保护掩码。
-pub(crate) const A5_MASK: &str =
-    "aefefe7d03";
+pub(crate) const A5_MASK: &str = "aefefe7d03";
 
 /// §A.2 客户端 Initial 未保护载荷（1162 字节 = 245 字节 CRYPTO 帧 + 917 字节 PADDING）。
 pub(crate) const A2_PAYLOAD_PLAIN: &[u8] = &[
@@ -214,4 +207,3 @@ pub(crate) const A3_PROTECTED_PACKET: &[u8] = &[
     0x58, 0x89, 0x18, 0x50, 0xab, 0xbd, 0xca, 0x3d, 0x20, 0x39, 0x8c, 0x27, 0x64, 0x56, 0xcb, 0xc4,
     0x21, 0x58, 0x40, 0x7d, 0xd0, 0x74, 0xee,
 ];
-

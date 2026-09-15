@@ -163,7 +163,10 @@ impl Endpoint {
             .as_mut()
             .expect("1-RTT secrets")
             .next_packet_keys();
-        let keys = self.levels[idx(Level::OneRtt)].local.as_mut().expect("1rtt");
+        let keys = self.levels[idx(Level::OneRtt)]
+            .local
+            .as_mut()
+            .expect("1rtt");
         keys.packet = set.local;
         let keys = self.levels[idx(Level::OneRtt)]
             .remote
@@ -179,7 +182,10 @@ impl Endpoint {
 
     /// 解开对端 1-RTT 数据包（不喂 TLS 层）。
     pub fn open_1rtt_data(&mut self, pkt: Packet) -> Result<Vec<u8>, rustls::Error> {
-        let keys = self.levels[idx(pkt.level)].remote.as_ref().expect("rx keys");
+        let keys = self.levels[idx(pkt.level)]
+            .remote
+            .as_ref()
+            .expect("rx keys");
         self.unprotect(&pkt, keys).map(|(plain, _)| plain)
     }
 
@@ -231,7 +237,10 @@ impl Endpoint {
                 remote: Some(keys.remote),
             };
         }
-        let keys = self.levels[idx(pkt.level)].remote.as_ref().expect("rx keys");
+        let keys = self.levels[idx(pkt.level)]
+            .remote
+            .as_ref()
+            .expect("rx keys");
         let (plain, scid) = self.unprotect(&pkt, keys)?;
         if pkt.level != Level::OneRtt {
             self.peer_cid = scid;
@@ -317,8 +326,11 @@ impl Endpoint {
         let pn_offset = pkt.pn_offset;
         let sample = raw[pn_offset + 4..pn_offset + 20].to_vec();
         let (first, rest) = raw.split_at_mut(1);
-        keys.header
-            .decrypt_in_place(&sample, &mut first[0], &mut rest[pn_offset - 1..pn_offset + 3])?;
+        keys.header.decrypt_in_place(
+            &sample,
+            &mut first[0],
+            &mut rest[pn_offset - 1..pn_offset + 3],
+        )?;
         let pn_len = (first[0] & 0x03) as usize + 1;
         let mut b = [0u8; 4];
         b.copy_from_slice(&raw[pn_offset..pn_offset + 4]);
@@ -402,7 +414,10 @@ pub fn quic_handshake(
     assert!(!server.is_handshaking(), "server handshake complete");
 
     // 协商套件一致
-    let negotiated = client.conn().negotiated_cipher_suite().expect("client suite");
+    let negotiated = client
+        .conn()
+        .negotiated_cipher_suite()
+        .expect("client suite");
     assert_eq!(negotiated.suite(), expect_suite);
 
     // transport parameters 双侧可见
