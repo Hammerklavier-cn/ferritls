@@ -16,11 +16,13 @@ fn suite_inventory_matches_docs() {
 /// 且密钥长度正确，CCM 不参与 QUIC。
 #[test]
 fn quic_algorithms_wired_for_three_suites() {
-    use rustls::quic::Algorithm;
     let cases = [
         (ferritls_rustls::cipher::tls13_aes_128_gcm_sha256(), 16),
         (ferritls_rustls::cipher::tls13_aes_256_gcm_sha384(), 32),
-        (ferritls_rustls::cipher::tls13_chacha20_poly1305_sha256(), 32),
+        (
+            ferritls_rustls::cipher::tls13_chacha20_poly1305_sha256(),
+            32,
+        ),
     ];
     for (suite, key_len) in cases {
         let quic_alg = suite

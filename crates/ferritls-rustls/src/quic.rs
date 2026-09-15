@@ -23,12 +23,12 @@
 
 use std::boxed::Box;
 
+use rustls::Error;
 use rustls::crypto::cipher::{AeadKey, Iv, Nonce};
 use rustls::quic;
-use rustls::Error;
 
 use ferritls_core::aes::{Aes128, Aes256};
-use ferritls_core::chacha20poly1305::{chacha20_block, ChaCha20Poly1305};
+use ferritls_core::chacha20poly1305::{ChaCha20Poly1305, chacha20_block};
 use ferritls_core::gcm::{Aes128Gcm, Aes256Gcm};
 
 use crate::cipher::key_bytes;
@@ -395,14 +395,14 @@ mod vectors;
 
 #[cfg(test)]
 mod tests {
-    use rustls::quic::{HeaderProtectionKey, PacketKey, Suite, Version};
     use rustls::Side;
+    use rustls::quic::{HeaderProtectionKey, PacketKey, Suite, Version};
 
     use super::*;
     use vectors::{A2_PAYLOAD_PLAIN, A2_PROTECTED_PACKET, A3_PAYLOAD_PLAIN, A3_PROTECTED_PACKET};
 
     fn hex(s: &str) -> Vec<u8> {
-        assert!(s.len() % 2 == 0);
+        assert!(s.len().is_multiple_of(2));
         (0..s.len() / 2)
             .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
             .collect()
@@ -424,10 +424,7 @@ mod tests {
 
     #[test]
     fn rfc9001_a5_chacha20_short_header() {
-        let pk = packet_key_chacha(
-            &hex_arr(vectors::A5_KEY),
-            Iv::from(hex_arr(vectors::A5_IV)),
-        );
+        let pk = packet_key_chacha(&hex_arr(vectors::A5_KEY), Iv::from(hex_arr(vectors::A5_IV)));
         let hp = hp_key_chacha(&hex_arr(vectors::A5_HP));
 
         let header = hex(vectors::A5_HEADER); // 4200bff4（短头 + 3 字节包号）
@@ -448,12 +445,14 @@ mod tests {
         assert_eq!(hp.new_mask(&sample).unwrap(), hex(vectors::A5_MASK)[..]);
 
         let (first, rest) = packet.split_at_mut(1);
-        hp.encrypt_in_place(&sample, &mut first[0], &mut rest[..3]).unwrap();
+        hp.encrypt_in_place(&sample, &mut first[0], &mut rest[..3])
+            .unwrap();
         assert_hex(&packet, vectors::A5_PROTECTED);
 
         // 去保护 + 解密往返
         let (first, rest) = packet.split_at_mut(1);
-        hp.decrypt_in_place(&sample, &mut first[0], &mut rest[..3]).unwrap();
+        hp.decrypt_in_place(&sample, &mut first[0], &mut rest[..3])
+            .unwrap();
         assert_hex(&packet[..4], vectors::A5_HEADER);
         let plain = pk
             .decrypt_in_place(654360564, &hex(vectors::A5_HEADER), &mut packet[4..])
@@ -466,25 +465,24 @@ mod tests {
     #[test]
     fn rfc9001_a1_hp_masks() {
         // client：hp = 9f50…，sample = §A.2 → mask = 437b9aec36
-        let hp = hp_key_aes128(
-            &hex_arr("9f50449e04a0e810283a1e9933adedd2"),
-        );
+        let hp = hp_key_aes128(&hex_arr("9f50449e04a0e810283a1e9933adedd2"));
         assert_eq!(
-            hp.new_mask(&hex("d1b1c98dd7689fb8ec11d242b123dc9b")).unwrap(),
+            hp.new_mask(&hex("d1b1c98dd7689fb8ec11d242b123dc9b"))
+                .unwrap(),
             hex("437b9aec36")[..]
         );
         // server：hp = c206…，sample = §A.3 → mask = 2ec0d8356a
-        let hp = hp_key_aes128(
-            &hex_arr("c206b8d9b9f0f37644430b490eeaa314"),
-        );
+        let hp = hp_key_aes128(&hex_arr("c206b8d9b9f0f37644430b490eeaa314"));
         assert_eq!(
-            hp.new_mask(&hex("2cd0991cd25b0aac406a5816b6394100")).unwrap(),
+            hp.new_mask(&hex("2cd0991cd25b0aac406a5816b6394100"))
+                .unwrap(),
             hex("2ec0d8356a")[..]
         );
         // chacha：hp = 25a2…，sample = §A.5 → mask = aefefe7d03
         let hp = hp_key_chacha(&hex_arr(vectors::A5_HP));
         assert_eq!(
-            hp.new_mask(&hex("5e5cd55c41f69080575d7999c25a5bfb")).unwrap(),
+            hp.new_mask(&hex("5e5cd55c41f69080575d7999c25a5bfb"))
+                .unwrap(),
             hex(vectors::A5_MASK)[..]
         );
     }
@@ -502,7 +500,11 @@ mod tests {
 
         let header = hex("c300000001088394c8f03e5157080000449e00000002");
         let mut payload = A2_PAYLOAD_PLAIN.to_vec();
-        let tag = keys.local.packet.encrypt_in_place(2, &header, &mut payload).unwrap();
+        let tag = keys
+            .local
+            .packet
+            .encrypt_in_place(2, &header, &mut payload)
+            .unwrap();
 
         let mut packet = header;
         packet.extend_from_slice(&payload);
@@ -528,7 +530,11 @@ mod tests {
 
         let header = hex("c1000000010008f067a5502a4262b50040750001");
         let mut payload = A3_PAYLOAD_PLAIN.to_vec();
-        let tag = keys.local.packet.encrypt_in_place(1, &header, &mut payload).unwrap();
+        let tag = keys
+            .local
+            .packet
+            .encrypt_in_place(1, &header, &mut payload)
+            .unwrap();
 
         let mut packet = header;
         packet.extend_from_slice(&payload);
@@ -584,12 +590,14 @@ mod tests {
         let mut first = 0x42u8;
         let mut pn5 = [0u8; 5]; // 包号最长 4 字节
         let mut pn4 = [0u8; 4];
-        assert!(hp
-            .encrypt_in_place(&[0u8; 16], &mut first, &mut pn5)
-            .is_err());
-        assert!(hp
-            .encrypt_in_place(&[0u8; 16], &mut first, &mut pn4)
-            .is_ok());
+        assert!(
+            hp.encrypt_in_place(&[0u8; 16], &mut first, &mut pn5)
+                .is_err()
+        );
+        assert!(
+            hp.encrypt_in_place(&[0u8; 16], &mut first, &mut pn4)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -602,10 +610,7 @@ mod tests {
         assert_eq!(gcm.integrity_limit(), 1 << 52);
         assert_eq!(gcm.tag_len(), 16);
 
-        let chacha = packet_key_chacha(
-            &hex_arr(vectors::A5_KEY),
-            Iv::from([0u8; 12]),
-        );
+        let chacha = packet_key_chacha(&hex_arr(vectors::A5_KEY), Iv::from([0u8; 12]));
         assert_eq!(chacha.confidentiality_limit(), u64::MAX);
         assert_eq!(chacha.integrity_limit(), 1 << 36);
     }
@@ -615,10 +620,7 @@ mod tests {
 
     #[test]
     fn multipath_for_path_roundtrip() {
-        let pk = packet_key_chacha(
-            &hex_arr(vectors::A5_KEY),
-            Iv::from(hex_arr(vectors::A5_IV)),
-        );
+        let pk = packet_key_chacha(&hex_arr(vectors::A5_KEY), Iv::from(hex_arr(vectors::A5_IV)));
         let header = b"hdr0".to_vec();
         let mut payload = b"the quick brown fox".to_vec();
         let tag = pk
@@ -635,7 +637,9 @@ mod tests {
         // path_id / pn 任一不同 → 密文不同（nonce 空间分离）
         let enc = |path: u32, pn: u64| {
             let mut p = b"the quick brown fox".to_vec();
-            let t = pk.encrypt_in_place_for_path(path, pn, &header, &mut p).unwrap();
+            let t = pk
+                .encrypt_in_place_for_path(path, pn, &header, &mut p)
+                .unwrap();
             let mut out = p;
             out.extend_from_slice(t.as_ref());
             out
