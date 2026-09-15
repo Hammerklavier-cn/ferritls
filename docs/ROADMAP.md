@@ -433,3 +433,48 @@ decaps 106 µs（确定性入口、标量路径）。fips 矩阵自动扩为
 NIST ACVP 向量逐字节拦截（先用独立 python 参照实现仲裁定位，
 详见 AGENTS.md 实现级注记）。顺带修复 RUSTSEC-2026-0285
 （rustls 0.23.44 → 0.23.45，cargo-deny advisories 门拦截）。
+
+### M8.5 QUIC packet protection（RFC 9001）
+
+范围：为 TLS 1.3 三套件（AES-128-GCM / AES-256-GCM /
+ChaCha20-Poly1305）实现 rustls `quic::Algorithm`（0.23.45 无
+`quic` cargo feature，模块无条件可用）——`PacketKey`（RFC 9001
+§5.3：nonce = IV ⊕ packet number、AAD = 含 packet number 的包头，
+先验后出）、`HeaderProtectionKey`（§5.4：AES = AES-ECB(hp, sample)
+单块、ChaCha = counter = sample 前 4 字节 LE + nonce = 后 12 字节
+的单块密钥流，掩码 5 字节，掩码位应用逻辑照抄 rustls ring 参考）、
+confidentiality/integrity limit 按 RFC 9001 §B.1.1/B.1.2（2^16 包
+上限口径：GCM 2^23/2^52；ChaCha 沿 ring 的 u64::MAX/2^36）。
+CCM 套件 `quic: None`（RFC 9001 §5.1 以 AES-GCM 为强制基准，
+ring provider 亦不提供 CCM 的 QUIC；`ConnectionTrafficSecrets`
+本就无 CCM 变体）。core 只做一处 additive 变更：
+`chacha20poly1305::chacha20_block` 公开化（HP 单块密钥流，
+counter/nonce 显式入参）。向量锚点（RFC 9001 原文逐字节）：
+A.2/A.3 Initial 包保护（AES-128-GCM，V1，经 `quic::Suite::keys`
+公开路径全链：HKDF/HMAC + Initial 密钥推导 + 包加密 + 头保护）、
+A.5 ChaCha20 短包头（key/iv/hp/sample/mask/最终包全部锚定）、
+multipath `for_path` 锚定 picoquic `multipath_test.c`（经 rustls
+测试转引，第三方参照，注明出处）。端到端：interop 内存 QUIC
+回环 harness（长头/短头编解码 + HP 样本位 + KeyChange 密钥切换
+时序），ferritls↔ferritls 三套件 + ferritls↔ring 交叉互操作。
+
+出口条件：
+
+- [x] core 仍 `#![forbid(unsafe_code)]`、零新依赖；公开面仅
+      `chacha20_block` 一处 additive（文档注明 HP 用途与
+      counter 语义）；
+- [x] 三套件 `quic: Some(...)` 接线 + `fips()` 显式 `false`
+      （规则 3）；CCM 保持 `None` 并注明理由；
+- [x] RFC 9001 A.2/A.3/A.5 逐字节绿（A.2/A.3 经公开
+      `quic::Suite` 路径，覆盖 HKDF-Expand-Label "quic key/iv/hp"
+      全链）；multipath for_path picoquic 锚定 + 往返；
+- [x] 常数时间纪律：HP 掩码应用与包号长度派生只依赖公开包头
+      字节；解密路径先验后出（tag 验证在明文写出前完成，沿用
+      core open 语义）；密钥材料零化沿用 core AEAD 类型的
+      Drop 零化；
+- [x] interop 回环：ferritls↔ferritls（3 套件 × 双侧密钥翻转）
+      + ferritls↔ring 交叉全绿，握手后 export_keying_material
+      双侧一致、transport parameters 双侧可见、1-RTT 密钥更新
+      （`Secrets::next_packet_keys`）往返成立；
+- [x] fmt / clippy -D warnings / 双配置 / `--features fips` /
+      doc / deny 全绿；api.rs 清单断言更新（QUIC 接线防漂移）。
