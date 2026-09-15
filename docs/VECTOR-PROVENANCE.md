@@ -25,6 +25,7 @@
 | `selftest.rs` | 上表 KAT 的汇编（实现一致性，无独立官方来源） | — |
 | `schedule_rfc8448.rs` | RFC 8448 §3 官方轨迹 | **程序化提取**（tools/extract_rfc8448.py，脚本内含 Python 独立复算比对） |
 | `wycheproof.rs` | C2SP/wycheproof testvectors_v1（裁剪入库） | 文件级入库，见 tests/vectors/README.md |
+| `ferritls-rustls/src/quic_vectors.rs`（M8.5） | **RFC 9001 附录 A 原文**（rfc-editor.org，2026-09-15 下载）：§A.1 密钥与掩码（client/server hp + sample→mask）、§A.2 客户端 Initial 完整包（AES-128-GCM，1162 B 载荷 = 245 B CRYPTO 帧 + 917 B 零 PADDING，1200 B 受保护包）、§A.3 服务端 Initial 完整包（99 B 载荷，135 B 受保护包）、§A.5 ChaCha20 短头包（key/iv/hp/sample/mask/最终 21 B 包）；另 picoquic `multipath_test.c` 经 rustls 测试转引的 multipath 向量因 rustls `KeyBuilder` 为 `pub(crate)`（第三方无法从 secret 经公开 API 重建 PacketKey）**未采用**，`for_path` 以 rustls 公开 `Nonce::for_path` 同式 + 往返/非碰撞测试覆盖 | **程序化提取 + 派生关系校验**（python 脚本从 RFC 文本按行提取 hex 并验证：nonce = iv⊕pn、掩码位应用后包头、sample 取位 `[pn_offset+4 .. +16]` 全部闭合）；§A.2/A.3 测试经公开 `quic::Suite::keys` 路径运行，覆盖 HKDF/HMAC + "quic key/iv/hp" 派生全链 |
 
 ## 2026-09-07 修订说明
 

@@ -26,6 +26,10 @@ cryptographic module boundary.
   codepoint 0x11EC, the channel through which X25519 enters approved
   mode) and the three pure ML-KEM groups
   (draft-ietf-tls-mlkem-key-agreement, codepoints 0x0200-0x0202)
+- **QUIC** (RFC 9001, M8.5): QUIC packet protection for the three
+  AES-GCM/ChaCha20-Poly1305 suites (`quic::Algorithm`: packet keys +
+  header protection + multipath), byte-anchored on RFC 9001 Appendix A
+  samples, cross-tested against rustls-ring
 - **Signatures / verification**: ECDSA P-256/384,
   RSA-PSS/PKCS#1 (SHA-256/384/512), Ed25519
 - **Approved mode** (`fips` feature): NIST-approved algorithms only +

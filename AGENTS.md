@@ -131,8 +131,27 @@ rustls（应用层）
 - `rustls::Tls13CipherSuite` 字段：`common: CipherSuiteCommon`、
   `hkdf_provider: &'static dyn crypto::tls13::Hkdf`、
   `aead_alg: &'static dyn crypto::cipher::Tls13AeadAlgorithm`、
-  `quic: Option<&'static dyn quic::Algorithm>`。**`quic: None` 表示
-  该套件不参与 QUIC 握手**（我们的现状；QUIC 是 M8+）。
+  `quic: Option<&'static dyn quic::Algorithm>`。`quic: None` 表示
+  该套件不参与 QUIC 握手（M8.5 起 GCM/ChaCha 三套件为 `Some`，
+  **CCM 恒 `None`**：RFC 9001 §5.1 以 AES-GCM 为强制基准，ring 同，
+  `ConnectionTrafficSecrets` 亦无 CCM 变体）。
+- **QUIC 适配事实（0.23.45 实测，M8.5）**：rustls 已无 `quic` cargo
+  feature（模块无条件可用，仅 Connection 类型需 `std`）；
+  `quic::Algorithm` = `packet_key(AeadKey, Iv)` +
+  `header_protection_key(AeadKey)` + `aead_key_len()` + `fips()`；
+  `PacketKey`/`HeaderProtectionKey` 是 `*_in_place` 形态（seal 返回
+  独立 `Tag`；open 返回明文切片，须先验后出）。QUIC 密钥派生由
+  rustls 内部 `KeyBuilder` 经 `hkdf_provider` 完成（label "quic
+  key/iv/hp"），**不经过 `extract_keys`**——`extract_keys` 只服务
+  key log/secrets 导出（返回 `ConnectionTrafficSecrets` 公开枚举）。
+  `AeadKey` 构造是 `pub(crate)`：第三方**无法**构造，测试要用裸
+  字节请让自家实现类型的构造函数直接收 `&[u8; N]`。`write_hs` 的
+  KeyChange 语义 =「buf 按切换前层级保护，KeyChange 只影响后续
+  调用」（quinn-proto `write_crypto` 逐行同构；客户端 FIN 之所以
+  在握手层，是 KeyChange 在更早的空 buf 调用中被消费）。
+  `HeaderProtectionKey::decrypt_in_place` 依赖掩码后的首字节推
+  包号长度（掩码方向传 `masked=true`），实现照 RFC 9001 §5.4.1；
+  sample = 包[pn_offset+4 .. +16]。
 - **复用 rustls 内建辅助器**：`crypto::tls13::HkdfUsingHmac`（把
   `crypto::hmac::Hmac` 实现包装成完整 TLS 1.3 密钥调度）与
   `crypto::tls12::PrfUsingHmac`（M8 用）。我们只需实现薄薄的
@@ -143,9 +162,10 @@ rustls（应用层）
 - `ActiveKeyExchange::complete(self: Box<Self>, ...)` **消费 self**；
   `pub_key()` 是方法名（不是 `public_key()`）。
 - `Tls13AeadAlgorithm::extract_keys()` 被 rustls 用于导出
-  traffic secrets（key exporter / TLS 1.2 resumption 等），
-  不支持时返回 `Err(UnsupportedOperationError)`——但 QUIC 与
-  key log 需要 `Ok`，M6 按能力实现。
+  traffic secrets（key log / secrets 导出等），不支持时返回
+  `Err(UnsupportedOperationError)`——M6 起按能力实现（GCM/ChaCha
+  映射到 `ConnectionTrafficSecrets` 对应变体，CCM 无变体恒 `Err`；
+  QUIC 不走此路径，见上条）。
 - `WebPkiSupportedAlgorithms.mapping`：TLS 1.3 对每个 scheme 只用
   **第一个**算法；TLS 1.2 会尝试全部。
 - `SignatureVerificationAlgorithm`（pki-types 1.15，**本地实测**，docs.rs
@@ -454,7 +474,12 @@ mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——�
       KeyCheck 负例、自检 KAT、interop/fips 矩阵；抓到 512 η₁=3 与
       1024 (du,dv)=(11,5) 两处例外参数，见实现级注记；
       rustls 0.23.44→0.23.45 修 RUSTSEC-2026-0285）
-- [ ] M8 余项：TLS 1.2 / QUIC / aarch64 后端
+- [x] M8.5：QUIC 包保护（RFC 9001，完成 2026-09-15）：AES-GCM/
+      ChaCha 三套件 `quic::Algorithm`（PacketKey + HeaderProtectionKey
+      + multipath for_path），RFC 9001 §A.2/A.3/A.5 逐字节锚定 +
+      内存回环握手（含 rustls-ring 交叉），数字见 docs/ROADMAP.md
+      M8.5 节
+- [ ] M8 余项：TLS 1.2 / aarch64 后端
 
 **已知的实现级注记**（修订实现前必读）：
 
@@ -544,8 +569,16 @@ mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——�
   `MlkemDecapsKey::from_bytes` 的模校验只覆盖 ek 的 t̂ 编码段
   （前 384k 字节），把尾部 ρ 一并送入 `as_chunks::<384>` 会误拒
   合法密钥（曾实际发生，768 ACVP keygen 测试拦截）；
-下一步实现者（人或代理）：M0–M7 与 M8.1–M8.4 已完成、crates.io
+- `quic.rs`（适配层，M8.5）：`quic::Algorithm` 的密钥材料入口是
+  rustls 的 `AeadKey`（`pub(crate)` 构造，第三方不可构造）——自家
+  PacketKey/HPKey 构造函数必须直接收裸字节 `&[u8; N]`，trait impl
+  内部才做 `key_bytes` 转换，否则向量测试无从下手；`write_hs` 的
+  KeyChange 时序见 §4（buf 按切换前层级保护）；interop 内存回环
+  `drive` 必须逐包投递 + 每包后 flush 接收端（KeyChange 在本端
+  `write_hs` 才被消费安装，整批投递会在对端升级前送抵高层级包，
+  曾以 "rx keys" panic 拦截）；
+下一步实现者（人或代理）：M0–M7 与 M8.1–M8.5 已完成、crates.io
 发布自动化就绪（推 tag 即发布），当前方向为 M8 余项按需排期
-（TLS 1.2 / QUIC / aarch64 后端，动手前先在 ROADMAP 补写出口条件）
+（TLS 1.2 / aarch64 后端，动手前先在 ROADMAP 补写出口条件）
 与 FIPS 阶段 B 准备（docs/FIPS.md §3）。修订实现前重读 §5 与上述
 注记。

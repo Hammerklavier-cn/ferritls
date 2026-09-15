@@ -434,7 +434,7 @@ NIST ACVP 向量逐字节拦截（先用独立 python 参照实现仲裁定位�
 详见 AGENTS.md 实现级注记）。顺带修复 RUSTSEC-2026-0285
 （rustls 0.23.44 → 0.23.45，cargo-deny advisories 门拦截）。
 
-### M8.5 QUIC packet protection（RFC 9001）
+### M8.5 QUIC packet protection（RFC 9001，完成 2026-09-15）
 
 范围：为 TLS 1.3 三套件（AES-128-GCM / AES-256-GCM /
 ChaCha20-Poly1305）实现 rustls `quic::Algorithm`（0.23.45 无
@@ -453,10 +453,19 @@ counter/nonce 显式入参）。向量锚点（RFC 9001 原文逐字节）：
 A.2/A.3 Initial 包保护（AES-128-GCM，V1，经 `quic::Suite::keys`
 公开路径全链：HKDF/HMAC + Initial 密钥推导 + 包加密 + 头保护）、
 A.5 ChaCha20 短包头（key/iv/hp/sample/mask/最终包全部锚定）、
-multipath `for_path` 锚定 picoquic `multipath_test.c`（经 rustls
-测试转引，第三方参照，注明出处）。端到端：interop 内存 QUIC
-回环 harness（长头/短头编解码 + HP 样本位 + KeyChange 密钥切换
-时序），ferritls↔ferritls 三套件 + ferritls↔ring 交叉互操作。
+multipath `for_path`（draft-ietf-quic-multipath-11 §2.3：96 位序号
+= path_id ‖ pn 后与 IV 异或）。
+向量锚点（RFC 9001 原文程序化提取 + 派生关系校验）：
+A.2/A.3 Initial 包保护（AES-128-GCM，V1，经 `quic::Suite::keys`
+公开路径全链：HKDF/HMAC + Initial 密钥推导 + 包加密 + 头保护）、
+A.5 ChaCha20 短头包（key/iv/hp/sample/mask/最终包全部锚定）。
+multipath 固定向量（picoquic `multipath_test.c`，经 rustls 测试
+转引）**未采用**——其密钥派生需 rustls `KeyBuilder`（`pub(crate)`，
+第三方无法经公开 API 从 secret 重建 PacketKey），改为以 rustls
+公开 `Nonce::for_path` 同式 + 往返/非碰撞测试覆盖。端到端：interop
+内存 QUIC 回环 harness（长头/短头编解码 + HP 样本位 + KeyChange
+密钥切换时序，时序语义照 quinn-proto `write_crypto` 逐行核对），
+ferritls↔ferritls 三套件 + ferritls↔ring 双向交叉互操作。
 
 出口条件：
 
@@ -476,5 +485,18 @@ multipath `for_path` 锚定 picoquic `multipath_test.c`（经 rustls
       + ferritls↔ring 交叉全绿，握手后 export_keying_material
       双侧一致、transport parameters 双侧可见、1-RTT 密钥更新
       （`Secrets::next_packet_keys`）往返成立；
-- [x] fmt / clippy -D warnings / 双配置 / `--features fips` /
-      doc / deny 全绿；api.rs 清单断言更新（QUIC 接线防漂移）。
+- [x] fmt / clippy -D warnings / 双配置（simd 与
+      no-default-features）/ `--features fips` / doc / deny 全绿；
+      api.rs 清单断言更新（QUIC 接线防漂移）。
+
+结果（2026-09-15 完成，windows-gnu 本地）：适配层 8 个向量/负例
+测试（RFC 9001 §A.5 逐字节、§A.1 三组掩码、§A.2/A.3 完整 Initial
+包经公开 `quic::Suite` 路径、篡改/异常输入、limits、multipath
+往返）+ interop 4 个端到端测试（三套件自互操作 + ring 双向交叉 +
+CCM-only provider 拒绝）全绿；每个握手覆盖三级密钥切换、ALPN、
+transport parameters、export_keying_material 双侧一致、1-RTT 数据
+往返/篡改拒绝/密钥更新。fuzz 无新目标（包解密与 TLS 记录层共用
+core AEAD open 路径，已有 aead-open 语料覆盖）；基准不单列（每包
+成本由既有 aead/hash 基准覆盖的同族路径主导）。实现注记：KeyChange
+时序（buf 按切换前层级保护）与逐包投递的 harness 驱动方式记录于
+AGENTS.md §4 与实现级注记。

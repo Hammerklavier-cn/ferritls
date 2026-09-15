@@ -22,6 +22,9 @@
   密钥交换含 X25519MLKEM768 混合（draft-ietf-tls-ecdhe-mlkem，
   codepoint 0x11EC，X25519 进入批准模式的通道）与纯 ML-KEM 三组
   （draft-ietf-tls-mlkem-key-agreement，codepoint 0x0200–0x0202）
+- **QUIC**（RFC 9001，M8.5）：AES-GCM/ChaCha20-Poly1305 三套件的
+  QUIC 包保护（`quic::Algorithm`：包保护 + 头保护 + multipath），
+  RFC 9001 附录 A 样本逐字节锚定，与 rustls-ring 交叉互操作
 - **签名/验证**：ECDSA P-256/384、RSA-PSS/PKCS#1（SHA-256/384/512）、Ed25519
 - **批准模式**（`fips` feature）：仅 NIST 批准算法 + SP 800-90A
   CTR-DRBG（每次生成混入 OS 熵）+ 上电自检 KAT

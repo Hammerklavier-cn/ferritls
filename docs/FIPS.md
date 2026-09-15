@@ -163,6 +163,12 @@ FIPS 140-3（ISO/IEC 19790）对软件模块的核心要求与我们的对应物
 | ML-KEM-1024 | FIPS 203 | 批准（KEM；du = 11, dv = 5） | 待 CAVP（M8.4） |
 | X25519、Ed25519、ChaCha20-Poly1305 | — | 非批准（Allowed but not approved；X25519 仅经 X25519MLKEM768 混合进入批准模式） | — |
 
+注（M8.5）：QUIC 包保护（RFC 9001）不引入新算法——GCM 套件的
+QUIC 用途为同一 AEAD 于 §5.3 的 nonce 构造（IV ⊕ packet number）；
+AES 头保护为 AES 单块 ECB（SP 800-38A 批准的单块数据加密用途）；
+ChaCha20 头保护属非批准套件的同一用途；CCM 不参与 QUIC。密钥派生
+复用 HMAC/HKDF（"quic key/iv/hp" label），边界内无新代码路径。
+
 ### 6.7 密钥管理（§7）
 
 - 密钥生成：ECDSA/ECDH 标量由 DRBG（批准 RBG）生成，私钥算术上
