@@ -341,6 +341,10 @@ targets 在 M6 建立，语料进 `fuzz/`），零 panic。
 - `crates/ferritls-interop/tests/`：互操作矩阵（M6）、ring 交叉互操作
   与 webpki 真实证书链校验（M7）；`tests/certs/` 为 openssl 生成的
   测试专用链（root→intermediate→leaf + 无关根）。
+- `crates/ferritls-interop/tests/reqwest.rs`：应用层集成冒烟——reqwest
+  0.12（no-provider feature）经 ferritls 的回环 HTTPS，覆盖
+  install_default 与 use_preconfigured_tls 双路径（reqwest 0.12/0.13
+  均依赖 rustls ^0.23，与 ferritls 同线兼容）。
 
 ### 6.2 里程碑的“测试完成”定义
 

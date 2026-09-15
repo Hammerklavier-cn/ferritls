@@ -60,6 +60,41 @@ provider.install_default()?;
 // ClientConfig::builder() / ServerConfig::builder() now use it by default.
 ```
 
+## Using with reqwest
+
+Both reqwest 0.12 and 0.13 depend on `rustls ^0.23` — the same version
+line as ferritls, so Cargo unifies them into a single rustls instance
+and both generations work out of the box (interop `tests/reqwest.rs`
+keeps a loopback-handshake regression guard on the 0.12 line). Pick the
+**no-provider feature variants**: otherwise reqwest compiles in
+ring/aws-lc, which may claim the process default provider first (after
+which `install_default()` fails):
+
+```toml
+# reqwest 0.13 (rustls is the default TLS backend; system roots via rustls-platform-verifier)
+reqwest = { version = "0.13", default-features = false,
+            features = ["rustls-no-provider", "http2", "charset"] }
+
+# reqwest 0.12 (rustls is opt-in; bundled webpki root store)
+reqwest = { version = "0.12", default-features = false,
+            features = ["rustls-tls-webpki-roots-no-provider", "http2", "charset"] }
+# For system root stores use rustls-tls-native-roots-no-provider instead.
+```
+
+```rust
+// Install before creating the first Client:
+ferritls_rustls::default_provider().install_default()?;
+let client = reqwest::Client::new();
+```
+
+To avoid process-global state, build a `ClientConfig` explicitly and
+inject it via `use_preconfigured_tls` (supported in both 0.12 and
+0.13); the trust roots and **ALPN** must then be set on the
+`ClientConfig` yourself — reqwest does not modify a preconfigured
+config, and a missing ALPN list silently disables HTTP/2. Note that
+ferritls currently ships TLS 1.3 suites only (TLS 1.2 is an M8
+remainder); both reqwest generations behave identically here.
+
 ## Build requirements (default `simd` feature)
 
 The default `simd` feature of `ferritls-core` uses the standard

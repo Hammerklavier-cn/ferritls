@@ -49,6 +49,37 @@ provider.install_default()?;
 // 之后 ClientConfig::builder() / ServerConfig::builder() 默认使用它。
 ```
 
+## 与 reqwest 集成
+
+reqwest 0.12 与 0.13 两代依赖的都是 `rustls ^0.23`，与 ferritls 同一条
+版本线——Cargo 统一为同一 rustls 实例，两代均直接兼容（interop
+`tests/reqwest.rs` 以 0.12 线回环握手作回归防线）。feature 必须选
+**no-provider 变体**，否则 reqwest 会编入 ring/aws-lc 并可能抢先成为
+进程默认 provider（此后 `install_default()` 失败）：
+
+```toml
+# reqwest 0.13（rustls 为默认 TLS 后端；系统根证书走 rustls-platform-verifier）
+reqwest = { version = "0.13", default-features = false,
+            features = ["rustls-no-provider", "http2", "charset"] }
+
+# reqwest 0.12（rustls 为可选后端；内置 webpki 根证书集）
+reqwest = { version = "0.12", default-features = false,
+            features = ["rustls-tls-webpki-roots-no-provider", "http2", "charset"] }
+# 想用系统根证书：换成 rustls-tls-native-roots-no-provider。
+```
+
+```rust
+// 必须在创建第一个 Client 之前安装：
+ferritls_rustls::default_provider().install_default()?;
+let client = reqwest::Client::new();
+```
+
+不想碰进程全局状态时，可显式构建 `ClientConfig` 经
+`use_preconfigured_tls` 注入（0.12/0.13 均支持）；此时信任根与
+**ALPN** 都要在 `ClientConfig` 里自行设置——reqwest 不修改预配置的
+config，ALPN 缺失则 HTTP/2 静默不可用。另注意 ferritls 目前仅提供
+TLS 1.3 套件（TLS 1.2 为 M8 余项），两代 reqwest 行为一致。
+
 ## 构建要求（默认 `simd` feature）
 
 `ferritls-core` 的默认 feature `simd` 使用标准库 `core::simd`

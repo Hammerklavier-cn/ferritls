@@ -42,6 +42,9 @@ AES-GCM/SHA-256 公开类型经 `ops` 分发（§4），硬件后端
 - `ferritls-interop` 的依赖不受限（ring/aws-lc-rs/openssl 作为对手盘）。
 - `ferritls-backend-aesni` 依赖 core（实现其 ops trait）；**core 与
   适配层都不依赖它**——不安装即不存在，软件路径完全不受影响。
+- 应用层兼容性源自同一条 rustls ^0.23 版本线：reqwest 0.12/0.13
+  （各自以 `*-no-provider` feature 构建）与 ferritls 被 Cargo 统一到
+  同一 rustls 实例，由 interop `tests/reqwest.rs` 回环握手守护。
 
 ## 2. rustls 接口映射表（0.23.45）
 
