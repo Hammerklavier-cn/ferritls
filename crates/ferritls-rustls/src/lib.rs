@@ -28,6 +28,7 @@
 pub mod cipher;
 pub mod kx;
 pub mod provider;
+pub mod quic;
 pub mod random;
 pub mod sign;
 pub mod verify;

@@ -12,6 +12,36 @@ fn suite_inventory_matches_docs() {
     assert!(ferritls_rustls::cipher::TLS13_SUITE_NAMES.contains(&"TLS_AES_128_CCM_SHA256"));
 }
 
+/// QUIC 接线防漂移（M8.5）：GCM/ChaCha 三套件暴露 `quic::Algorithm`
+/// 且密钥长度正确，CCM 不参与 QUIC。
+#[test]
+fn quic_algorithms_wired_for_three_suites() {
+    use rustls::quic::Algorithm;
+    let cases = [
+        (ferritls_rustls::cipher::tls13_aes_128_gcm_sha256(), 16),
+        (ferritls_rustls::cipher::tls13_aes_256_gcm_sha384(), 32),
+        (ferritls_rustls::cipher::tls13_chacha20_poly1305_sha256(), 32),
+    ];
+    for (suite, key_len) in cases {
+        let quic_alg = suite
+            .tls13()
+            .expect("tls13")
+            .quic
+            .expect("GCM/ChaCha 套件必须接线 QUIC");
+        assert_eq!(quic_alg.aead_key_len(), key_len);
+        // 规则 3：认证前 fips() 恒 false
+        assert!(!quic_alg.fips());
+    }
+    assert!(
+        ferritls_rustls::cipher::tls13_aes_128_ccm_sha256()
+            .tls13()
+            .expect("tls13")
+            .quic
+            .is_none(),
+        "CCM 不参与 QUIC（RFC 9001 §5.1 以 AES-GCM 为强制基准）"
+    );
+}
+
 #[test]
 fn kx_group_names_are_stable() {
     use rustls::NamedGroup;

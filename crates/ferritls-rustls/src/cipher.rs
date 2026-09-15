@@ -1,11 +1,13 @@
-//! TLS 1.3 密码套件装配（M6）。
+//! TLS 1.3 密码套件装配（M6；QUIC 接线 M8.5）。
 //!
 //! HKDF 复用 rustls 内建 [`rustls::crypto::tls13::HkdfUsingHmac`]，包装
 //! 本 crate 实现的 [`rustls::crypto::hmac::Hmac`]（不在边界内重写密钥
 //! 调度）；AEAD 为 ferritls-core 的 GCM/CCM/ChaCha20-Poly1305 适配。
 //!
-//! 注意：`quic` 字段为 `None` = 本套件不参与 QUIC 握手（QUIC packet
-//! protection 是 M8+ 项）。
+//! QUIC：AES-128-GCM / AES-256-GCM / ChaCha20-Poly1305 三套件经
+//! [`crate::quic`] 的 `quic::Algorithm` 参与 QUIC 包保护；CCM 保持
+//! `None`（RFC 9001 §5.1 以 AES-GCM 为强制基准，`ConnectionTrafficSecrets`
+//! 亦无 CCM 变体）。
 
 use rustls::crypto::CipherSuiteCommon;
 use rustls::crypto::cipher::{
@@ -206,7 +208,7 @@ pub(crate) static HKDF_SHA384_PROVIDER: &dyn rustls::crypto::tls13::Hkdf = &HKDF
 const TAG_LEN: usize = 16;
 
 /// 从 `AeadKey` 提取定长密钥字节。
-fn key_bytes<const N: usize>(key: &AeadKey) -> [u8; N] {
+pub(crate) fn key_bytes<const N: usize>(key: &AeadKey) -> [u8; N] {
     let mut out = [0u8; N];
     out.copy_from_slice(key.as_ref());
     out
@@ -560,12 +562,12 @@ impl Tls13AeadAlgorithm for Ccm128Aead {
 // 套件静态表与装配
 // ---------------------------------------------------------------------------
 
-static GCM128_AEAD: Gcm128Aead = Gcm128Aead;
-static GCM256_AEAD: Gcm256Aead = Gcm256Aead;
-static CHACHA_AEAD: Chacha20Poly1305Aead = Chacha20Poly1305Aead;
+pub(crate) static GCM128_AEAD: Gcm128Aead = Gcm128Aead;
+pub(crate) static GCM256_AEAD: Gcm256Aead = Gcm256Aead;
+pub(crate) static CHACHA_AEAD: Chacha20Poly1305Aead = Chacha20Poly1305Aead;
 static CCM128_AEAD: Ccm128Aead = Ccm128Aead;
 
-static TLS13_AES_128_GCM_SHA256: Tls13CipherSuite = Tls13CipherSuite {
+pub(crate) static TLS13_AES_128_GCM_SHA256: Tls13CipherSuite = Tls13CipherSuite {
     common: CipherSuiteCommon {
         suite: rustls::CipherSuite::TLS13_AES_128_GCM_SHA256,
         hash_provider: SHA256_HASH,
@@ -574,10 +576,10 @@ static TLS13_AES_128_GCM_SHA256: Tls13CipherSuite = Tls13CipherSuite {
     },
     hkdf_provider: HKDF_SHA256_PROVIDER,
     aead_alg: &GCM128_AEAD,
-    quic: None,
+    quic: Some(&crate::quic::QUIC_AES_128_GCM),
 };
 
-static TLS13_AES_256_GCM_SHA384: Tls13CipherSuite = Tls13CipherSuite {
+pub(crate) static TLS13_AES_256_GCM_SHA384: Tls13CipherSuite = Tls13CipherSuite {
     common: CipherSuiteCommon {
         suite: rustls::CipherSuite::TLS13_AES_256_GCM_SHA384,
         hash_provider: SHA384_HASH,
@@ -585,10 +587,10 @@ static TLS13_AES_256_GCM_SHA384: Tls13CipherSuite = Tls13CipherSuite {
     },
     hkdf_provider: HKDF_SHA384_PROVIDER,
     aead_alg: &GCM256_AEAD,
-    quic: None,
+    quic: Some(&crate::quic::QUIC_AES_256_GCM),
 };
 
-static TLS13_CHACHA20_POLY1305_SHA256: Tls13CipherSuite = Tls13CipherSuite {
+pub(crate) static TLS13_CHACHA20_POLY1305_SHA256: Tls13CipherSuite = Tls13CipherSuite {
     common: CipherSuiteCommon {
         suite: rustls::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256,
         hash_provider: SHA256_HASH,
@@ -597,7 +599,7 @@ static TLS13_CHACHA20_POLY1305_SHA256: Tls13CipherSuite = Tls13CipherSuite {
     },
     hkdf_provider: HKDF_SHA256_PROVIDER,
     aead_alg: &CHACHA_AEAD,
-    quic: None,
+    quic: Some(&crate::quic::QUIC_CHACHA20_POLY1305),
 };
 
 static TLS13_AES_128_CCM_SHA256: Tls13CipherSuite = Tls13CipherSuite {
@@ -608,6 +610,8 @@ static TLS13_AES_128_CCM_SHA256: Tls13CipherSuite = Tls13CipherSuite {
     },
     hkdf_provider: HKDF_SHA256_PROVIDER,
     aead_alg: &CCM128_AEAD,
+    // CCM 不参与 QUIC：RFC 9001 §5.1 以 AES-GCM 为强制基准（ring 同），
+    // ConnectionTrafficSecrets 亦无 CCM 变体。
     quic: None,
 };
 
