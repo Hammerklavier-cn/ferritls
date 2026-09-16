@@ -1,4 +1,4 @@
-//! SHA3-256/512 与 SHAKE-128/256 向量测试（M8.3）。
+//! SHA3-224/256/384/512 与 SHAKE-128/256 向量测试（M8.3；224/384 补全）。
 //!
 //! 来源：
 //! - FIPS 202 官方示例（"abc"、空串、448/896 位填充边界与两块消息）；
@@ -7,16 +7,44 @@
 //! 向量为人工录入——**启用前必须与官方文档逐字节核对**（AGENTS.md
 //! 硬性规则 7/8）：上述全部值经 python hashlib（OpenSSL 后端）独立
 //! 复算一致，并与 RustCrypto `ml-kem`（ACVP 全绿实现）测试常量交叉
-//! 核对（2026-09-13）。
+//! 核对（2026-09-13）；SHA3-224/384 四组同日生成，其中 "abc"/空串
+//! 两组另与 Keccak 团队公布的 FIPS 202 示例向量逐字节比对一致
+//! （2026-09-17）。
 
 mod common;
 
 use common::assert_hex;
-use ferritls_core::sha3::{Shake128, Shake256, sha3_256, sha3_512};
+use ferritls_core::sha3::{Shake128, Shake256, sha3_224, sha3_256, sha3_384, sha3_512};
 
 const M56: &[u8] = b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
 const M100: &[u8] = b"abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmno\
 ijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu";
+
+#[test]
+fn sha3_224_known_answers() {
+    assert_hex(
+        &sha3_224(b"abc"),
+        "e642824c3f8cf24ad09234ee7d3c766fc9a3a5168d0c94ad73b46fdf",
+        "SHA3-224(\"abc\")",
+    );
+    assert_hex(
+        &sha3_224(b""),
+        "6b4e03423667dbb73b6e15454f0eb1abd4597f9a1b078e3f5b5a6bc7",
+        "SHA3-224(\"\")",
+    );
+    // 56 字节：144 字节率之内（单块，rate−1 填充转折）。
+    assert_hex(
+        &sha3_224(M56),
+        "8a24108b154ada21c9fd5574494479ba5c7e7ab76ef264ead0fcce33",
+        "SHA3-224(448-bit message)",
+    );
+    // 100 字节：两块消息。
+    assert_hex(
+        &sha3_224(M100),
+        "543e6868e1666c1a643630df77367ae5a62a85070a51c14cbf665cbc",
+        "SHA3-224(896-bit message)",
+    );
+}
 
 #[test]
 fn sha3_256_known_answers() {
@@ -69,6 +97,34 @@ fn sha3_512_known_answers() {
         "afebb2ef542e6579c50cad06d2e578f9f8dd6881d7dc824d26360feebf18a4fa\
          73e3261122948efcfd492e74e82e2189ed0fb440d187f382270cb455f21dd185",
         "SHA3-512(896-bit message)",
+    );
+}
+
+#[test]
+fn sha3_384_known_answers() {
+    assert_hex(
+        &sha3_384(b"abc"),
+        "ec01498288516fc926459f58e2c6ad8df9b473cb0fc08c2596da7cf0e49be4b2\
+         98d88cea927ac7f539f1edf228376d25",
+        "SHA3-384(\"abc\")",
+    );
+    assert_hex(
+        &sha3_384(b""),
+        "0c63a75b845e4f7d01107d852e4c2485c51a50aaaa94fc61995e71bbee983a2a\
+         c3713831264adb47fb6bd1e058d5f004",
+        "SHA3-384(\"\")",
+    );
+    assert_hex(
+        &sha3_384(M56),
+        "991c665755eb3a4b6bbdfb75c78a492e8c56a22c5c4d7e429bfdbc32b9d4ad5a\
+         a04a1f076e62fea19eef51acd0657c22",
+        "SHA3-384(448-bit message)",
+    );
+    assert_hex(
+        &sha3_384(M100),
+        "79407d3b5916b59c3e30b09822974791c313fb9ecc849e406f23592d04f625dc\
+         8c709b98b43b3852b337216179aa7fc7",
+        "SHA3-384(896-bit message)",
     );
 }
 

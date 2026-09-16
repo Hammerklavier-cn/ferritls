@@ -158,7 +158,7 @@ FIPS 140-3（ISO/IEC 19790）对软件模块的核心要求与我们的对应物
 | RSA-PSS / RSA-PKCS#1（验证与签名） | FIPS 186-5 | 批准（PKCS#1 v1.5 仅限遗留验证用途，SP 800-131Ar2 口径） | 待 CAVP |
 | AES-256-CTR DRBG | SP 800-90A | 批准（RBG） | 待 CAVP |
 | ECDH P-256/384 | SP 800-56A r3 | 批准（KAS） | 待 CAVP |
-| SHA3-256/512、SHAKE-128/256 | FIPS 202 | 批准 | 待 CAVP（M8.3） |
+| SHA3-224/256/384/512、SHAKE-128/256 | FIPS 202 | 批准 | 待 CAVP（M8.3；2026-09 补齐 224/384 全家族） |
 | ML-KEM-512 | FIPS 203 | 批准（KEM；η₁ = 3） | 待 CAVP（M8.4） |
 | ML-KEM-768 | FIPS 203 | 批准（KEM；混合组合的批准组合规则见 SP 800-56C r2 与 SP 800-227——X25519MLKEM768 经 SP 800-52r2 进入批准 TLS 配置） | 待 CAVP（M8.3） |
 | ML-KEM-1024 | FIPS 203 | 批准（KEM；du = 11, dv = 5） | 待 CAVP（M8.4） |

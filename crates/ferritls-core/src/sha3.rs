@@ -1,4 +1,5 @@
-//! FIPS 202：Keccak 海绵族——SHA3-256/512 与 SHAKE-128/256（M8.3）。
+//! FIPS 202：Keccak 海绵族——SHA3-224/256/384/512 与 SHAKE-128/256
+//! （家族全部 6 个函数；M8.3 落地 256/512 与 SHAKE，同轮补齐 224/384）。
 //!
 //! 纯软件标量实现（Keccak-f\[1600\]，24 轮 θ/ρ/π/χ/ι），全部运算为
 //! 数据无关固定延迟，无侧信道敏感面（无以秘密为条件的分支或访存；
@@ -81,8 +82,9 @@ fn keccak_f1600(a: &mut [u64; 25]) {
     }
 }
 
-/// Keccak 海绵核：`rate` 为字节率（SHA3-256/SHAKE128 = 136，
-/// SHA3-512 = 72，SHAKE256 = 64），全部 ≤ 200 = 25 lane × 8 B。
+/// Keccak 海绵核：`rate` 为字节率（SHA3-224 = 144、SHA3-256 = 136、
+/// SHA3-384 = 104、SHA3-512 = 72；SHAKE128 = 168、SHAKE256 = 136），
+/// 全部 ≤ 200 = 25 lane × 8 B。
 #[derive(Clone, Debug)]
 struct Keccak {
     state: [u64; 25],
@@ -221,7 +223,17 @@ xof_type!(
     "SHAKE-256 可扩展输出函数（FIPS 202）：rate = 136 字节（c = 512）。"
 );
 
-/// SHA3-256 一次性摘要（FIPS 202）。
+/// SHA3-224 一次性摘要（FIPS 202）：rate = 144 字节（c = 448）。
+pub fn sha3_224(data: &[u8]) -> [u8; 28] {
+    let mut k = Keccak::new(144);
+    k.absorb(data);
+    k.pad(0x06);
+    let mut out = [0u8; 28];
+    k.squeeze(&mut out);
+    out
+}
+
+/// SHA3-256 一次性摘要（FIPS 202）：rate = 136 字节（c = 512）。
 pub fn sha3_256(data: &[u8]) -> [u8; 32] {
     let mut k = Keccak::new(136);
     k.absorb(data);
@@ -231,7 +243,17 @@ pub fn sha3_256(data: &[u8]) -> [u8; 32] {
     out
 }
 
-/// SHA3-512 一次性摘要（FIPS 202）。
+/// SHA3-384 一次性摘要（FIPS 202）：rate = 104 字节（c = 768）。
+pub fn sha3_384(data: &[u8]) -> [u8; 48] {
+    let mut k = Keccak::new(104);
+    k.absorb(data);
+    k.pad(0x06);
+    let mut out = [0u8; 48];
+    k.squeeze(&mut out);
+    out
+}
+
+/// SHA3-512 一次性摘要（FIPS 202）：rate = 72 字节（c = 1024）。
 pub fn sha3_512(data: &[u8]) -> [u8; 64] {
     let mut k = Keccak::new(72);
     k.absorb(data);

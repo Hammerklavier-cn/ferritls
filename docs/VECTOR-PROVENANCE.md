@@ -21,6 +21,7 @@
 | `rsa_and_der.rs` | openssl CLI 交叉生成的自签材料 + NIST CAVP RSA 子集 | openssl 验证器互验 |
 | `drbg.rs` | NIST DRBGVS（AES-256-CTR，无 DF；Instantiate→Reseed→Generate×2 官方流程） | .rsp + .txt 中间值（Key/V）核对 |
 | `sha3.rs` | FIPS 202 示例（空串/"abc"/448·896 位填充边界/多块消息的 SHA3-256/512 与 SHAKE128/256 输出）+ FIPS 203 附录 A 的 G/H/J/PRF/XOF 示例值（"Input to an invocation of …" 固定输入） | 官方示例值逐字节核对（2026-09-13）；附录 A 值另经 RustCrypto `ml-kem`（ACVP 全绿实现）`crypto.rs` 测试常量交叉核对 |
+| `sha3.rs`（224/384，2026-09-17 补全） | FIPS 202 全家族的 Keccak 团队公布示例（SHA3-224/384 的空串与 "abc"）+ 同文件 448/896 位标准消息 | "abc"/空串与 Keccak 团队公布值逐字节比对一致；四组均经 python hashlib（OpenSSL 后端）独立复算；selftest 新增 SHA3-224/256/384/512 KAT（"abc"，同源值） |
 | `mlkem.rs` | **NIST ACVP-Server** `gen-val/json-files/ML-KEM-keyGen-FIPS203` 与 `ML-KEM-encapDecap-FIPS203` 的 `internalProjection.json` 原件，**三参数集**（M8.4，2026-09-15 提取；NIST 上游 2026-09 重生成了 sample 向量，与 M8.3 所用 RustCrypto/KEMs 镜像快照 commit 65370b8 不同代——768 两代互验一致，算法为确定性锚定）：每集 keyGen 3 例（d,z→ek,dk，含 dk 解析校验）+ 封装 3 例（ek,m→c,ss）+ 解封装 2 valid + 1 "modified ciphertext"（隐式拒绝）+ KeyCheck 负例（encapsulationKeyCheck 模校验 / decapsulationKeyCheck h 校验，各含官方 valid 对照）；另 `mlkem.rs` 内置 KAT 三集（selftest，同源五元组） | **程序化提取**（tools/extract_mlkem_acvp.py，从官方 JSON 逐字段转写；子集选择确定）；文件 SHA-256 与获取日期记录于生成文件头（2026-09-15） |
 | `selftest.rs` | 上表 KAT 的汇编（实现一致性，无独立官方来源） | — |
 | `schedule_rfc8448.rs` | RFC 8448 §3 官方轨迹 | **程序化提取**（tools/extract_rfc8448.py，脚本内含 Python 独立复算比对） |

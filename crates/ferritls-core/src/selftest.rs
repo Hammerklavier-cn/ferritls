@@ -1,7 +1,8 @@
 //! 上电自检（FIPS 140-3 ISO/IEC 19790 §7.9.2 强制项）。
 //!
 //! 模块首次使用前必须执行**已知答案测试（KAT）**，覆盖全部批准算法：
-//! SHA-256/384/512、HMAC-SHA256、HKDF-SHA256、AES-128-GCM、AES-128-CCM、
+//! SHA-256/384/512、SHA3-224/256/384/512（FIPS 202）、HMAC-SHA256、
+//! HKDF-SHA256、AES-128-GCM、AES-128-CCM、
 //! ECDSA P-256（RFC 6979 确定性签名逐字节比对 + 验证）、RSA PKCS#1 v1.5
 //! 签名/验证（内建 KAT 密钥）、CTR-DRBG（CAVP 向量流程）。任一失败 →
 //! 模块进入错误状态，此后所有密码操作返回
@@ -89,10 +90,14 @@ static SELF_TEST_RUN: Mutex<bool> = Mutex::new(false);
 type KatFn = fn() -> Result<(), crate::Error>;
 
 fn run_kats() -> SelfTestStatus {
-    let kats: [(&'static str, KatFn); 12] = [
+    let kats: [(&'static str, KatFn); 16] = [
         ("sha256", kat_sha256),
         ("sha384", kat_sha384),
         ("sha512", kat_sha512),
+        ("sha3-224", kat_sha3_224),
+        ("sha3-256", kat_sha3_256),
+        ("sha3-384", kat_sha3_384),
+        ("sha3-512", kat_sha3_512),
         ("hmac-sha256", kat_hmac_sha256),
         ("hkdf-sha256", kat_hkdf_sha256),
         ("aes128-gcm", kat_aes128_gcm),
@@ -204,6 +209,64 @@ fn kat_sha512() -> Result<(), crate::Error> {
         Ok(())
     } else {
         Err(crate::Error::SelfTestFailed("sha512"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// KAT：SHA-3 家族（FIPS 202，消息 "abc"；224/384 补全时一并纳入）
+// ---------------------------------------------------------------------------
+
+fn kat_sha3_224() -> Result<(), crate::Error> {
+    let expect: [u8; 28] = [
+        0xe6, 0x42, 0x82, 0x4c, 0x3f, 0x8c, 0xf2, 0x4a, 0xd0, 0x92, 0x34, 0xee, 0x7d, 0x3c, 0x76,
+        0x6f, 0xc9, 0xa3, 0xa5, 0x16, 0x8d, 0x0c, 0x94, 0xad, 0x73, 0xb4, 0x6f, 0xdf,
+    ];
+    if crate::sha3::sha3_224(b"abc") == expect {
+        Ok(())
+    } else {
+        Err(crate::Error::SelfTestFailed("sha3-224"))
+    }
+}
+
+fn kat_sha3_256() -> Result<(), crate::Error> {
+    let expect: [u8; 32] = [
+        0x3a, 0x98, 0x5d, 0xa7, 0x4f, 0xe2, 0x25, 0xb2, 0x04, 0x5c, 0x17, 0x2d, 0x6b, 0xd3, 0x90,
+        0xbd, 0x85, 0x5f, 0x08, 0x6e, 0x3e, 0x9d, 0x52, 0x5b, 0x46, 0xbf, 0xe2, 0x45, 0x11, 0x43,
+        0x15, 0x32,
+    ];
+    if crate::sha3::sha3_256(b"abc") == expect {
+        Ok(())
+    } else {
+        Err(crate::Error::SelfTestFailed("sha3-256"))
+    }
+}
+
+fn kat_sha3_384() -> Result<(), crate::Error> {
+    let expect: [u8; 48] = [
+        0xec, 0x01, 0x49, 0x82, 0x88, 0x51, 0x6f, 0xc9, 0x26, 0x45, 0x9f, 0x58, 0xe2, 0xc6, 0xad,
+        0x8d, 0xf9, 0xb4, 0x73, 0xcb, 0x0f, 0xc0, 0x8c, 0x25, 0x96, 0xda, 0x7c, 0xf0, 0xe4, 0x9b,
+        0xe4, 0xb2, 0x98, 0xd8, 0x8c, 0xea, 0x92, 0x7a, 0xc7, 0xf5, 0x39, 0xf1, 0xed, 0xf2, 0x28,
+        0x37, 0x6d, 0x25,
+    ];
+    if crate::sha3::sha3_384(b"abc") == expect {
+        Ok(())
+    } else {
+        Err(crate::Error::SelfTestFailed("sha3-384"))
+    }
+}
+
+fn kat_sha3_512() -> Result<(), crate::Error> {
+    let expect: [u8; 64] = [
+        0xb7, 0x51, 0x85, 0x0b, 0x1a, 0x57, 0x16, 0x8a, 0x56, 0x93, 0xcd, 0x92, 0x4b, 0x6b, 0x09,
+        0x6e, 0x08, 0xf6, 0x21, 0x82, 0x74, 0x44, 0xf7, 0x0d, 0x88, 0x4f, 0x5d, 0x02, 0x40, 0xd2,
+        0x71, 0x2e, 0x10, 0xe1, 0x16, 0xe9, 0x19, 0x2a, 0xf3, 0xc9, 0x1a, 0x7e, 0xc5, 0x76, 0x47,
+        0xe3, 0x93, 0x40, 0x57, 0x34, 0x0b, 0x4c, 0xf4, 0x08, 0xd5, 0xa5, 0x65, 0x92, 0xf8, 0x27,
+        0x4e, 0xec, 0x53, 0xf0,
+    ];
+    if crate::sha3::sha3_512(b"abc") == expect {
+        Ok(())
+    } else {
+        Err(crate::Error::SelfTestFailed("sha3-512"))
     }
 }
 
