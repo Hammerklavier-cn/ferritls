@@ -18,6 +18,7 @@
 
 use crate::fields::{Fp256Scalar, Fp384Scalar, Fp25519};
 use crate::sha2::Sha512;
+use std::sync::OnceLock;
 
 /// 最小长度 BE 整数的 DER INTEGER 编码。
 fn der_integer(value_be: &[u8]) -> Vec<u8> {
@@ -316,11 +317,20 @@ pub mod ed25519 {
         0x66, 0x66,
     ];
 
-    /// 扭曲 Edwards 曲线参数 d（= −121665/121666），每次调用时计算。
-    pub(crate) fn curve_d() -> Fp25519 {
-        let um = Fp25519::from_raw([121665, 0, 0, 0]);
-        let vm = Fp25519::from_raw([121666, 0, 0, 0]);
-        um.neg().mul(&vm.invert())
+    /// 扭曲 Edwards 曲线参数 d（= −121665/121666），首次调用时推导、
+    /// 之后缓存（`OnceLock`）。派生含一次 Fermat 模逆（~253 次平方 +
+    /// ~250 次乘法）——旧形态每次调用重算，而每次点加法都要用 2d，
+    /// 256 轮 double-and-add 即 ~1024 次重推导（Ed25519 sign/verify
+    /// 26 ms 的主导项，2026-09 性能修复）。d 是公开的曲线常数（非
+    /// 秘密），缓存无零化/常数时间顾虑；值由同一派生式计算，与旧
+    /// 实现逐位一致。
+    pub(crate) fn curve_d() -> &'static Fp25519 {
+        static D: OnceLock<Fp25519> = OnceLock::new();
+        D.get_or_init(|| {
+            let um = Fp25519::from_raw([121665, 0, 0, 0]);
+            let vm = Fp25519::from_raw([121666, 0, 0, 0]);
+            um.neg().mul(&vm.invert())
+        })
     }
 
     /// 扩展坐标点 (X : Y : Z : T)，恒等元 = (0, 1, 1, 0)。
@@ -344,7 +354,7 @@ pub mod ed25519 {
 
         /// 统一加法（add-2008-hwcd-3，a = −1）。
         pub(crate) fn add(&self, other: &Self) -> Self {
-            let dd = curve_d().add(&curve_d());
+            let dd = curve_d().add(curve_d());
             let a = self.y.sub(&self.x).mul(&other.y.sub(&other.x));
             let b = self.y.add(&self.x).mul(&other.y.add(&other.x));
             let c = self.t.mul(&other.t).mul(&dd);
@@ -464,8 +474,12 @@ pub mod ed25519 {
         acc
     }
 
+    /// 标准基点 G（`G_COMPRESSED` 解压，首次调用后缓存——解压含一次
+    /// 模幂（sqrt），旧形态每次 public_key/sign/verify 都重做）。G 是
+    /// 公开曲线常数，缓存无零化/常数时间顾虑。
     pub(crate) fn base_point() -> Point {
-        decompress(&G_COMPRESSED).expect("standard base point")
+        static G: OnceLock<Point> = OnceLock::new();
+        *G.get_or_init(|| decompress(&G_COMPRESSED).expect("standard base point"))
     }
 
     /// 私钥种子（`ZeroizeOnDrop`）。
