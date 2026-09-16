@@ -110,3 +110,150 @@ fn hkdf_expand_over_limit_rejected() {
         Err(ferritls_core::Error::InvalidInput)
     );
 }
+
+/// HKDF-SHA-384：RFC 5869 TC1/TC3 输入形态。RFC 5869 附录 A 无 SHA-384
+/// 用例——期望值由双参照链生成互验（纯 python RFC 5869 参照实现 +
+/// python-cryptography（OpenSSL 后端）HKDF，两者输出一致），2026-09-17。
+#[test]
+fn hkdf_sha384_reference_vectors() {
+    use ferritls_core::hkdf::{expand_sha384, extract_sha384};
+    let ikm = [0x0bu8; 22];
+    let salt = hex("000102030405060708090a0b0c");
+    let info = hex("f0f1f2f3f4f5f6f7f8f9");
+
+    let prk = extract_sha384(&salt, &ikm);
+    assert_hex(
+        &prk,
+        "704b39990779ce1dc548052c7dc39f303570dd13fb39f7acc564680bef80e8de\
+         c70ee9a7e1f3e293ef68eceb072a5ade",
+        "SHA-384 TC1-shape PRK",
+    );
+    let mut okm = [0u8; 82];
+    expand_sha384(&prk, &info, &mut okm).unwrap();
+    assert_hex(
+        &okm,
+        "9b5097a86038b805309076a44b3a9f38063e25b516dcbf369f394cfab43685f\
+         748b6457763e4f0204fc5d95d1da3e62587b22eb8943d0fab6bb631a2fe9df1\
+         a68c6ce5d56116a52005b3f122b88b39b7251f",
+        "SHA-384 TC1-shape OKM(82)",
+    );
+
+    // TC3 形态（空 salt/info）
+    let prk = extract_sha384(&[], &ikm);
+    assert_hex(
+        &prk,
+        "10e40cf072a4c5626e43dd22c1cf727d4bb140975c9ad0cbc8e45b40068f8f0b\
+         a57cdb598af9dfa6963a96899af047e5",
+        "SHA-384 TC3-shape PRK",
+    );
+    let mut okm = [0u8; 42];
+    expand_sha384(&prk, &[], &mut okm).unwrap();
+    assert_hex(
+        &okm,
+        "c8c96e710f89b0d7990bca68bcdec8cf854062e54c73a7abc743fade9b242daa\
+         cc1cea5670415b52849c",
+        "SHA-384 TC3-shape OKM(42)",
+    );
+}
+
+/// HKDF-SHA-512：同上，双参照链生成互验（2026-09-17）。
+#[test]
+fn hkdf_sha512_reference_vectors() {
+    use ferritls_core::hkdf::{expand_sha512, extract_sha512};
+    let ikm = [0x0bu8; 22];
+    let salt = hex("000102030405060708090a0b0c");
+    let info = hex("f0f1f2f3f4f5f6f7f8f9");
+
+    let prk = extract_sha512(&salt, &ikm);
+    assert_hex(
+        &prk,
+        "665799823737ded04a88e47e54a5890bb2c3d247c7a4254a8e61350723590a26\
+         c36238127d8661b88cf80ef802d57e2f7cebcf1e00e083848be19929c61b4237",
+        "SHA-512 TC1-shape PRK",
+    );
+    let mut okm = [0u8; 82];
+    expand_sha512(&prk, &info, &mut okm).unwrap();
+    assert_hex(
+        &okm,
+        "832390086cda71fb47625bb5ceb168e4c8e26a1a16ed34d9fc7fe92c14815793\
+         38da362cb8d9f925d7cbcce0dff7098769cf15959867d571c1715450cb530137\
+         be3fb62f3cf32b84feba8f1eb1b563e20d97",
+        "SHA-512 TC1-shape OKM(82)",
+    );
+
+    // TC3 形态（空 salt/info）
+    let prk = extract_sha512(&[], &ikm);
+    assert_hex(
+        &prk,
+        "fd200c4987ac491313bd4a2a13287121247239e11c9ef82802044b66ef357e5b\
+         194498d0682611382348572a7b1611de54764094286320578a863f36562b0df6",
+        "SHA-512 TC3-shape PRK",
+    );
+    let mut okm = [0u8; 42];
+    expand_sha512(&prk, &[], &mut okm).unwrap();
+    assert_hex(
+        &okm,
+        "f5fa02b18298a72a8c23898a8703472c6eb179dc204c03425c970e3b164bf90f\
+         ff22d04836d0e2343bac",
+        "SHA-512 TC3-shape OKM(42)",
+    );
+}
+
+/// 前缀性质与 255 块上限对三个 hash 一致成立（宏实例的行为一致性，
+/// 抓任一实例的 T 链/上限偏差）。
+#[test]
+fn hkdf_macro_instances_share_structural_properties() {
+    use ferritls_core::hkdf::{expand_sha384, expand_sha512, extract_sha384, extract_sha512};
+
+    let salt = hex("000102030405060708090a0b0c");
+    let info = hex("f0f1f2f3f4f5f6f7f8f9");
+
+    // SHA-384：OKM 前缀性质 + 255×48 上限
+    let prk = extract_sha384(&salt, &[0x0bu8; 22]);
+    let mut long = vec![0u8; 255 * 48];
+    expand_sha384(&prk, &info, &mut long).expect("255 blocks within limit");
+    let mut short = vec![0u8; 1000];
+    expand_sha384(&prk, &info, &mut short).unwrap();
+    assert_eq!(short[..], long[..1000], "SHA-384 prefix property");
+    let mut over = vec![0u8; 255 * 48 + 1];
+    assert_eq!(
+        expand_sha384(&prk, &info, &mut over),
+        Err(ferritls_core::Error::InvalidInput),
+        "SHA-384 over 255×48 must be rejected"
+    );
+
+    // SHA-512：同上（上限 255×64）
+    let prk = extract_sha512(&salt, &[0x0bu8; 22]);
+    let mut long = vec![0u8; 255 * 64];
+    expand_sha512(&prk, &info, &mut long).expect("255 blocks within limit");
+    let mut short = vec![0u8; 1000];
+    expand_sha512(&prk, &info, &mut short).unwrap();
+    assert_eq!(short[..], long[..1000], "SHA-512 prefix property");
+    let mut over = vec![0u8; 255 * 64 + 1];
+    assert_eq!(
+        expand_sha512(&prk, &info, &mut over),
+        Err(ferritls_core::Error::InvalidInput),
+        "SHA-512 over 255×64 must be rejected"
+    );
+}
+
+// 跨 hash PRK 必须不同（防宏展开时类型错绑——错绑实例仍会自洽通过
+// 自家向量，唯有跨实例比对能暴露）。
+#[test]
+fn hkdf_cross_hash_prk_differ() {
+    let salt = hex("000102030405060708090a0b0c");
+    let ikm = [0x0bu8; 22];
+    let p256 = ferritls_core::hkdf::extract_sha256(&salt, &ikm);
+    let p384 = ferritls_core::hkdf::extract_sha384(&salt, &ikm);
+    let p512 = ferritls_core::hkdf::extract_sha512(&salt, &ikm);
+    assert_ne!(
+        &p256[..],
+        &p384[..32],
+        "SHA-256 vs SHA-384 PRK prefix must differ"
+    );
+    assert_ne!(
+        &p384[..32],
+        &p512[..32],
+        "SHA-384 vs SHA-512 PRK prefix must differ"
+    );
+}

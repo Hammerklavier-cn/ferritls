@@ -10,7 +10,7 @@
 |---|---|---|
 | `sha2.rs` | FIPS 180-4 示例（"abc"/双块/百万字节 'a'）+ SHAVS 风格填充边界（55–129 字节 13 个转折长度） | 官方示例值逐字节核对；边界长度摘要经 python hashlib 与 OpenSSL 3.2.4 `dgst` 双工具交叉核对（2026-09-07） |
 | `hmac.rs` | RFC 4231 测试用例 1–3 + TC6/TC7（131 字节超块长密钥，SHA-256/384/512 六值） | 逐字节核对（TC6/7 摘要折行片段与计算值精确匹配，另经 `openssl dgst -mac hmac` 独立复算） |
-| `hkdf.rs` | RFC 5869 Appendix A（TC1–TC3） | 逐字节核对 |
+| `hkdf.rs` | RFC 5869 Appendix A（TC1–TC3，SHA-256）；SHA-384/512 无官方用例——期望值由双参照链生成互验 | SHA-256 逐字节核对；SHA-384/512 由纯 python RFC 5869 参照实现与 python-cryptography（OpenSSL 后端）HKDF 两链独立计算并比对一致（2026-09-17） |
 | `aes_gcm.rs` | NIST GCMVS（原始文件核对后内联）+ McGrew–Viega 附录 B 边界用例（TC2–TC4 全零密钥/明文、54 字节 AAD 空明文） | .rsp 逐字段；TC2 期望值与官方原文一致，其余由经 TC1/TC5/TC16 官方锚值校验的独立参照实现生成（2026-09-07） |
 | `chacha20poly1305.rs` | RFC 8439 §2.4.2 / §A.5 | 逐字节核对 |
 | `ccm.rs` | RFC 3610 §8 官方分组向量**不含 M=16**：M=16 期望值由 python-cryptography（OpenSSL 后端）AESCCM 生成，该生成器先与 RFC 3610 §8 Packet Vector #1（M=8/L=2/含 AAD）官方原文逐字节核对通过（2026-09-07） | 生成器对官方文件逐字节锚定后派生 |
