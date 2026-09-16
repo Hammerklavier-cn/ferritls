@@ -13,7 +13,7 @@
 | `hkdf.rs` | RFC 5869 Appendix A（TC1–TC3，SHA-256）；SHA-384/512 无官方用例——期望值由双参照链生成互验 | SHA-256 逐字节核对；SHA-384/512 由纯 python RFC 5869 参照实现与 python-cryptography（OpenSSL 后端）HKDF 两链独立计算并比对一致（2026-09-17） |
 | `aes_gcm.rs` | NIST GCMVS（原始文件核对后内联）+ McGrew–Viega 附录 B 边界用例（TC2–TC4 全零密钥/明文、54 字节 AAD 空明文） | .rsp 逐字段；TC2 期望值与官方原文一致，其余由经 TC1/TC5/TC16 官方锚值校验的独立参照实现生成（2026-09-07） |
 | `chacha20poly1305.rs` | RFC 8439 §2.4.2 / §A.5 | 逐字节核对 |
-| `ccm.rs` | RFC 3610 §8 官方分组向量**不含 M=16**：M=16 期望值由 python-cryptography（OpenSSL 后端）AESCCM 生成，该生成器先与 RFC 3610 §8 Packet Vector #1（M=8/L=2/含 AAD）官方原文逐字节核对通过（2026-09-07） | 生成器对官方文件逐字节锚定后派生 |
+| `ccm.rs` | **RFC 3610 §8 官方分组向量全部 24 个**（M=8/L=2 与 M=10/L=2，2026-09-17 程序化提取自 rfc-editor.org 原文，python-cryptography 双向复算后生成测试表直跑）；另全 M 矩阵与既有 M=16 参数集（RFC 无 M=16/L=3 官方向量）：期望值由 python-cryptography（OpenSSL 后端）AESCCM 生成——该生成器先与 RFC 3610 §8 原文逐字节校验通过（2026-09-07 建 M=16，2026-09-17 扩全 M 并与 M=16 旧值互验） | 官方 24 向量程序化提取 + 参照实现双向复算；派生向量经「生成器对官方文件逐字节锚定」链路（见 tests/ccm.rs 文件头） |
 | `x25519.rs` | RFC 7748 §6.1 + §5.2 迭代测试 | 逐字节核对；迭代轮转方向经独立大整数实现验证 |
 | `p256.rs` / `p384.rs`（ECDH） | RFC/标准 KAT + Wycheproof 锚点 | 双来源交叉 |
 | `p256.rs` / `p384.rs`（ECDSA） | RFC 6979 A.2.5（P-256/SHA-256）、A.2.6（P-384/SHA-384） | 逐字节核对（含 DER 定长编码细节） |
