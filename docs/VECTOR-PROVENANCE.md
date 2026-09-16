@@ -44,3 +44,8 @@
 3. RFC 8448：`tools/extract_rfc8448.py <rfc8448.txt>` 一键重提取并
    重新生成测试文件（生成器内含 Python 独立复算，输出确定）。
 4. Wycheproof：`tools/trim_wycheproof.py`（策略见 tests/vectors/README.md）。
+5. fuzz 种子（`fuzz/corpus/mlkem-decaps/`）：由
+   `tools/gen_mlkem_fuzz_seeds.py` 从上表 `mlkem.rs` 行的 ACVP 解封装
+   用例（同一案例的 dk/c 真值对，每参数集 valid + modified-ct 各一）
+   生成，格式 `sel ‖ dk ‖ ct`；向量更新后重跑脚本即可，
+   `tests/fuzz_seeds.rs` 冒烟守护漂移。

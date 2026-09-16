@@ -337,6 +337,9 @@ targets 在 M6 建立，语料进 `fuzz/`），零 panic。
   全链外部真值（**由 tools/extract_rfc8448.py 生成，勿手改**）。
 - `crates/ferritls-core/tests/wycheproof.rs` + `tests/vectors/`：
   Wycheproof 对抗性向量（裁剪入库，策略见 vectors/README.md）。
+- `crates/ferritls-core/tests/fuzz_seeds.rs`：fuzz 种子语料冒烟——按
+  fuzz target 同构逻辑跑 `fuzz/corpus/` 种子（防漂移；种子由
+  `tools/gen_mlkem_fuzz_seeds.py` 从 mlkem_acvp.rs 的 ACVP 用例生成）。
 - `crates/ferritls-rustls/tests/api.rs`：清单断言 + provider 冒烟。
 - `crates/ferritls-interop/tests/`：互操作矩阵（M6）、ring 交叉互操作
   与 webpki 真实证书链校验（M7）、内存 QUIC 回环握手含 ring 交叉
