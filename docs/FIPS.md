@@ -108,8 +108,9 @@ FIPS 140-3（ISO/IEC 19790）对软件模块的核心要求与我们的对应物
 
 ### 6.1 密码模块规格（SP 800-140C §1）
 
-- 模块：`ferritls-core`，纯软件实现（Software），版本 = crate 0.1.x
-  的锁定源码快照 + `--locked` 依赖 + 固定 Rust 工具链（含
+- 模块：`ferritls-core`，纯软件实现（Software），版本 = 申报时指定的
+  锁定源码快照（当前发布线为 crate 0.x 系列，送审时以 tag 钉死具体
+  版本）+ `--locked` 依赖 + 固定 Rust 工具链（含
   `RUSTC_BOOTSTRAP=1` 编译环境与 `simd` feature 档位，P2 起）。
 - 类型：多芯片独立独立软件模块；总体安全等级目标 Level 1。
 - 批准模式：`fips` feature 编译单元，由 `policy::Approval` 与

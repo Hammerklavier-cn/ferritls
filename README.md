@@ -89,7 +89,7 @@ TLS 1.3 套件（TLS 1.2 为 M8 余项），两代 reqwest 行为一致。
 ```bash
 # 依赖本仓库时（crates.io / path / git）——二选一：
 export RUSTC_BOOTSTRAP=1                      # ① 保留 simd
-ferritls-core = { version = "0.5", default-features = false }  # ② 标量回退
+ferritls-core = { version = "0.6", default-features = false }  # ② 标量回退
 ```
 
 - 通道宽度按编译目标自动选择：默认 x86-64/aarch64 基线（SSE2/NEON）；

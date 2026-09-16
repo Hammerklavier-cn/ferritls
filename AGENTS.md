@@ -339,7 +339,9 @@ targets 在 M6 建立，语料进 `fuzz/`），零 panic。
   Wycheproof 对抗性向量（裁剪入库，策略见 vectors/README.md）。
 - `crates/ferritls-rustls/tests/api.rs`：清单断言 + provider 冒烟。
 - `crates/ferritls-interop/tests/`：互操作矩阵（M6）、ring 交叉互操作
-  与 webpki 真实证书链校验（M7）；`tests/certs/` 为 openssl 生成的
+  与 webpki 真实证书链校验（M7）、内存 QUIC 回环握手含 ring 交叉
+  （M8.5，`quic.rs`）、Ni 后端 A/B 握手（`interop_ni.rs`）；
+  `tests/certs/` 为 openssl 生成的
   测试专用链（root→intermediate→leaf + 无关根）。
 - `crates/ferritls-interop/tests/reqwest.rs`：应用层集成冒烟——reqwest
   0.12（no-provider feature）经 ferritls 的回环 HTTPS，覆盖
@@ -377,7 +379,7 @@ RUSTFLAGS="-C target-feature=+avx2" cargo test --workspace          # AVX2 档
 RUSTFLAGS="-C target-cpu=native" cargo run -p ferritls-interop \
     --release --example perf           # 宽 ISA 性能（本机 CPU 支持 AVX2/512 时）
 cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored 测试
-cargo bench -p ferritls-core           # criterion 基准（aead/hash/ecdh/sign/drbg）
+cargo bench -p ferritls-core           # criterion 基准（aead/hash/ecdh/sign/drbg/kem）
 cargo bench -p ferritls-interop        # 全握手基准（含 ring 基线；handshake_ni = Ni 路径）
 cargo bench -p ferritls-backend-aesni  # 软/Ni 逐记录 A/B（aead_ni）
 ```
@@ -422,7 +424,7 @@ mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——�
 
 ---
 
-## 9. 当前状态（2026-09，M0–M7 完成）
+## 9. 当前状态（2026-09，M0–M7 与 M8.1–M8.5 完成）
 
 - [x] 双许可（Apache-2.0 OR MIT）、workspace、CI、cargo-deny
 - [x] ferritls-core 全模块实现（无 `todo!()` 残留）

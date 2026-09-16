@@ -1,10 +1,10 @@
 # ferritls 架构
 
-本文描述目标架构与数据流。当前 M0–M7 已全部落地：ferritls-core 全模块
-实现完毕（无 `todo!()` 残留），rustls 适配层与互操作矩阵已建成；M8 起
-AES-GCM/SHA-256 公开类型经 `ops` 分发（§4），硬件后端
-`ferritls-backend-aesni` 以边界外 crate 形式挂接。改架构先改本文
-（AGENTS.md 规则 9）。
+本文描述目标架构与数据流。当前 M0–M7 与 M8.1–M8.5 已全部落地：
+ferritls-core 全模块实现完毕（无 `todo!()` 残留），rustls 适配层、
+互操作矩阵与 QUIC 包保护已建成；M8 起 AES-GCM/SHA-256 公开类型经
+`ops` 分发（§4），硬件后端 `ferritls-backend-aesni` 以边界外 crate
+形式挂接。改架构先改本文（AGENTS.md 规则 9）。
 
 ## 1. crate 分层与依赖方向
 

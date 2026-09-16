@@ -106,7 +106,7 @@ cloned checkout builds out of the box):
 ```bash
 # When depending on this crate (crates.io / path / git) — pick one:
 export RUSTC_BOOTSTRAP=1                      # (a) keep simd
-ferritls-core = { version = "0.5", default-features = false }  # (b) scalar fallback
+ferritls-core = { version = "0.6", default-features = false }  # (b) scalar fallback
 ```
 
 - Vector width follows the compile target: the default x86-64/aarch64

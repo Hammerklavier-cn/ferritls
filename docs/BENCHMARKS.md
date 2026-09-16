@@ -19,6 +19,7 @@ M8 intrinsics 后端的价值无从证明，优化本身也无从把关。
 | `ecdh` | ferritls-core | X25519 / P-256 / P-384：`public_key`（纯标量乘）与 `diffie_hellman`（含公钥解析、在曲线检查、盲化） | — |
 | `sign` | ferritls-core | ECDSA P-256/384（RFC 6979）、Ed25519、RSA-2048（PKCS#1 v1.5 与 PSS）sign/verify | — |
 | `drbg` | ferritls-core | CTR-DRBG 生成 32 B——**含每次 generate 的 128 位 OS 熵重播种**（AGENTS.md §5.3 策略），即真实部署成本 | — |
+| `kem` | ferritls-core | ML-KEM-512/768/1024 三参数集的 keygen / encaps / decaps（确定性入口，不含生产路径的一次 OS 熵读取；M8.3 起，M8.4 扩三集） | — |
 | `handshake` | ferritls-interop | TLS 1.3 内存全握手（进程内管道驱动，无 TCP/线程噪声）：ferritls × X25519 / P-256 + **ring 同套件基线**，AES-128-GCM，双方钉扎。**软件路径**（不安装后端） | Elements |
 | `aead_ni` | ferritls-backend-aesni | 软/Ni 逐记录对照：AES-128/256-GCM 的 seal/open，尺寸与 `aead` 一致（不安装，Ni 侧经 token 直构，两路径同进程独立测） | Bytes |
 | `hash_ni` | ferritls-backend-aesni | SHA-256 软/Ni 对照：同 core `hash` 的案例（流式 1350/16K + HMAC + HKDF），同进程分安装前后（criterion 组按注册顺序同步执行，中间桥接安装） | Bytes |
@@ -35,7 +36,7 @@ M8 intrinsics 后端的价值无从证明，优化本身也无从把关。
 ## 2. 运行
 
 ```bash
-# 全部基准（core 5 个 + interop 1 个），完整一轮约 10–20 分钟
+# 全部基准（core 6 个 + interop 2 个 + backend 2 个），完整一轮约 10–20 分钟
 cargo bench --workspace
 
 # 单 crate / 单目标
@@ -98,7 +99,10 @@ cargo bench -p ferritls-core --bench sign -- rsa2048 --profile-time 10
 ## 5. 参考量级（仅示意，随机器差异巨大）
 
 2026-09 在本地 Windows（msys2/ucrt64，x86_64）的量级记录，**只用于
-建立直觉，不作为任何依据**：
+建立直觉，不作为任何依据**。注意：本表为 **P1/P2 性能轮之前**的快照
+（GCM/单块 AES 此后经位切片/GHASH 表等提速 6–23 倍，见 ROADMAP
+P1/P2 节与 §5.1–5.2）——AES 行保留其"慢两个数量级"的原貌仅作动机
+记录，不代表现状：
 
 | 操作 | 量级 |
 |---|---|
@@ -197,15 +201,6 @@ M8.4 2026-09-15 实测）：
 | ML-KEM-1024 | 77 | 78 | 106 |
 
 768 与 M8.3 基线（54/53/76）同噪声带，参数化无回退。
-
-`cargo bench -p ferritls-core --bench kem`（确定性入口，不含生产路径
-的一次 OS 熵读取）：
-
-| 原语 | 时间 |
-|---|---|
-| keygen | 54 µs |
-| encaps | 53 µs |
-| decaps | 76 µs |
 
 全握手（`cargo bench -p ferritls-interop --bench handshake`，同会话
 对照；软件路径、AES-128-GCM）：

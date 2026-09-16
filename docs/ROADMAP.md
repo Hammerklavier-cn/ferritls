@@ -13,10 +13,10 @@
 | M4 | ECDSA + RSA + Ed25519 + DER 解析 | 3–4 周 | **完成（2026-09，M4a+M4b）** |
 | M5 | CTR-DRBG + 上电自检 + 零化审计 | 1–2 周 | **完成（2026-09）** |
 | M6 | rustls 集成 + 互操作矩阵 | 2 周 | **完成（2026-09）** |
-| M7 | 发布 0.1 + 批准模式打磨 + ACVP 预演 | 持续 | **完成（2026-09，发布动作待定）** |
+| M7 | 发布 0.1 + 批准模式打磨 + ACVP 预演 | 持续 | **完成（2026-09，v0.1.0 已发布）** |
 | P1 | 性能轮：稳定版自动向量化（默认生效） | 1–2 周 | **完成（2026-09）** |
 | P2 | portable_simd 轮：`simd` 默认 feature（stable + RUSTC_BOOTSTRAP） | 数日 | **完成（2026-09-08）** |
-| M8 | TLS 1.2 / QUIC / ML-KEM 混合 / intrinsics 后端 | 发布后 | 规划中 |
+| M8 | intrinsics 后端（M8.1/8.2）、ML-KEM 混合与三参数集（M8.3/8.4）、QUIC（M8.5）已完成；余项 TLS 1.2 / aarch64 后端 | 发布后 | **部分完成（2026-09，M8.1–M8.5）** |
 
 ## M0 — 脚手架（已完成）
 
@@ -90,7 +90,8 @@ RFC 8448 轨迹重放、cargo-fuzz 目标建立（DER/签名验证/AEAD）。
       tag）→ 全量门禁 → 单次 `cargo publish`（cargo 1.90 起 workspace
       一次发布，core → rustls 拓扑序，验证用本地 overlay 无需等
       索引传播）；前置：仓库 secrets 配置 CARGO_REGISTRY_TOKEN
-- [ ] **实际发布 v0.1.0**：配置 secret 后推 tag v0.1.0 即完成
+- [x] **实际发布**：CARGO_REGISTRY_TOKEN 配置后发布管线已跑通，
+      v0.1.0 → v0.6.0 经 tag 触发发布（推 `v*` 即发，见上条）
 
 ## P1 — 性能轮（稳定版自动向量化，进行中 2026-09）
 
@@ -292,11 +293,13 @@ ct 声明；矩阵前后数字记入本节。
 ## M8 — 发布后方向（按需排期）
 
 - TLS 1.2：`tls12` feature、PRF（`PrfUsingHmac`）、ECDHE-GCM 套件
-  （SP 800-52r2 部署面需要）；
-- QUIC packet protection（`quic` 字段 + Header Protection）；
+  （SP 800-52r2 部署面需要；**余项**，动手前先补写出口条件）；
+- QUIC packet protection（完成，见 M8.5）；
 - ML-KEM（FIPS 203）+ X25519MLKEM768 混合（完成，见 M8.3）；
-- ML-KEM-512/1024 参数集 + 纯 ML-KEM 组（见 M8.4，2026-09-15 排期启动）；
+- ML-KEM-512/1024 参数集 + 纯 ML-KEM 组（完成，见 M8.4）；
 - intrinsics 后端 crate（完成，见 M8.1/M8.2）；
+- aarch64 后端（NEON/FEAT_AES 等；**余项**，动手前先补写出口条件）；
+- SHA-2 单流软件路径优化（P1.5 遗留热点，见上节"余留"）；
 - 认证阶段 B/C 启动（见 docs/FIPS.md）。
 
 ### M8.1 intrinsics 后端（AES-NI + CLMUL，完成 2026-09-13）
