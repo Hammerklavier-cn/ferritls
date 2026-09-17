@@ -136,17 +136,22 @@ pub(crate) fn compress256(h: &mut [u32; 8], block: &[u8; 64]) {
             block[i * 4 + 3],
         ]);
     }
-    for i in 16..64 {
-        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-        w[i] = w[i - 16]
-            .wrapping_add(s0)
-            .wrapping_add(w[i - 7])
-            .wrapping_add(s1);
-    }
 
     let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh] = *h;
     for i in 0..64 {
+        // 软流水：把 w[i+16] 的计算提前 16 轮到其被使用之前——独立
+        // 加法/旋转链与压缩轮关键路径并行，省去独立展开循环的串行
+        // 前导延迟（2026-09-17 P3：默认与宽 ISA 全面快于两段式 ~14%
+        // 与滚动窗口融合 ~9–10%，见 BENCHMARKS §5.5/§5.6）。64 轮
+        // 定长循环经完全展开后该条件为编译期常量，无运行期分支。
+        if i < 48 {
+            let s0 = w[i + 1].rotate_right(7) ^ w[i + 1].rotate_right(18) ^ (w[i + 1] >> 3);
+            let s1 = w[i + 14].rotate_right(17) ^ w[i + 14].rotate_right(19) ^ (w[i + 14] >> 10);
+            w[i + 16] = w[i]
+                .wrapping_add(s0)
+                .wrapping_add(w[i + 9])
+                .wrapping_add(s1);
+        }
         let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
         let ch = (e & f) ^ (!e & g);
         let t1 = hh
