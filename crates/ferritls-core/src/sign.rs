@@ -4,6 +4,11 @@
 //! 批准状态：ECDSA P-256/384 与 RSA 为 FIPS 批准；**Ed25519 非批准**
 //! （FIPS 186-5 不含 EdDSA）。
 //!
+//! **显式省略**：Ed448（需 Goldilocks 域 GF(2^448−2^224−1) 与
+//! SHAKE-256，域类型不存在）与 `ecdsa_secp521r1_sha512`（依赖 P-521，
+//! 见 [`crate::ecdh`] 省略注记）——均未进入原始里程碑范围，候选余项
+//! 出口条件见 docs/ROADMAP.md「M8 发布后方向」。
+//!
 //! 签名 API：`sign` 接收**未哈希**消息，内部按算法完成哈希（与 rustls
 //! `Signer::sign` 约定一致）。
 //!

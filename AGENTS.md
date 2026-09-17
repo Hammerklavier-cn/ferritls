@@ -232,6 +232,13 @@ rustls（应用层）
   `ZeroizeOnDrop`。
 - **GCM**：nonce 唯一性由协议层（rustls 记录序号）保证，本层不重复
   检查；标签验证在解密数据返回之前完成（先验后出）。
+- **CCM**：标签长 M 与 nonce 长度为运行时参数（RFC 3610 完整参数
+  空间：M ∈ {4,6,8,10,12,14,16}、nonce 7..=13 字节；引擎见
+  `ccm.rs`）；**截断先于 S0 异或**（§注记）；标签验证先于明文
+  返回；TLS 批准套件面仅 M=16（CCM_8 仅默认模式装配）。
+- **SHA-3**：SHA3 与 SHAKE 共用海绵核、仅域分隔字节不同
+  （0x06/0x1F）；全 6 个 FIPS 202 函数已落地（2026-09 补齐
+  224/384），rate 数值勿凭记忆（易混，见 §注记）。
 - **X25519**：按 RFC 7748 钳制输入；对端公钥非法编码（长度错）返回
   `InvalidInput`，结果全零（小阶点）返回 `VerificationFailed`——TLS
   层两种都要终止握手。
@@ -488,7 +495,13 @@ mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——�
       + multipath for_path），RFC 9001 §A.2/A.3/A.5 逐字节锚定 +
       内存回环握手（含 rustls-ring 交叉），数字见 docs/ROADMAP.md
       M8.5 节
-- [ ] M8 余项：TLS 1.2 / aarch64 后端
+- [x] 参数化收口轮（完成 2026-09-17）：SHA-3 全家族（补 224/384 +
+      全家族 KAT）、HKDF API 宏化 + SHA-512、CCM 全 M 运行时引擎
+      （RFC 3610 §8 官方 24 向量直跑）+ TLS_AES_128_CCM_8_SHA256
+      套件（仅默认模式，5 套件）；隐式省略转显式（sha2/ecdh/sign
+      模块头注记 + ROADMAP 候选余项出口条件草案）
+- [ ] M8 余项：TLS 1.2 / aarch64 后端；候选余项 X448 / P-521（含
+      ecdsa_secp521r1_sha512）/ Ed448（出口条件草案见 ROADMAP）
 
 **已知的实现级注记**（修订实现前必读）：
 
@@ -597,8 +610,24 @@ mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——�
   融合形态在默认与 +avx2 慢 ~3–5%，仅 +avx512 快 23% 且不消除
   回归（BENCHMARKS §5.5）。改 `compress256` 前勿重复该改写；宽
   ISA 的 LLVM 决策漂移属已知容忍项；
+- `ccm.rs`（运行时标签长引擎，2026-09-17 参数化收口轮）：**标签
+  截断必须先于 S0 异或**（CBC-MAC 截到 M 字节后再与前 M 字节 S0
+  异或，RFC 3610 §2.4/§2.5 顺序）——全 M 矩阵测试以「M=8 标签 ≠
+  M=16 标签前 8 字节」显式断言守护；L 推广到 8 后 ctr_raw/cbc_mac
+  的长度域展开必须经 u64（L > 4 时移位量超 u32 域，曾由自检负例
+  触发 shift-overflow panic）；密文与 M 无关（CTR 不依赖 M）是
+  既有性质，矩阵测试以前缀一致断言锚定；`Aes128CcmAny` 的
+  nonce/M 校验（7..=13 / {4..16 偶数}）在 seal/open 双侧入口，
+  open 侧非法参数返回 `InvalidInput` 先于 `VerificationFailed`
+  语义的任何运算；固定类型（Aes128Ccm/Aes128CcmTls/Aes128Ccm8Tls）
+  为薄包装、委托同一引擎——改引擎必须保既有 M=16 向量一行不改
+  全绿（回归 oracle）+ 官方 24 向量直跑；
+- `sha3.rs`（rate 表注释，2026-09-17 修正）：`Keccak` 结构体文档
+  曾写错 rate（SHAKE128 误作 136、SHAKE256 误作 64，实际 168/136）
+  ——rate 数值以各类型宏实例化处的文档字符串为准；
 下一步实现者（人或代理）：M0–M7 与 M8.1–M8.5 已完成、crates.io
 发布自动化就绪（推 tag 即发布），当前方向为 M8 余项按需排期
-（TLS 1.2 / aarch64 后端，动手前先在 ROADMAP 补写出口条件）
+（TLS 1.2 / aarch64 后端与 X448/P-521/Ed448 候选余项，出口条件
+草案已入 ROADMAP「M8 发布后方向」，动手前先细化）
 与 FIPS 阶段 B 准备（docs/FIPS.md §3）。修订实现前重读 §5 与上述
 注记。

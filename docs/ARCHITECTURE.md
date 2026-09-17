@@ -50,11 +50,11 @@ ferritls-core 全模块实现完毕（无 `todo!()` 残留），rustls 适配层
 
 | rustls 需要的东西 | ferritls 提供 | 备注 |
 |---|---|---|
-| `cipher_suites: Vec<SupportedCipherSuite>` | `cipher::all_tls13_suites()` | 4 个 TLS 1.3 套件；批准模式 3 个 |
+| `cipher_suites: Vec<SupportedCipherSuite>` | `cipher::all_tls13_suites()` | 5 个 TLS 1.3 套件（2026-09 起，含 CCM_8 仅默认模式）；批准模式 3 个 |
 | `Tls13CipherSuite.hash_provider` | 包装 `core::sha2` 为 `crypto::Hash` | 块长/输出长 + reset/update/finish |
 | `Tls13CipherSuite.hkdf_provider` | `crypto::tls13::HkdfUsingHmac` + 包装的 `crypto::hmac::Hmac` | **复用 rustls 辅助器**，不手写密钥调度 |
-| `Tls13CipherSuite.aead_alg` | 包装 `core::gcm`/`ccm`/`chacha20poly1305` 为 `Tls13AeadAlgorithm` | `extract_keys` 已支持 key exporter（GCM/ChaCha20；CCM 因 rustls `ConnectionTrafficSecrets` 无对应变体返回 `UnsupportedOperationError`） |
-| `Tls13CipherSuite.quic` | `quic::{QuicAes128Gcm,QuicAes256Gcm,QuicChacha20Poly1305}`（M8.5；CCM 为 `None`） | `quic::Algorithm`（PacketKey：nonce = IV⊕pn、先验后出；HeaderProtectionKey：AES-ECB / ChaCha20 单块掩码，RFC 9001 §5.3/§5.4；multipath `for_path` 同式）；向量锚 RFC 9001 §A.2/A.3/A.5 |
+| `Tls13CipherSuite.aead_alg` | 包装 `core::gcm`/`ccm`/`chacha20poly1305` 为 `Tls13AeadAlgorithm` | `extract_keys` 已支持 key exporter（GCM/ChaCha20；CCM 两档——M=16 的 CCM 与 M=8 的 CCM_8——因 rustls `ConnectionTrafficSecrets` 无对应变体返回 `UnsupportedOperationError`） |
+| `Tls13CipherSuite.quic` | `quic::{QuicAes128Gcm,QuicAes256Gcm,QuicChacha20Poly1305}`（M8.5；CCM 两档均为 `None`） | `quic::Algorithm`（PacketKey：nonce = IV⊕pn、先验后出；HeaderProtectionKey：AES-ECB / ChaCha20 单块掩码，RFC 9001 §5.3/§5.4；multipath `for_path` 同式）；向量锚 RFC 9001 §A.2/A.3/A.5 |
 | `kx_groups: &[&dyn SupportedKxGroup]` | `kx::{X25519,SecP256R1,SecP384R1,X25519MLKEM768,Mlkem512,Mlkem768,Mlkem1024}` | 经典 ECDH 用默认 `start_and_complete`；混合组（0x11EC）与纯 ML-KEM 组（0x0200–0x0202，M8.4）覆写 `start_and_complete`（KEM 数据依赖：服务端封装 + §7.2 封装密钥检查） |
 | `ActiveKeyExchange` | `kx::Active*` 持有 core 的 ECDH/ML-KEM 私钥 | `complete` 消费 `Box<Self>`（混合组客户端在此解封装） |
 | `signature_verification_algorithms` | `verify::SUPPORTED_ALGORITHMS` | webpki 消费；TLS1.3 每 scheme 取首项；webpki 传裸 key_value（无 SPKI 包装），core `VerifyKey` 构造器按该裸格式定义、适配层透传 |
