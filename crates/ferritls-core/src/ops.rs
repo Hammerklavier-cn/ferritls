@@ -14,7 +14,7 @@
 //!   指针、上下文纯数据」模式的对应物。
 //!
 //! 硬件后端（AES-NI/CLMUL/SHA-ext）是边界外的独立 crate（如
-//! `ferritls-backend-aesni`，需要 `unsafe`/intrinsics，不得进入本 crate
+//! `ferritls-backend-x86_64`，需要 `unsafe`/intrinsics，不得进入本 crate
 //! 的 `#![forbid(unsafe_code)]` 边界），经 [`install`]
 //! **应用侧显式注册**——适配层与 provider 构造不隐式安装。约定：
 //!

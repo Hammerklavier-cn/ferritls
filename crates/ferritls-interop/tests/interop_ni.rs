@@ -20,7 +20,7 @@ use common::{assert_handshake, cross_handshake, ferritls_pinned, ring_pinned};
 use rustls::crypto::CryptoProvider;
 
 fn setup() -> bool {
-    match ferritls_backend_aesni::install() {
+    match ferritls_backend_x86_64::install() {
         Ok(()) => true,
         Err(e) => {
             eprintln!("aesni backend unavailable ({e:?}); skipping Ni interop matrix");

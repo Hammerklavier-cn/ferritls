@@ -12,7 +12,7 @@
 - 边界内：全部密码学算法实现、DRBG、自检、DER 密钥解析（申报为支撑
   功能）、常数时间工具。
 - 边界外：rustls、适配层、测试、互操作 crate，以及硬件后端 crate
-  （`ferritls-backend-aesni`：AES-NI/CLMUL 执行核心，仅 x86_64，
+  （`ferritls-backend-x86_64`：AES-NI/CLMUL/SHA-NI 执行核心，仅 x86_64，
   unsafe 限于唯一叶子模块；不安装即不参与任何运算，白名单不适用于
   边界外 crate——但该 crate 目标零第三方依赖）。
 - 批准模式与硬件后端：`ops::install()` 在 `fips` feature 构建下直接

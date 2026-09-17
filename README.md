@@ -39,7 +39,7 @@
   记录层较纯掩码基线提升约 19–21 倍（基线 ISA）；以
   `RUSTFLAGS="-C target-cpu=native"` 构建可自动启用 AVX2/AVX-512
   宽通道，详见 [docs/ROADMAP.md](docs/ROADMAP.md) P1/P2 节
-- **可选硬件后端**（`ferritls-backend-aesni`，边界外独立 crate，仅
+- **可选硬件后端**（`ferritls-backend-x86_64`，边界外独立 crate，仅
   x86_64）：AES-NI + CLMUL 的 AES-GCM 整消息 kernel 与 SHA-NI 的
   SHA-256 分发，运行时 CPU 探测 + 安装 KAT 自检，批准模式固定软件
   路径——GCM 原语较软件路径约 750–980 倍，详见
@@ -113,7 +113,7 @@ crate），**尚未通过 CMVP 认证**：一切 `fips()` 钩子在认证落地�
 |---|---|
 | `ferritls-core` | 密码学核心 = FIPS 模块边界（`#![forbid(unsafe_code)]`） |
 | `ferritls-rustls` | rustls CryptoProvider 适配层 |
-| `ferritls-backend-aesni` | AES-NI/SHA-NI 硬件后端（边界外，仅 x86_64，经 `ops` 注册） |
+| `ferritls-backend-x86_64` | AES-NI/SHA-NI 硬件后端（边界外，仅 x86_64，经 `ops` 注册） |
 | `ferritls-interop` | 互操作/E2E 测试宿主 |
 
 贡献（人类或 AI 代理）请先读 [AGENTS.md](AGENTS.md)。

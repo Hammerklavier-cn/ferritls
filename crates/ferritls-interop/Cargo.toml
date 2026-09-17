@@ -34,7 +34,7 @@ simd = ["ferritls-core/simd", "ferritls-rustls/simd"]
 
 # AES-NI 后端（仅 x86_64）：三方互操作与握手基准的 A/B 对照。
 [target.'cfg(target_arch = "x86_64")'.dev-dependencies]
-ferritls-backend-aesni.workspace = true
+ferritls-backend-x86_64.workspace = true
 
 # 全握手基准（含 ring 基线对照；软件路径，不安装后端）。
 [[bench]]

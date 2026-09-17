@@ -3,7 +3,7 @@
 本文描述目标架构与数据流。当前 M0–M7 与 M8.1–M8.5 已全部落地：
 ferritls-core 全模块实现完毕（无 `todo!()` 残留），rustls 适配层、
 互操作矩阵与 QUIC 包保护已建成；M8 起 AES-GCM/SHA-256 公开类型经
-`ops` 分发（§4），硬件后端 `ferritls-backend-aesni` 以边界外 crate
+`ops` 分发（§4），硬件后端 `ferritls-backend-x86_64` 以边界外 crate
 形式挂接。改架构先改本文（AGENTS.md 规则 9）。
 
 ## 1. crate 分层与依赖方向
@@ -29,8 +29,8 @@ ferritls-core 全模块实现完毕（无 `todo!()` 残留），rustls 适配层
         └──────────────────▲──────────────────────────┘
                            │ ops::install()（应用侧显式，可选）
         ┌──────────────────┴──────────────────────────┐
-        │ ferritls-backend-aesni  硬件后端（边界外，  │
-        │  仅 x86_64）AES-NI + CLMUL GHASH；unsafe    │
+        │ ferritls-backend-x86_64  硬件后端（边界外， │
+        │  仅 x86_64）AES-NI/CLMUL/SHA-NI；unsafe     │
         │  限于唯一叶子模块（§4）                     │
         └─────────────────────────────────────────────┘
 ```
@@ -40,7 +40,7 @@ ferritls-core 全模块实现完毕（无 `todo!()` 残留），rustls 适配层
 - 依赖只能自上而下；`ferritls-core` 不依赖 rustls。
 - 只有 `ferritls-rustls` 允许 import rustls 类型。
 - `ferritls-interop` 的依赖不受限（ring/aws-lc-rs/openssl 作为对手盘）。
-- `ferritls-backend-aesni` 依赖 core（实现其 ops trait）；**core 与
+- `ferritls-backend-x86_64` 依赖 core（实现其 ops trait）；**core 与
   适配层都不依赖它**——不安装即不存在，软件路径完全不受影响。
 - 应用层兼容性源自同一条 rustls ^0.23 版本线：reqwest 0.12/0.13
   （各自以 `*-no-provider` feature 构建）与 ferritls 被 Cargo 统一到
@@ -123,7 +123,7 @@ pub fn install_hash(backend: &'static dyn HashOps) -> Result<(), Error>;
 1. 软件实现是默认路径，常驻边界内；未安装任何后端时公开类型**直连**
    软件代码（零分发开销），行为与未接线时逐字节一致。
 2. 硬件后端（AES-NI/CLMUL/SHA-ext）是**边界外的独立 crate**
-   （`ferritls-backend-aesni`，仅 x86_64），经 `ops::install()` 显式
+   （`ferritls-backend-x86_64`，仅 x86_64），经 `ops::install()` 显式
    注册：进程内一次安装、运行期不切换；安装前须通过后端自身 KAT。
    安装是**应用侧显式动作**——适配层与 provider 构造不隐式安装。
 3. 批准模式下后端固定为软件后端（FIPS 边界按软件实现申报；引入硬件

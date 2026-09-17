@@ -4,7 +4,7 @@ members = [
     "crates/ferritls-core",
     "crates/ferritls-rustls",
     "crates/ferritls-interop",
-    "crates/ferritls-backend-aesni",
+    "crates/ferritls-backend-x86_64",
 ]
 
 [workspace.package]
@@ -25,7 +25,7 @@ authors = [
 ferritls-core = { version = "0.8.1", path = "crates/ferritls-core", default-features = false }
 ferritls-rustls = { version = "0.8.1", path = "crates/ferritls-rustls", default-features = false }
 # 边界外硬件后端（仅 x86_64；不进入 FIPS 边界，依赖方向：backend → core）。
-ferritls-backend-aesni = { version = "0.8.1", path = "crates/ferritls-backend-aesni" }
+ferritls-backend-x86_64 = { version = "0.8.1", path = "crates/ferritls-backend-x86_64" }
 rustls = { version = "0.23", default-features = false, features = ["std"] }
 # 边界内依赖白名单仅此三者（见 docs/FIPS.md）。getrandom 自 M3/M5 起由
 # ferritls-core::entropy 使用；在此之前不得引入其他依赖。

@@ -8,7 +8,7 @@
 // 本 crate 仅 x86_64 有内容（aarch64 等目标为空壳，无 API 可引用）。
 #![cfg(target_arch = "x86_64")]
 
-use ferritls_backend_aesni::AesNi;
+use ferritls_backend_x86_64::AesNi;
 use ferritls_core::gcm::{Aes128Gcm, Aes256Gcm};
 
 /// xorshift64*，确定性。

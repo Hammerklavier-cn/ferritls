@@ -303,7 +303,7 @@ ct 声明；矩阵前后数字记入本节。
   软流水消息调度默认 −14.2%（382→445 MB/s），BENCHMARKS §5.6；
   滚动窗口方向经两轮实测否决（§5.5/§5.6），`std::simd` 消息调度
   亦实测否决（§5.7，压缩轮串行链无 lane 并行可开发；SHA-512 的
-  VSHA512*/SHA-512-VAES 归 aesni 后端排期），宽 ISA 残余回归列
+  VSHA512*/SHA-512-VAES 归 x86_64 后端排期），宽 ISA 残余回归列
   已知容忍项）；
 - 认证阶段 B/C 启动（见 docs/FIPS.md）。
 
@@ -343,7 +343,7 @@ ct 声明；矩阵前后数字记入本节。
 
 范围：core `ops` 分发接线（AES-GCM 整消息 kernel + SHA-256 函数
 分发——对象分发形态曾因 HKDF 短命实例 +2.3% 被零回归门否决，函数
-分发形态归零）；新 crate `ferritls-backend-aesni`（仅 x86_64，
+分发形态归零）；新 crate `ferritls-backend-x86_64`（仅 x86_64，
 unsafe 限于唯一叶子模块 + kernel 单点 trampoline，借鉴 fearless_simd
 模式零依赖）；
 `ops::install()` 应用侧显式注册 + 安装 KAT + 批准模式拒绝；软/Ni

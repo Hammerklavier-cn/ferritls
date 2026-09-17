@@ -13,7 +13,7 @@ use common::assert_hex;
 use ferritls_core::sha2::Sha256;
 
 fn setup() -> bool {
-    match ferritls_backend_aesni::install_hash() {
+    match ferritls_backend_x86_64::install_hash() {
         Ok(()) => true,
         Err(e) => {
             eprintln!("sha-ni backend unavailable ({e:?}); skipping");

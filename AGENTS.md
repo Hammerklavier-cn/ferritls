@@ -59,9 +59,9 @@ ferritls/
 │   ├── ferritls-core/       # 密码学核心 = FIPS 模块边界（#![forbid(unsafe_code)]）
 │   ├── ferritls-rustls/     # rustls CryptoProvider 适配层（边界外，无密码学）
 │   ├── ferritls-interop/    # 互操作/E2E 测试宿主（publish=false，依赖不受白名单约束）
-│   └── ferritls-backend-aesni/ # AES-NI + CLMUL GHASH 硬件后端（边界外、仅
-│                            #   x86_64；unsafe 限于叶子模块与 kernel 进入点
-│                            #   trampoline，经 core::ops 注册）
+│   └── ferritls-backend-x86_64/ # AES-NI + CLMUL GHASH + SHA-NI 硬件后端
+│                            #   （边界外、仅 x86_64；unsafe 限于叶子模块
+│                            #   与 kernel 进入点 trampoline，经 core::ops 注册）
 ├── docs/                    # ARCHITECTURE / FIPS / ROADMAP
 ├── .github/workflows/ci.yml # fmt / clippy(-D warnings) / 三平台 test / cargo-deny
 │                            #   / fuzz 冒烟 / tag 触发的 crates.io 自动发布
@@ -89,7 +89,7 @@ rustls（应用层）
 1. **`ferritls-core` 内绝对禁止 `unsafe`**（crate 级
    `#![forbid(unsafe_code)]`）。未来的 AES-NI/SHA 扩展后端需要 unsafe
    与 intrinsics——它们放入**独立的边界外后端 crate**（如
-   `ferritls-backend-aesni`），经 `ferritls-core::ops` 的 trait 挂接；
+   `ferritls-backend-x86_64`），经 `ferritls-core::ops` 的 trait 挂接；
    是否将其纳入 FIPS 边界属阶段 C 的决策，不是默认权利。
 2. **边界内依赖白名单只有 `subtle`、`zeroize`、`getrandom`**。新增
    依赖 = 先在 `docs/FIPS.md` 更新白名单与审计依据 + 在 PR 描述中
@@ -297,7 +297,7 @@ targets 在 M6 建立，语料进 `fuzz/`），零 panic。
   rustls 适配层不动；② **新增硬件后端**的唯一入口是
   `ferritls-core::ops` 的 trait 分发（模式见 `docs/ARCHITECTURE.md`
   §4），以边界外独立 crate 存在。
-- **硬件后端 crate（`ferritls-backend-aesni`）的 unsafe 纪律**：crate 根
+- **硬件后端 crate（`ferritls-backend-x86_64`）的 unsafe 纪律**：crate 根
   `#![deny(unsafe_code)]`，unsafe 只出现在唯一 `#[allow(unsafe_code)]`
   私有叶子模块与各 kernel 文件的单点 trampoline（进入
   `#[target_feature]` kernel 的调用）；CPU 能力 token 只能经运行时
@@ -391,7 +391,7 @@ RUSTFLAGS="-C target-cpu=native" cargo run -p ferritls-interop \
 cargo test -p ferritls-core --test sha2 -- --ignored   # 手动跑单个 ignored 测试
 cargo bench -p ferritls-core           # criterion 基准（aead/hash/ecdh/sign/drbg/kem）
 cargo bench -p ferritls-interop        # 全握手基准（含 ring 基线；handshake_ni = Ni 路径）
-cargo bench -p ferritls-backend-aesni  # 软/Ni 逐记录 A/B（aead_ni）
+cargo bench -p ferritls-backend-x86_64  # 软/Ni 逐记录 A/B（aead_ni）
 ```
 
 基准的完整用法（过滤、快速冒烟、`--save-baseline`/`--baseline` 回归

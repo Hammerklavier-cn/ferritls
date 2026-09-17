@@ -1,5 +1,5 @@
 [package]
-name = "ferritls-backend-aesni"
+name = "ferritls-backend-x86_64"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,7 +8,7 @@ keywords.workspace = true
 categories.workspace = true
 authors.workspace = true
 publish = false
-description = "AES-NI + CLMUL execution core for ferritls-core (out of the FIPS boundary, x86_64 only)"
+description = "AES-NI + CLMUL + SHA-NI execution core for ferritls-core (out of the FIPS boundary, x86_64 only)"
 
 [dependencies]
 ferritls-core = { workspace = true }

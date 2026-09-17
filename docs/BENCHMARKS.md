@@ -21,8 +21,8 @@ M8 intrinsics 后端的价值无从证明，优化本身也无从把关。
 | `drbg` | ferritls-core | CTR-DRBG 生成 32 B——**含每次 generate 的 128 位 OS 熵重播种**（AGENTS.md §5.3 策略），即真实部署成本 | — |
 | `kem` | ferritls-core | ML-KEM-512/768/1024 三参数集的 keygen / encaps / decaps（确定性入口，不含生产路径的一次 OS 熵读取；M8.3 起，M8.4 扩三集） | — |
 | `handshake` | ferritls-interop | TLS 1.3 内存全握手（进程内管道驱动，无 TCP/线程噪声）：ferritls × X25519 / P-256 + **ring 同套件基线**，AES-128-GCM，双方钉扎。**软件路径**（不安装后端） | Elements |
-| `aead_ni` | ferritls-backend-aesni | 软/Ni 逐记录对照：AES-128/256-GCM 的 seal/open，尺寸与 `aead` 一致（不安装，Ni 侧经 token 直构，两路径同进程独立测） | Bytes |
-| `hash_ni` | ferritls-backend-aesni | SHA-256 软/Ni 对照：同 core `hash` 的案例（流式 1350/16K + HMAC + HKDF），同进程分安装前后（criterion 组按注册顺序同步执行，中间桥接安装） | Bytes |
+| `aead_ni` | ferritls-backend-x86_64 | 软/Ni 逐记录对照：AES-128/256-GCM 的 seal/open，尺寸与 `aead` 一致（不安装，Ni 侧经 token 直构，两路径同进程独立测） | Bytes |
+| `hash_ni` | ferritls-backend-x86_64 | SHA-256 软/Ni 对照：同 core `hash` 的案例（流式 1350/16K + HMAC + HKDF），同进程分安装前后（criterion 组按注册顺序同步执行，中间桥接安装） | Bytes |
 | `handshake_ni` | ferritls-interop | 与 `handshake` 同法，**启动时安装 AES-NI 后端**（仅 x86_64；与 `handshake` 分属二进制，互不污染） | Elements |
 
 要点：
@@ -42,7 +42,7 @@ cargo bench --workspace
 # 单 crate / 单目标
 cargo bench -p ferritls-core --bench aead
 cargo bench -p ferritls-interop --bench handshake
-cargo bench -p ferritls-backend-aesni --bench aead_ni      # 软/Ni 逐记录
+cargo bench -p ferritls-backend-x86_64 --bench aead_ni      # 软/Ni 逐记录
 cargo bench -p ferritls-interop --bench handshake_ni       # Ni 全握手
 
 # 子串过滤（跑一组，如全部 GCM 案例）
@@ -119,7 +119,7 @@ P1/P2 节与 §5.1–5.2）——AES 行保留其"慢两个数量级"的原貌�
 
 ### 5.1 M8.1 软/Ni 对照（2026-09-10，同机同会话，软/Ni 可比）
 
-AES-NI + CLMUL 后端（`ferritls-backend-aesni`，仅 x86_64）相对软件
+AES-NI + CLMUL 后端（`ferritls-backend-x86_64`，仅 x86_64）相对软件
 默认路径：
 
 | 操作 | 软件路径 | AES-NI/CLMUL | 提升 |
@@ -322,7 +322,7 @@ hkdf-expand-64 在默认档一次显示 −10%（p<0.05），复跑未稳定复�
 （AES 位切片、ChaCha 多块有，SHA-256 单流没有）。实验代码保留于
 本地 stash；复述本节即可再推导。**软件路径天花板即标量串行链
 本身**——更大的增益只来自硬件指令（SHA-NI 覆盖 SHA-256 流式
-~6×，§5.1；SHA-512 方向的 VSHA512*/SHA-512-VAES 属 aesni 后端
+~6×，§5.1；SHA-512 方向的 VSHA512*/SHA-512-VAES 属 x86_64 后端
 排期素材，边界外）。
 
 ## 6. Windows（msys2/windows-gnu）本地注意

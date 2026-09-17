@@ -10,7 +10,7 @@
 
 mod common;
 
-use ferritls_backend_aesni::ShaNi;
+use ferritls_backend_x86_64::ShaNi;
 use ferritls_core::ops::Sha256Compress;
 use ferritls_core::sha2::Sha256;
 

@@ -47,7 +47,7 @@ cryptographic module boundary.
   with `RUSTFLAGS="-C target-cpu=native"` automatically widens the
   vector channels to AVX2/AVX-512; see the P1/P2 sections of
   [docs/ROADMAP.md](docs/ROADMAP.md)
-- **Optional hardware backend** (`ferritls-backend-aesni`, a separate
+- **Optional hardware backend** (`ferritls-backend-x86_64`, a separate
   out-of-boundary crate, x86_64 only): whole-message AES-GCM kernels on
   AES-NI + CLMUL and SHA-256 dispatch on SHA-NI, with runtime CPU
   detection and an install-time KAT; approved mode stays on the
@@ -133,7 +133,7 @@ passed CMVP; the roadmap and costs are documented in
 |---|---|
 | `ferritls-core` | Cryptographic core = the FIPS module boundary (`#![forbid(unsafe_code)]`) |
 | `ferritls-rustls` | rustls `CryptoProvider` adapter layer |
-| `ferritls-backend-aesni` | AES-NI/SHA-NI hardware backend (out of boundary, x86_64 only, registered via `ops`) |
+| `ferritls-backend-x86_64` | AES-NI/SHA-NI hardware backend (out of boundary, x86_64 only, registered via `ops`) |
 | `ferritls-interop` | Interop / end-to-end test host |
 
 Contributors — human or AI agents — should read [AGENTS.md](AGENTS.md)

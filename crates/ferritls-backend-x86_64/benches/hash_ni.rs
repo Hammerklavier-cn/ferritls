@@ -5,7 +5,7 @@
 //! （未安装 → 软件路径），`install_bridge` 安装 SHA-NI 后端，`ni` 组
 //! 再跑同名案例（公开 API 自动走 Ni 压缩）。两组数据可直接配对。
 //!
-//! 运行：`cargo bench -p ferritls-backend-aesni --bench hash_ni`
+//! 运行：`cargo bench -p ferritls-backend-x86_64 --bench hash_ni`
 //! （仅 x86_64；CPU 不支持时 ni 组打印后跳过）。
 
 #[cfg(target_arch = "x86_64")]
@@ -68,7 +68,7 @@ mod bench {
 
     /// 在两组之间安装 SHA-NI 后端（进程级一次；失败时 ni 组自行跳过）。
     fn install_bridge(_c: &mut Criterion) {
-        match ferritls_backend_aesni::install_hash() {
+        match ferritls_backend_x86_64::install_hash() {
             Ok(()) => {}
             Err(e) => eprintln!("sha-ni backend unavailable ({e:?}); ni group will skip"),
         }

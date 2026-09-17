@@ -17,7 +17,7 @@ use common::{assert_hex, hex};
 use ferritls_core::gcm::{Aes128Gcm, Aes256Gcm};
 
 fn setup() -> bool {
-    match ferritls_backend_aesni::install() {
+    match ferritls_backend_x86_64::install() {
         Ok(()) => true,
         Err(e) => {
             eprintln!("backend unavailable ({e:?}); skipping Ni vector tests");

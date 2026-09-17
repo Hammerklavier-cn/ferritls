@@ -6,13 +6,13 @@
 //! 独立测量，无全局状态切换。测量方法与 `ferritls-core` 的 `aead`
 //! 基准保持一致，便于跨基准对照。
 //!
-//! 运行：`cargo bench -p ferritls-backend-aesni --bench aead_ni`
+//! 运行：`cargo bench -p ferritls-backend-x86_64 --bench aead_ni`
 //! （仅 x86_64；CPU 不支持时打印后跳过）。
 
 #[cfg(target_arch = "x86_64")]
 mod bench {
     use criterion::{BenchmarkId, Criterion, Throughput, criterion_group};
-    use ferritls_backend_aesni::AesNi;
+    use ferritls_backend_x86_64::AesNi;
     use ferritls_core::gcm::{Aes128Gcm, Aes256Gcm};
 
     /// 与 ferritls-core aead 基准一致的确定性填充。

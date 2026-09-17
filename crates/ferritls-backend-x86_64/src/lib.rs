@@ -1,7 +1,8 @@
-//! # ferritls-backend-aesni
+//! # ferritls-backend-x86_64
 //!
-//! [`ferritls-core`] 的 AES-NI + CLMUL 硬件执行核心。**FIPS 边界外**
-//! crate（docs/FIPS.md §1），仅 x86_64——其余目标编译为空 crate。
+//! [`ferritls-core`] 的 x86_64 硬件执行核心（AES-NI + CLMUL GHASH +
+//! SHA-NI）。**FIPS 边界外** crate（docs/FIPS.md §1），仅 x86_64——
+//! 其余目标编译为空 crate。
 //!
 //! ## 用法
 //!
@@ -11,7 +12,7 @@
 //! {
 //!     // 进程初始化阶段（构造任何密钥之前）一次性安装。本 crate 仅
 //!     // x86_64 有内容，其他目标上此块被裁掉、示例仍然可编译。
-//!     ferritls_backend_aesni::install()?;
+//!     ferritls_backend_x86_64::install()?;
 //! }
 //! // 此后 ferritls_core::gcm::{Aes128Gcm, Aes256Gcm} 的新实例走
 //! // AES-NI/CLMUL 路径；已构造的实例与未安装的环境不受影响。

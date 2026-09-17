@@ -1,5 +1,5 @@
 //! TLS 1.3 内存全握手基准（AES-NI 路径）：与 `handshake.rs` 同一测量
-//! 方法，区别仅在基准启动时安装 `ferritls-backend-aesni`——此后构造的
+//! 方法，区别仅在基准启动时安装 `ferritls-backend-x86_64`——此后构造的
 //! ferritls provider 的 AES-GCM 执行核心为 AES-NI/CLMUL。
 //!
 //! 进程隔离说明：`install()` 是进程级的，本基准与 `handshake.rs`
@@ -27,11 +27,11 @@ mod bench {
 
     fn bench_handshake_ni(c: &mut Criterion) {
         // AEAD 与 SHA-256 各自独立安装（CPU 可能只支持其一）。
-        match ferritls_backend_aesni::install() {
+        match ferritls_backend_x86_64::install() {
             Ok(()) => {}
             Err(e) => eprintln!("aesni unavailable ({e:?}); AEAD stays software"),
         }
-        match ferritls_backend_aesni::install_hash() {
+        match ferritls_backend_x86_64::install_hash() {
             Ok(()) => {}
             Err(e) => eprintln!("sha-ni unavailable ({e:?}); SHA stays software"),
         }
