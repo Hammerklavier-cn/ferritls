@@ -5,9 +5,13 @@
 //! 调度）；AEAD 为 ferritls-core 的 GCM/CCM/ChaCha20-Poly1305 适配。
 //!
 //! QUIC：AES-128-GCM / AES-256-GCM / ChaCha20-Poly1305 三套件经
-//! [`crate::quic`] 的 `quic::Algorithm` 参与 QUIC 包保护；CCM 保持
-//! `None`（RFC 9001 §5.1 以 AES-GCM 为强制基准，`ConnectionTrafficSecrets`
-//! 亦无 CCM 变体）。
+//! [`crate::quic`] 的 `quic::Algorithm` 参与 QUIC 包保护；CCM（含
+//! CCM_8）保持 `None`（RFC 9001 §5.1 以 AES-GCM 为强制基准，
+//! `ConnectionTrafficSecrets` 亦无 CCM 变体）。
+//!
+//! 套件面（5）：批准模式 3 套件（GCM×2 + CCM，无 ChaCha/CCM_8）；
+//! 默认模式另含 ChaCha20-Poly1305 与 `TLS_AES_128_CCM_8_SHA256`
+//! （8 字节标签不在 SP 800-52r2 TLS 批准套件面，见 [`policy`]）。
 
 use rustls::crypto::CipherSuiteCommon;
 use rustls::crypto::cipher::{
@@ -25,15 +29,16 @@ use rustls::{
 use ferritls_core::chacha20poly1305::ChaCha20Poly1305;
 use ferritls_core::gcm::{Aes128Gcm, Aes256Gcm};
 
-use ferritls_core::ccm::Aes128CcmTls;
+use ferritls_core::ccm::Aes128CcmAny;
 
 /// 套件清单（顺序即偏好）。同时被 `tests/api.rs` 断言，防止清单与
-/// 文档漂移。
+/// 文档漂移。CCM_8 仅默认模式（批准模式清单见 `fips_tls13_suites`）。
 pub const TLS13_SUITE_NAMES: &[&str] = &[
     "TLS_AES_128_GCM_SHA256",
     "TLS_AES_256_GCM_SHA384",
     "TLS_CHACHA20_POLY1305_SHA256",
     "TLS_AES_128_CCM_SHA256",
+    "TLS_AES_128_CCM_8_SHA256",
 ];
 
 // ---------------------------------------------------------------------------
@@ -458,23 +463,35 @@ impl Tls13AeadAlgorithm for Chacha20Poly1305Aead {
 }
 
 // ---------------------------------------------------------------------------
-// AEAD 适配：AES-128-CCM（TLS 1.3 参数集，nonce 12 / L=3）
+// AEAD 适配：AES-128-CCM（TLS 1.3 两档标签长度：M=16 / M=8，
+// nonce 12 / L=3；标签长度为编译期常量、内核为 core 的运行时引擎）
 // ---------------------------------------------------------------------------
 
+/// CCM AEAD 适配（M=16，`TLS_AES_128_CCM_SHA256`，批准）。
 #[derive(Debug)]
 pub struct Ccm128Aead;
 
-struct CcmEncrypter {
-    ccm: Aes128CcmTls,
+/// CCM AEAD 适配（M=8，`TLS_AES_128_CCM_8_SHA256`；8 字节标签不在
+/// SP 800-52r2 TLS 批准套件面，仅默认模式装配）。
+#[derive(Debug)]
+pub struct Ccm8TlsAead;
+
+fn ccm_engine<const M: usize>(key: &AeadKey) -> Aes128CcmAny {
+    // M 为编译期常量，构造必不失败
+    Aes128CcmAny::new(&key_bytes::<16>(key), M).expect("fixed tag length")
+}
+
+struct CcmEncrypter<const M: usize> {
+    ccm: Aes128CcmAny,
     iv: Iv,
 }
 
-struct CcmDecrypter {
-    ccm: Aes128CcmTls,
+struct CcmDecrypter<const M: usize> {
+    ccm: Aes128CcmAny,
     iv: Iv,
 }
 
-impl MessageEncrypter for CcmEncrypter {
+impl<const M: usize> MessageEncrypter for CcmEncrypter<M> {
     fn encrypt(
         &mut self,
         msg: rustls::crypto::cipher::OutboundPlainMessage<'_>,
@@ -501,18 +518,18 @@ impl MessageEncrypter for CcmEncrypter {
     }
 
     fn encrypted_payload_len(&self, payload_len: usize) -> usize {
-        payload_len + 1 + TAG_LEN
+        payload_len + 1 + M
     }
 }
 
-impl MessageDecrypter for CcmDecrypter {
+impl<const M: usize> MessageDecrypter for CcmDecrypter<M> {
     fn decrypt<'a>(
         &mut self,
         mut msg: InboundOpaqueMessage<'a>,
         seq: u64,
     ) -> Result<InboundPlainMessage<'a>, Error> {
         let payload = &mut msg.payload;
-        if payload.len() < TAG_LEN + 1 {
+        if payload.len() < M + 1 {
             return Err(Error::DecryptError);
         }
         let nonce = Nonce::new(&self.iv, seq);
@@ -528,35 +545,43 @@ impl MessageDecrypter for CcmDecrypter {
     }
 }
 
-impl Tls13AeadAlgorithm for Ccm128Aead {
-    fn encrypter(&self, key: AeadKey, iv: Iv) -> Box<dyn MessageEncrypter> {
-        Box::new(CcmEncrypter {
-            ccm: Aes128CcmTls::new(&key_bytes::<16>(&key)),
-            iv,
-        })
-    }
+/// 两档标签长度的 `Tls13AeadAlgorithm` 完全同构，仅 M 常量不同。
+macro_rules! ccm_aead_impl {
+    ($name:ident, $tag_len:expr) => {
+        impl Tls13AeadAlgorithm for $name {
+            fn encrypter(&self, key: AeadKey, iv: Iv) -> Box<dyn MessageEncrypter> {
+                Box::new(CcmEncrypter::<$tag_len> {
+                    ccm: ccm_engine::<$tag_len>(&key),
+                    iv,
+                })
+            }
 
-    fn decrypter(&self, key: AeadKey, iv: Iv) -> Box<dyn MessageDecrypter> {
-        Box::new(CcmDecrypter {
-            ccm: Aes128CcmTls::new(&key_bytes::<16>(&key)),
-            iv,
-        })
-    }
+            fn decrypter(&self, key: AeadKey, iv: Iv) -> Box<dyn MessageDecrypter> {
+                Box::new(CcmDecrypter::<$tag_len> {
+                    ccm: ccm_engine::<$tag_len>(&key),
+                    iv,
+                })
+            }
 
-    fn key_len(&self) -> usize {
-        16
-    }
+            fn key_len(&self) -> usize {
+                16
+            }
 
-    fn extract_keys(
-        &self,
-        _key: AeadKey,
-        _iv: Iv,
-    ) -> Result<ConnectionTrafficSecrets, UnsupportedOperationError> {
-        // ConnectionTrafficSecrets 无 CCM 变体：导出 traffic secrets（key
-        // exporter / key log）对 CCM 套件不可用——与 AGENTS.md §4 记载一致
-        Err(UnsupportedOperationError)
-    }
+            fn extract_keys(
+                &self,
+                _key: AeadKey,
+                _iv: Iv,
+            ) -> Result<ConnectionTrafficSecrets, UnsupportedOperationError> {
+                // ConnectionTrafficSecrets 无 CCM 变体：导出 traffic secrets（key
+                // exporter / key log）对 CCM 套件不可用——与 AGENTS.md §4 记载一致
+                Err(UnsupportedOperationError)
+            }
+        }
+    };
 }
+
+ccm_aead_impl!(Ccm128Aead, 16);
+ccm_aead_impl!(Ccm8TlsAead, 8);
 
 // ---------------------------------------------------------------------------
 // 套件静态表与装配
@@ -566,6 +591,7 @@ pub(crate) static GCM128_AEAD: Gcm128Aead = Gcm128Aead;
 pub(crate) static GCM256_AEAD: Gcm256Aead = Gcm256Aead;
 pub(crate) static CHACHA_AEAD: Chacha20Poly1305Aead = Chacha20Poly1305Aead;
 static CCM128_AEAD: Ccm128Aead = Ccm128Aead;
+static CCM8_AEAD: Ccm8TlsAead = Ccm8TlsAead;
 
 pub(crate) static TLS13_AES_128_GCM_SHA256: Tls13CipherSuite = Tls13CipherSuite {
     common: CipherSuiteCommon {
@@ -615,6 +641,19 @@ static TLS13_AES_128_CCM_SHA256: Tls13CipherSuite = Tls13CipherSuite {
     quic: None,
 };
 
+static TLS13_AES_128_CCM_8_SHA256: Tls13CipherSuite = Tls13CipherSuite {
+    common: CipherSuiteCommon {
+        suite: rustls::CipherSuite::TLS13_AES_128_CCM_8_SHA256,
+        hash_provider: SHA256_HASH,
+        // 与 AES_128_CCM 同源（draft-irtf-aead-limits-08 §5.3）
+        confidentiality_limit: 1 << 23,
+    },
+    hkdf_provider: HKDF_SHA256_PROVIDER,
+    aead_alg: &CCM8_AEAD,
+    // CCM（含 CCM_8）不参与 QUIC，理由同上。
+    quic: None,
+};
+
 /// `TLS_AES_128_GCM_SHA256`（批准）。
 pub fn tls13_aes_128_gcm_sha256() -> SupportedCipherSuite {
     SupportedCipherSuite::Tls13(&TLS13_AES_128_GCM_SHA256)
@@ -635,6 +674,12 @@ pub fn tls13_aes_128_ccm_sha256() -> SupportedCipherSuite {
     SupportedCipherSuite::Tls13(&TLS13_AES_128_CCM_SHA256)
 }
 
+/// `TLS_AES_128_CCM_8_SHA256`（非批准 TLS 套件面：8 字节标签不在
+/// SP 800-52r2 批准清单，仅默认模式装配）。
+pub fn tls13_aes_128_ccm_8_sha256() -> SupportedCipherSuite {
+    SupportedCipherSuite::Tls13(&TLS13_AES_128_CCM_8_SHA256)
+}
+
 /// 默认模式全部套件（偏好序）。
 pub fn all_tls13_suites() -> Vec<SupportedCipherSuite> {
     vec![
@@ -642,6 +687,7 @@ pub fn all_tls13_suites() -> Vec<SupportedCipherSuite> {
         tls13_aes_256_gcm_sha384(),
         tls13_chacha20_poly1305_sha256(),
         tls13_aes_128_ccm_sha256(),
+        tls13_aes_128_ccm_8_sha256(),
     ]
 }
 

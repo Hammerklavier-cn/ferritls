@@ -49,6 +49,16 @@ fn ping_pong_ccm_x25519() {
     );
 }
 
+/// CCM_8（M=8 标签，非批准套件面）：自互操作（ring 无 CCM_8，
+/// 交叉矩阵不适用——见矩阵 2 说明）。
+#[test]
+fn ping_pong_ccm8_x25519() {
+    assert_handshake(
+        ferritls_rustls::cipher::tls13_aes_128_ccm_8_sha256(),
+        ferritls_rustls::kx::X25519_GROUP,
+    );
+}
+
 #[test]
 fn ping_pong_aes128gcm_p256() {
     assert_handshake(

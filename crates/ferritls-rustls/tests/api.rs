@@ -5,11 +5,12 @@
 
 #[test]
 fn suite_inventory_matches_docs() {
-    assert_eq!(ferritls_rustls::cipher::TLS13_SUITE_NAMES.len(), 4);
+    assert_eq!(ferritls_rustls::cipher::TLS13_SUITE_NAMES.len(), 5);
     assert!(ferritls_rustls::cipher::TLS13_SUITE_NAMES.contains(&"TLS_AES_128_GCM_SHA256"));
     assert!(ferritls_rustls::cipher::TLS13_SUITE_NAMES.contains(&"TLS_AES_256_GCM_SHA384"));
     assert!(ferritls_rustls::cipher::TLS13_SUITE_NAMES.contains(&"TLS_CHACHA20_POLY1305_SHA256"));
     assert!(ferritls_rustls::cipher::TLS13_SUITE_NAMES.contains(&"TLS_AES_128_CCM_SHA256"));
+    assert!(ferritls_rustls::cipher::TLS13_SUITE_NAMES.contains(&"TLS_AES_128_CCM_8_SHA256"));
 }
 
 /// QUIC 接线防漂移（M8.5）：GCM/ChaCha 三套件暴露 `quic::Algorithm`
@@ -39,8 +40,32 @@ fn quic_algorithms_wired_for_three_suites() {
             .tls13()
             .expect("tls13")
             .quic
-            .is_none(),
-        "CCM 不参与 QUIC（RFC 9001 §5.1 以 AES-GCM 为强制基准）"
+            .is_none()
+            && ferritls_rustls::cipher::tls13_aes_128_ccm_8_sha256()
+                .tls13()
+                .expect("tls13")
+                .quic
+                .is_none(),
+        "CCM（含 CCM_8）不参与 QUIC（RFC 9001 §5.1 以 AES-GCM 为强制基准）"
+    );
+}
+
+/// 套件批准面防漂移：CCM_8 仅默认模式（8 字节标签不在 SP 800-52r2
+/// 批准套件面），批准模式清单不含 ChaCha/CCM_8。
+#[test]
+fn ccm8_suite_excluded_from_fips_inventory() {
+    let fips: Vec<_> = ferritls_rustls::cipher::fips_tls13_suites();
+    assert_eq!(fips.len(), 3, "批准模式 = GCM×2 + CCM");
+    assert!(
+        fips.iter()
+            .all(|s| s.suite() != rustls::CipherSuite::TLS13_AES_128_CCM_8_SHA256)
+    );
+
+    let all: Vec<_> = ferritls_rustls::cipher::all_tls13_suites();
+    assert_eq!(all.len(), 5);
+    assert!(
+        all.iter()
+            .any(|s| s.suite() == rustls::CipherSuite::TLS13_AES_128_CCM_8_SHA256)
     );
 }
 
@@ -89,7 +114,7 @@ fn kx_group_names_are_stable() {
 fn default_provider_smoke() {
     let p = ferritls_rustls::default_provider();
     assert!(!p.fips(), "认证前 fips() 必须为 false");
-    assert_eq!(p.cipher_suites.len(), 4);
+    assert_eq!(p.cipher_suites.len(), 5);
     assert_eq!(p.kx_groups.len(), 7);
 }
 
