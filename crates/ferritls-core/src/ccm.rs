@@ -243,7 +243,7 @@ impl Aes128CcmAny {
 
     /// 加密：返回 `密文 || 标签`（标签 `tag_len` 字节）。
     ///
-    /// `nonce` 长度必须为 7..=13 字节；长度域限制见 [`check_length_domain`]。
+    /// `nonce` 长度必须为 7..=13 字节；长度域限制见内部 `check_length_domain`。
     pub fn seal(
         &self,
         nonce: &[u8],

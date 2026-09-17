@@ -11,7 +11,7 @@
 //!
 //! 套件面（5）：批准模式 3 套件（GCM×2 + CCM，无 ChaCha/CCM_8）；
 //! 默认模式另含 ChaCha20-Poly1305 与 `TLS_AES_128_CCM_8_SHA256`
-//! （8 字节标签不在 SP 800-52r2 TLS 批准套件面，见 [`policy`]）。
+//! （8 字节标签不在 SP 800-52r2 TLS 批准套件面，见 [`ferritls_core::policy`]）。
 
 use rustls::crypto::CipherSuiteCommon;
 use rustls::crypto::cipher::{

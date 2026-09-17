@@ -8,7 +8,7 @@
 //! 公开 API 按 hash 家族化：Extract/Expand 各三个函数
 //! （SHA-256/384/512）。SHA-512 无 TLS 消费者（TLS 1.3 套件只用
 //! SHA-256/384），属边界内公开 API 的家族补全；RFC 5869 的全部逻辑
-//! （零盐、255 块上限、T 链）由 [`expand_generic`] 统一承载，
+//! （零盐、255 块上限、T 链）由内部 `expand_generic` 统一承载，
 //! 实例只注入 hash 类型与 HashLen。
 //!
 //! 向量：RFC 5869 Test Case 1–3（SHA-256，`tests/hkdf.rs`）；
