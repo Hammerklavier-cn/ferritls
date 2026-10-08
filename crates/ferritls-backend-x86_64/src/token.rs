@@ -59,9 +59,16 @@ pub struct ShaNi {
 }
 
 impl ShaNi {
-    /// 运行时探测 SHA 扩展；缺失返回 [`None`]。
+    /// 运行时探测 kernel 所需的全部扩展（`sha` + `ssse3` + `sse4.1`；
+    /// 后两者并非 x86_64 基线，kernel 的 `#[target_feature]` 三者都
+    /// 要——token 是对全部三者的证明）；任一缺失返回 [`None`]。
+    ///
+    /// 探测结果在进程生命周期内视为不变（CPU 特性不热插拔）。
     pub fn detect() -> Option<Self> {
-        if std::arch::is_x86_feature_detected!("sha") {
+        if std::arch::is_x86_feature_detected!("sha")
+            && std::arch::is_x86_feature_detected!("ssse3")
+            && std::arch::is_x86_feature_detected!("sse4.1")
+        {
             Some(Self { _priv: () })
         } else {
             None

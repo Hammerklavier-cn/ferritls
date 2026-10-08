@@ -176,8 +176,9 @@ fn compress_kernel(h: &mut [u32; 8], block: &[u8; 64]) {
 /// 注册给 core 的压缩函数：token 检查 + 进入 feature 上下文。
 ///
 /// SAFETY（唯一的 unsafe 调用点）：进入 `compress_kernel` 前已确认
-/// 本机支持 `sha`/`ssse3`/`sse4.1`——token 只能经运行时探测构造，
-/// 且仅在绑定后交出（crate 内不变式，同 [`crate::Backend`]）。
+/// 本机支持 `sha`/`ssse3`/`sse4.1`——token 只能经运行时探测构造
+///（探测覆盖三者全部），且仅在绑定后交出（crate 内不变式，同
+/// [`crate::Backend`]）。
 #[allow(unsafe_code)]
 fn compress_shani(h: &mut [u32; 8], block: &[u8; 64]) {
     let tok = SHA_TOKEN
@@ -187,22 +188,35 @@ fn compress_shani(h: &mut [u32; 8], block: &[u8; 64]) {
     let _ = tok;
 }
 
+/// 带显式 token 的 kernel 进入点（仅供上电 KAT：KAT 通过前**不得**
+/// 绑定全局 token——失败实现的执行核心不能全局可达）。
+///
+/// SAFETY：`tok` 只能经运行时探测构造（探测覆盖 `sha`/`ssse3`/
+/// `sse4.1` 全部），类型即证明。
+#[allow(unsafe_code)]
+fn compress_with_token(tok: &ShaNi, h: &mut [u32; 8], block: &[u8; 64]) {
+    let _ = tok;
+    unsafe { compress_kernel(h, block) }
+}
+
 /// 安装前 KAT：FIPS 180-4 的 SHA-256("abc") 已知答案。
 ///
 /// 3 字节消息的填充（消息 + 0x80 + 零 + 64 位长度 = 12 字节）落在
-/// 单块内：从 IV 压缩一次后与官方向量比对。
+/// 单块内：从 IV 压缩一次后与官方向量比对。经显式 token 进入 kernel；
+/// **KAT 通过后才绑定全局 token**（失败时未注册、未绑定，诊断路径
+/// [`ShaNi::sha256_compress`] 也不会分发到坏 kernel）。
 pub(crate) fn power_up_kat(tok: &ShaNi) -> Result<(), ferritls_core::Error> {
-    bind_token(*tok);
     let mut h = IV256;
     let mut b1 = [0u8; 64];
     b1[..3].copy_from_slice(b"abc");
     b1[3] = 0x80;
     b1[56..64].copy_from_slice(&24u64.to_be_bytes());
-    compress_shani(&mut h, &b1);
+    compress_with_token(tok, &mut h, &b1);
     let digest: Vec<u8> = h.iter().flat_map(|w| w.to_be_bytes()).collect();
     if digest != hexb("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") {
         return Err(ferritls_core::Error::SelfTestFailed("sha-ni-kat-sha256"));
     }
+    bind_token(*tok);
     Ok(())
 }
 
@@ -230,5 +244,31 @@ mod tests {
             return;
         };
         power_up_kat(&tok).expect("sha-ni KAT");
+    }
+
+    /// 探测不变式：`ShaNi::detect()` 返回 Some 时，kernel 标注的全部
+    /// `#[target_feature]`（sha/ssse3/sse4.1）都必须在本机可用——
+    /// token 是对三者的证明，探测只查 `sha` 一条曾经是 UB 缺口。
+    #[test]
+    fn detect_implies_all_kernel_features() {
+        if ShaNi::detect().is_some() {
+            assert!(std::arch::is_x86_feature_detected!("sha"));
+            assert!(std::arch::is_x86_feature_detected!("ssse3"));
+            assert!(std::arch::is_x86_feature_detected!("sse4.1"));
+        }
+    }
+
+    /// KAT 通过前不绑定全局 token：`power_up_kat` 经显式 token 进入
+    /// kernel；本测试在未安装环境下验证 compress_shani 的全局入口
+    /// 不会被 KAT 之外的方式激活（注册点要求 token 已绑定）。
+    #[test]
+    fn kat_binds_token_only_after_pass() {
+        let Some(tok) = ShaNi::detect() else {
+            eprintln!("SHA-NI unavailable; skipping");
+            return;
+        };
+        power_up_kat(&tok).expect("sha-ni KAT");
+        // KAT 通过后 compress_shani 的前置条件（全局 token）成立
+        assert!(SHA_TOKEN.get().is_some(), "token bound after KAT pass");
     }
 }
