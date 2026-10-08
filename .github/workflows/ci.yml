@@ -104,6 +104,23 @@ jobs:
       - if: matrix.os == 'ubuntu-latest'
         run: cargo bench --locked --no-run --workspace
 
+  # MSRV 门禁：workspace.package 声明的 rust-version（当前 1.88）。
+  # 只锚定标量回退路径（--no-default-features）：默认 `simd` feature 经
+  # RUSTC_BOOTSTRAP 跟随「当前 stable」的 core::simd 形态，不承诺跨工具
+  # 链版本可复现；下游要版本可复现构建即 default-features = false
+  # （AGENTS §5.5 的文档化 opt-out）。工具链钉死精确版本——stable 漂移
+  # 不应改变 MSRV 判定。调低 rust-version 前先本地实测再改这里。
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref }}
+      - run: rustup toolchain install 1.88.0 --profile minimal --no-self-update
+      - run: cargo +1.88.0 check --locked --workspace --no-default-features
+      - run: cargo +1.88.0 check --locked -p ferritls-core --no-default-features --features fips
+      - run: cargo +1.88.0 check --locked -p ferritls-rustls --no-default-features --features fips
+
   fuzz:
     runs-on: ubuntu-latest
     # 本 job 是 --locked 全局策略的唯一例外：fuzz/Cargo.lock 刻意不跟踪

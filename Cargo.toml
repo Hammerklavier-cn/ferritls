@@ -10,6 +10,13 @@ members = [
 [workspace.package]
 version = "0.9.0"
 edition = "2024"
+# MSRV 锚定标量回退路径（--no-default-features）：实测 1.88 全绿、
+# 1.85 死于 slice::as_chunks（1.88 稳定）/ is_multiple_of（1.87 稳定）。
+# 默认 `simd` feature 经 RUSTC_BOOTSTRAP 跟随「当前 stable」的 core::simd
+# 形态（1.88/1.90 的 Simd<T,N> 尚要求 LaneCount bound），不承诺固定
+# MSRV——旧工具链可复现构建 = default-features = false（AGENTS §5.5）。
+# CI 的 msrv job 按此版本钉定门禁；调低前先实测。
+rust-version = "1.88"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/Hammerklavier-cn/ferritls"
 keywords = ["tls", "rustls", "cryptography", "crypto", "fips"]
