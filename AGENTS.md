@@ -416,6 +416,23 @@ mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——�
   （如 `feat(core): implement SHA-2 family (M1)`）。
 - 分支：`main` 保持随时可发布；功能分支 `feat/m1-sha2` 样式。
 - CI 是硬门：本地过不了的 PR 不提交。
+- **MSRV**：`[workspace.package]` 的 `rust-version`（当前 **1.88**），
+  按**标量回退路径**（`--no-default-features`）实测锚定；默认 `simd`
+  feature 经 RUSTC_BOOTSTRAP 跟随「当前 stable」的 core::simd 形态，
+  **不承诺跨工具链版本可复现**（旧工具链可复现构建 =
+  `default-features = false`，见 §5.5）。调低版本前先本地实测
+  （1.85 已证不可行：`as_chunks` 1.88 / `is_multiple_of` 1.87 才稳定），
+  并同步 CI 的 `msrv` job（钉定精确版本号）。
+- **Cargo.lock 纪律**：lock 入库且为唯一被验证的依赖组合——所有 CI
+  cargo 调用带 `--locked`（唯一例外 fuzz job：fuzz/Cargo.lock 刻意
+  不跟踪）。改 `Cargo.toml` 清单（增删依赖、改版本）必须同一提交
+  刷新 `Cargo.lock`，否则门禁直接红。
+- **发布路径**：tag push / 手动 dispatch 走 `publish` job，`needs`
+  覆盖全部门禁（fmt/clippy/test/msrv/fuzz/deny/audit/docs/slow-tests）+
+  `environment: crates-io`（仓库 Settings → Environments 配置
+  required reviewers 后发布需人工批准）；发布用 `cargo publish
+  --locked`，tag 必须与 crate 版本一致。破坏性 API 变更先 bump
+  workspace 版本（semver）再合入。
 
 ---
 
@@ -500,6 +517,14 @@ mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——�
       （RFC 3610 §8 官方 24 向量直跑）+ TLS_AES_128_CCM_8_SHA256
       套件（仅默认模式，5 套件）；隐式省略转显式（sha2/ecdh/sign
       模块头注记 + ROADMAP 候选余项出口条件草案）
+- [x] CI/发布管线加固轮（完成 2026-10-08）：workspace 版本 bump
+      0.9.0（承接 0c80db8 破坏性变更，**尚未发布**——下个 tag 即
+      v0.9.0）；CI 全线 `--locked`（fuzz 例外）；MSRV 声明 1.88
+      （标量路径锚定）+ 钉定工具链门禁 job；publish `needs` 覆盖
+      全部门禁 + `environment: crates-io`（人工批准需在仓库
+      Settings 配置）；slow-tests 触发域收窄（schedule/手动/tag）；
+      workflow 最小权限、job 超时、concurrency 取消、rust-cache。
+      策略记录在 §7
 - [ ] M8 余项：TLS 1.2 / aarch64 后端；候选余项 X448 / P-521（含
       ecdsa_secp521r1_sha512）/ Ed448（出口条件草案见 ROADMAP）
 
