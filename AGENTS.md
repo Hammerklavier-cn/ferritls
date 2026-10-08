@@ -352,7 +352,10 @@ targets 在 M6 建立，语料进 `fuzz/`），零 panic。
   与 webpki 真实证书链校验（M7）、内存 QUIC 回环握手含 ring 交叉
   （M8.5，`quic.rs`）、Ni 后端 A/B 握手（`interop_ni.rs`）；
   `tests/certs/` 为 openssl 生成的
-  测试专用链（root→intermediate→leaf + 无关根）。
+  测试专用链（root→intermediate→leaf + 无关根；P-256/RSA-2048/
+  Ed25519/P-384 四条链，profile 与再生成命令见 tests/certs/README.md
+  ——注意 EC leaf 私钥必须显式 `pkcs8 -topk8` 转 DER，`openssl pkey`
+  对 EC 输出的是 SEC1；P-384 签发必须 `-sha384` 配对曲线）。
 - `crates/ferritls-interop/tests/reqwest.rs`：应用层集成冒烟——reqwest
   0.12（no-provider feature）经 ferritls 的回环 HTTPS，覆盖
   install_default 与 use_preconfigured_tls 双路径（reqwest 0.12/0.13

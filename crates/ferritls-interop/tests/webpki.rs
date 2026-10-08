@@ -5,13 +5,17 @@
 //! `SignatureVerificationAlgorithm` 首次在真实证书链下被 webpki 驱动
 //! （链上签名、CertificateVerify、时间与 EKU/SAN 校验）。
 //!
-//! 证书链（tests/certs/，openssl 生成）：
+//! 证书链（tests/certs/，openssl 生成，profile 与再生成命令见
+//! tests/certs/README.md）：
 //! - P-256 链：root（CA:TRUE pathlen:1）→ intermediate（CA:TRUE
 //!   pathlen:0）→ leaf（CN=localhost，EKU serverAuth，SAN DNS:localhost）；
 //!   root2 为无关自签根，用于「不可信根」负例。
 //! - RSA 链：rsa_root → rsa_int（2048 位全链）→ rsa_leaf
 //!   （CN=localhost，SAN DNS:localhost）——驱动 6 条 RSA 验证路径
 //!   （PKCS#1 v1.5 / PSS × SHA-256/384/512）在真实 webpki 链校验下执行。
+//! - Ed25519 链（ed25519_*）与 P-384 链（p384_*）：补齐默认表其余两条
+//!   签名族的真实链校验（此前 Ed25519/P-384 verifier 只有单元级覆盖，
+//!   未被 webpki 驱动过完整链）。
 
 use std::io::Read;
 use std::io::Write;
@@ -40,6 +44,18 @@ fn rsa_leaf_key() -> PrivateKeyDer<'static> {
     PrivateKeyDer::Pkcs8(der.into())
 }
 
+fn ed25519_leaf_key() -> PrivateKeyDer<'static> {
+    let path = format!("{CERTS}/ed25519_leaf.key.der");
+    let der = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    PrivateKeyDer::Pkcs8(der.into())
+}
+
+fn p384_leaf_key() -> PrivateKeyDer<'static> {
+    let path = format!("{CERTS}/p384_leaf.key.der");
+    let der = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    PrivateKeyDer::Pkcs8(der.into())
+}
+
 fn provider() -> rustls::crypto::CryptoProvider {
     ferritls_rustls::default_provider()
 }
@@ -54,6 +70,22 @@ fn server_config_rsa() -> rustls::ServerConfig {
     server_config_from(
         vec![pem("rsa_leaf.pem"), pem("rsa_int.pem")],
         rsa_leaf_key(),
+    )
+}
+
+/// 服务端配置（Ed25519 链）。
+fn server_config_ed25519() -> rustls::ServerConfig {
+    server_config_from(
+        vec![pem("ed25519_leaf.pem"), pem("ed25519_int.pem")],
+        ed25519_leaf_key(),
+    )
+}
+
+/// 服务端配置（P-384 链）。
+fn server_config_p384() -> rustls::ServerConfig {
+    server_config_from(
+        vec![pem("p384_leaf.pem"), pem("p384_int.pem")],
+        p384_leaf_key(),
     )
 }
 
@@ -341,6 +373,103 @@ fn webpki_rsa_rejects_tampered_leaf() {
         client_config("rsa_root.pem"),
         server_cfg,
         "rsa tampered leaf",
+    );
+    assert!(
+        format!("{e}").to_lowercase().contains("cert"),
+        "expected certificate error, got: {e}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Ed25519 链（ed25519_root → ed25519_int → ed25519_leaf）：补齐 Ed25519
+// verifier 的真实 webpki 链校验（链签名与 CertificateVerify 同路径）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn webpki_ed25519_chain_handshake_ok() {
+    assert_handshake_ok_with(client_config("ed25519_root.pem"), server_config_ed25519());
+}
+
+#[test]
+fn webpki_ed25519_rejects_untrusted_root() {
+    // 用 P-256 链信任库 + Ed25519 链服务端：信任根与链都不可信
+    let e = assert_handshake_rejected_with(
+        client_config("root.pem"),
+        server_config_ed25519(),
+        "ed25519 untrusted chain",
+    );
+    assert!(
+        format!("{e}").to_lowercase().contains("cert"),
+        "expected certificate error, got: {e}"
+    );
+}
+
+#[test]
+fn webpki_ed25519_rejects_tampered_leaf() {
+    let mut leaf = pem("ed25519_leaf.pem").to_vec();
+    let n = leaf.len();
+    leaf[n - 1] ^= 0x01;
+    let leaf = CertificateDer::from(leaf);
+
+    let server_cfg = rustls::ServerConfig::builder_with_provider(Arc::new(provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![leaf, pem("ed25519_int.pem")], ed25519_leaf_key())
+        .expect("tampered cert still DER-parsable at config time");
+
+    let e = assert_handshake_rejected_with(
+        client_config("ed25519_root.pem"),
+        server_cfg,
+        "ed25519 tampered leaf",
+    );
+    assert!(
+        format!("{e}").to_lowercase().contains("cert"),
+        "expected certificate error, got: {e}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// P-384 链（p384_root → p384_int → p384_leaf）：补齐 ECDSA
+// P-384/SHA-384 verifier 的真实 webpki 链校验。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn webpki_p384_chain_handshake_ok() {
+    assert_handshake_ok_with(client_config("p384_root.pem"), server_config_p384());
+}
+
+#[test]
+fn webpki_p384_rejects_untrusted_root() {
+    let e = assert_handshake_rejected_with(
+        client_config("root.pem"),
+        server_config_p384(),
+        "p384 untrusted chain",
+    );
+    assert!(
+        format!("{e}").to_lowercase().contains("cert"),
+        "expected certificate error, got: {e}"
+    );
+}
+
+#[test]
+fn webpki_p384_rejects_tampered_leaf() {
+    let mut leaf = pem("p384_leaf.pem").to_vec();
+    let n = leaf.len();
+    leaf[n - 1] ^= 0x01;
+    let leaf = CertificateDer::from(leaf);
+
+    let server_cfg = rustls::ServerConfig::builder_with_provider(Arc::new(provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![leaf, pem("p384_int.pem")], p384_leaf_key())
+        .expect("tampered cert still DER-parsable at config time");
+
+    let e = assert_handshake_rejected_with(
+        client_config("p384_root.pem"),
+        server_cfg,
+        "p384 tampered leaf",
     );
     assert!(
         format!("{e}").to_lowercase().contains("cert"),
