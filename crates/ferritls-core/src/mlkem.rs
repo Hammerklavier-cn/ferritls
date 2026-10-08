@@ -490,7 +490,7 @@ fn kpke_encrypt(
 
     let mut u: [Poly; K_MAX] = [[0; 256]; K_MAX];
     for (i, item) in u.iter_mut().enumerate().take(k) {
-        let e1 = prf_cbd(r, (k + i) as u8, ETA2); // 系数域，逆变换之后加入
+        let mut e1 = prf_cbd(r, (k + i) as u8, ETA2); // 系数域，逆变换之后加入
         let mut acc: Poly = [0; 256];
         for (j, rh) in r_hat[..k].iter().enumerate() {
             // (Âᵀ)[i][j] = Â[j][i]：XOF(ρ‖i‖j)——与 KeyGen 的 (ρ‖j‖i)
@@ -501,6 +501,7 @@ fn kpke_encrypt(
         }
         ntt_inverse(&mut acc);
         poly_add(&mut acc, &e1);
+        e1.zeroize(); // PRF(r) 派生，秘密等价
         *item = acc;
     }
     let mut e2 = prf_cbd(r, (2 * k) as u8, ETA2);
@@ -514,6 +515,9 @@ fn kpke_encrypt(
     ntt_inverse(&mut v);
     poly_add(&mut v, &e2);
     e2.zeroize();
+    for p in r_hat.iter_mut() {
+        p.zeroize(); // r̂ 由秘密种子 r 派生（r̂ 已知可由 v 解出 m）
+    }
     let mu = decode_d(m, 1);
     for (x, y) in v.iter_mut().zip(mu.iter()) {
         *x = barrett(i32::from(*x) + i32::from(decompress_d(*y, 1)));
@@ -547,14 +551,16 @@ fn kpke_decrypt(dk_pke: &[u8], ct: &[u8], k: usize, du: usize, dv: usize) -> [u8
     // w = v − NTT⁻¹(ŝ∘û)
     let mut sv: Poly = [0; 256];
     for (i, ui) in u[..k].iter().enumerate() {
-        let s = decode_d(&dk_pke[i * 384..(i + 1) * 384], 12);
+        let mut s = decode_d(&dk_pke[i * 384..(i + 1) * 384], 12);
         let m = ntt_mul(&s, ui);
+        s.zeroize(); // 解码出的 ŝ 系数（私钥本体）
         poly_add(&mut sv, &m);
     }
     ntt_inverse(&mut sv);
     for (x, y) in v.iter_mut().zip(sv.iter()) {
         *x = barrett(i32::from(*x) - i32::from(*y));
     }
+    sv.zeroize(); // ŝ 的混合值，秘密等价
     poly_compress_d(&mut v, 1);
     let mut m = [0u8; 32];
     encode_d(&v, 1, &mut m);
@@ -607,6 +613,7 @@ fn encapsulate_k(k: usize, ek_bytes: &[u8], m: &[u8; 32]) -> ([u8; CT_MAX], [u8;
     hin[..32].copy_from_slice(m);
     hin[32..].copy_from_slice(&h);
     let mut g = sha3_512(&hin);
+    hin.zeroize(); // 含 m 的明文副本（K = G(m‖H(ek)) 的输入，秘密等价）
     let mut kp = [0u8; 32];
     let mut rp = [0u8; 32];
     kp.copy_from_slice(&g[..32]);
@@ -642,6 +649,7 @@ fn decapsulate_k(k: usize, dk_bytes: &[u8], ct_bytes: &[u8]) -> [u8; 32] {
     hin[..32].copy_from_slice(&m);
     hin[32..].copy_from_slice(&h);
     let mut g = sha3_512(&hin);
+    hin.zeroize(); // 同封装侧：含 m 明文副本
     let mut kp = [0u8; 32];
     let mut rp = [0u8; 32];
     kp.copy_from_slice(&g[..32]);
@@ -710,10 +718,20 @@ fn validate_ek_bytes(ek: &[u8]) -> Result<(), Error> {
 }
 
 impl<const EK: usize> MlkemEncapsKey<EK> {
-    /// 从字节构造，执行 FIPS 203 §7.2 封装密钥检查（长度检查由类型
-    /// 承载；模校验 = 解码系数全部落在 [0, q)），失败返回
-    /// [`Error::InvalidInput`]。
+    /// 从字节构造，执行 FIPS 203 §7.2 封装密钥检查（模校验 = 解码
+    /// 系数全部落在 [0, q)），失败返回 [`Error::InvalidInput`]。
+    ///
+    /// 泛型 `EK` 是裸 const 参数，调用方可任意实例化——参数集合法性
+    /// （k = (EK−32)/384 ∈ {2,3,4}）在此**运行时**校验：非法长度返回
+    /// `InvalidInput`，绝不在切片/算术上 panic。
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let k = match EK.checked_sub(32) {
+            Some(rest) if rest % 384 == 0 => rest / 384,
+            _ => return Err(Error::InvalidInput),
+        };
+        if !(2..=K_MAX).contains(&k) {
+            return Err(Error::InvalidInput);
+        }
         let arr: [u8; EK] = bytes.try_into().map_err(|_| Error::InvalidInput)?;
         validate_ek_bytes(&arr[..EK - 32])?;
         Ok(MlkemEncapsKey { bytes: arr })
@@ -741,13 +759,20 @@ pub struct MlkemDecapsKey<const DK: usize> {
 impl<const DK: usize> MlkemDecapsKey<DK> {
     /// 从展开编码构造：校验内嵌 `h = H(ek)` 与 ek 模校验，失败返回
     /// [`Error::InvalidInput`]。
+    ///
+    /// 泛型 `DK` 是裸 const 参数，调用方可任意实例化——参数集合法性
+    ///（k = (DK−96)/768 ∈ {2,3,4}）在此**运行时**校验：非法长度返回
+    /// `InvalidInput`，绝不在算术/切片上 panic（此前仅 `debug_assert!`
+    /// 把守，release 下可构造非法长度并在解封装时触发断言 panic）。
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, Error> {
+        let k = match DK.checked_sub(96) {
+            Some(rest) if rest % 768 == 0 => rest / 768,
+            _ => return Err(Error::InvalidInput),
+        };
+        if !(2..=K_MAX).contains(&k) {
+            return Err(Error::InvalidInput);
+        }
         let arr: [u8; DK] = bytes.try_into().map_err(|_| Error::InvalidInput)?;
-        debug_assert!(
-            DK >= 96 && (DK - 96).is_multiple_of(768),
-            "not a valid DK length"
-        );
-        let k = (DK - 96) / 768; // DK = 384k + (384k + 32) + 64
         let ek_len = 384 * k + 32;
         let ek_start = 384 * k;
         // 模校验只覆盖 ek 的 t̂ 编码部分（前 384k 字节）；尾部 32 字节
@@ -968,6 +993,55 @@ pub use k768::{
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 泛型 from_bytes 的参数集长度校验（回归：此前仅 debug_assert
+    /// 把守，release 下非法 const 泛型可构造成功并在算术/切片上
+    /// panic）。合法长度走真实密钥往返，非法长度必须返回
+    /// `InvalidInput` 而非 panic。
+    #[test]
+    fn from_bytes_rejects_invalid_generic_lengths() {
+        use crate::Error;
+        // EK：k=0 退化（32）、k=1（416）、空输入（0）——非法参数集长度
+        // 必须 Err 而非在切片/算术上 panic
+        assert!(matches!(
+            MlkemEncapsKey::<32>::from_bytes(&[0u8; 32]),
+            Err(Error::InvalidInput)
+        ));
+        assert!(matches!(
+            MlkemEncapsKey::<416>::from_bytes(&[0u8; 416]),
+            Err(Error::InvalidInput)
+        ));
+        assert!(matches!(
+            MlkemEncapsKey::<0>::from_bytes(&[]),
+            Err(Error::InvalidInput)
+        ));
+        // DK：k=0（96）、k=1（864）拒绝
+        assert!(matches!(
+            MlkemDecapsKey::<96>::from_bytes(&[0u8; 96]),
+            Err(Error::InvalidInput)
+        ));
+        assert!(matches!(
+            MlkemDecapsKey::<864>::from_bytes(&[0u8; 864]),
+            Err(Error::InvalidInput)
+        ));
+
+        // 合法参数集长度：真实密钥往返通过（768），512/1024 的 ek 同样
+        // 通过长度门（内容校验对合法密钥放行）
+        let (ek, dk) = k768::keypair_from_seed(&[7u8; 32], &[9u8; 32]);
+        assert!(MlkemEncapsKey::<1184>::from_bytes(ek.as_bytes()).is_ok());
+        assert!(MlkemDecapsKey::<2400>::from_bytes(dk.expose_bytes()).is_ok());
+        let (ek512, dk512) = k512::keypair_from_seed(&[7u8; 32], &[9u8; 32]);
+        assert!(MlkemEncapsKey::<800>::from_bytes(ek512.as_bytes()).is_ok());
+        assert!(MlkemDecapsKey::<1632>::from_bytes(dk512.expose_bytes()).is_ok());
+        let (ek1024, dk1024) = k1024::keypair_from_seed(&[7u8; 32], &[9u8; 32]);
+        assert!(MlkemEncapsKey::<1568>::from_bytes(ek1024.as_bytes()).is_ok());
+        assert!(MlkemDecapsKey::<3168>::from_bytes(dk1024.expose_bytes()).is_ok());
+        // 合法长度但内容非法：h = H(ek) 检查拒绝
+        assert!(matches!(
+            MlkemDecapsKey::<2400>::from_bytes(&[0u8; 2400]),
+            Err(Error::InvalidInput)
+        ));
+    }
 
     /// NTT/NTT⁻¹ 互逆 + 与 schoolbook 多项式乘法（模 X²⁵⁶+1）互检。
     #[test]
