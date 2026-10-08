@@ -139,19 +139,23 @@ macro_rules! fp_field {
             }
 
             /// r >= p 的常数时间判定（布尔；r 为普通形式）。
+            ///
+            /// 全宽比较，趟数与 r 无关——本判定出现在秘密路径
+            /// （域加法的条件减、标量导入），MSB→LSB 提前返回会使
+            /// 循环趟数依赖秘密值。
             #[inline]
             pub(crate) fn geq_canonical(r: &[u64; $n]) -> bool {
+                // gt/lt 从 MSB 向 LSB 锁存：一旦高位分出胜负，低位
+                // 结果被对方掩码阻断；全等时 gt = lt = 0，视为 ≥。
+                let mut gt = 0u64;
+                let mut lt = 0u64;
                 let mut j = $n;
                 while j > 0 {
                     j -= 1;
-                    if r[j] > Self::P[j] {
-                        return true;
-                    }
-                    if r[j] < Self::P[j] {
-                        return false;
-                    }
+                    gt |= ((r[j] > Self::P[j]) as u64) & !lt;
+                    lt |= ((r[j] < Self::P[j]) as u64) & !gt;
                 }
-                true // 相等视为 ≥
+                lt == 0
             }
 
             /// Montgomery 形式 r >= p 判定的掩码版本（全 1 / 全 0）。
@@ -213,12 +217,8 @@ macro_rules! fp_field {
                     borrow = (b1 as u64) | (b2 as u64);
                 }
                 // hi=1：无条件减（回绕等价于 T − p）；hi=0：r ≥ p（borrow
-                // == 0，未回绕）才减。
-                let cond = if hi >= 1 {
-                    u64::MAX
-                } else {
-                    ((borrow == 0) as u64).wrapping_neg()
-                };
+                // == 0，未回绕）才减。分支无关合成（hi ∈ {0,1}）。
+                let cond = (hi | (borrow == 0) as u64).wrapping_neg();
                 for j in 0..$n {
                     r[j] = r[j] ^ ((r[j] ^ tmp[j]) & cond);
                 }
@@ -335,9 +335,14 @@ macro_rules! fp_field {
                         // value = acc + carry·2^(64n) ≥ p ⟺ carry=1 或 acc ≥ p
                         //（acc − p 无借位）。仅此时用 tmp = value − p 替换；
                         // 否则 acc 本就正确（tmp 只是人质，勿写回）。
-                        let (_, under) = carry.overflowing_sub(borrow);
-                        if !under {
-                            acc = tmp;
+                        // 掩码选择：acc 为秘密累加器，不得分支。
+                        let under = carry.overflowing_sub(borrow).1;
+                        let take_tmp = (!under) as u64;
+                        let m = take_tmp.wrapping_neg();
+                        let mut j = 0;
+                        while j < $n {
+                            acc[j] ^= (acc[j] ^ tmp[j]) & m;
+                            j += 1;
                         }
                     }
                 }
@@ -369,7 +374,7 @@ macro_rules! fp_field {
                             borrow = (b1 as u64) | (b2 as u64);
                             j += 1;
                         }
-                        let ge = (Self::geq_canonical(&acc) && borrow == 0) as u64;
+                        let ge = (Self::geq_canonical(&acc) & (borrow == 0)) as u64;
                         let mut j = 0;
                         while j < $n {
                             acc[j] = acc[j] ^ ((acc[j] ^ tmp[j]) & ge.wrapping_neg());
@@ -658,4 +663,90 @@ mod tests {
         let z = Fp25519::from_raw([0xdeadbeef, 0x1234, 0, 0xffffffff]);
         assert_eq!(xy.mul(&z), x.mul(&y.mul(&z)), "associativity");
     }
+
+    /// from_bytes_{be,le}_mod 的独立 oracle（五域共用）：Horner 法
+    /// （域乘/域加——由上方锚定测试与全套 ECDSA/ECDH 向量锚定）逐步
+    /// 计算同一整数的 mod p 值，双向比对。输入覆盖 0、1、p、p±1、
+    /// 全 0xff 与伪随机串——按位归约的掩码化条件减（≥ p 与 < p 两路）
+    /// 全部被执行；此测试同时守护"掩码选择改写不得引入语义漂移"。
+    macro_rules! from_bytes_oracle {
+        ($f:ident, $n:expr, $name:ident) => {
+            #[test]
+            fn $name() {
+                let base = $f::from_raw({
+                    let mut r = [0u64; $n];
+                    r[0] = 256;
+                    r
+                });
+                let byte = |b: u8| {
+                    $f::from_raw({
+                        let mut r = [0u64; $n];
+                        r[0] = u64::from(b);
+                        r
+                    })
+                };
+                // BE 字节串的 Horner：value = Σ bᵢ·256^(len−1−i)。
+                let horner = |bytes: &[u8]| -> Vec<u8> {
+                    let mut acc = $f::zero();
+                    for &b in bytes {
+                        acc = acc.mul(&base).add(&byte(b));
+                    }
+                    acc.to_raw()
+                        .iter()
+                        .flat_map(|w| w.to_be_bytes())
+                        .collect::<Vec<u8>>()
+                };
+                let raw_be = |f: $f| -> Vec<u8> {
+                    f.to_raw()
+                        .iter()
+                        .flat_map(|w| w.to_be_bytes())
+                        .collect::<Vec<u8>>()
+                };
+
+                let mut cases: Vec<Vec<u8>> =
+                    vec![vec![0u8; 8 * $n], vec![1u8; 8 * $n], vec![0xffu8; 8 * $n]];
+                // p 与 p+1（BE 编码）
+                let mut p_be = vec![0u8; 8 * $n];
+                for j in 0..$n {
+                    p_be[($n - 1 - j) * 8..($n - j) * 8].copy_from_slice(&$f::P[j].to_be_bytes());
+                }
+                cases.push(p_be.clone());
+                // p + 1（BE 逐字节进位——p 的尾字节可能是 0xff）
+                let mut p1 = p_be.clone();
+                let mut carry = 1u16;
+                for b in p1.iter_mut().rev() {
+                    let s = u16::from(*b) + carry;
+                    *b = s as u8;
+                    carry = s >> 8;
+                }
+                cases.push(p1);
+                // 伪随机长串（xorshift64；满宽 limb，进位链完整）
+                let mut st = 0x243f6a8885a308d3u64;
+                for _ in 0..8 {
+                    let mut b = Vec::with_capacity(8 * $n);
+                    for _ in 0..$n {
+                        st ^= st << 13;
+                        st ^= st >> 7;
+                        st ^= st << 17;
+                        b.extend_from_slice(&st.to_be_bytes());
+                    }
+                    cases.push(b);
+                }
+
+                for bytes in &cases {
+                    let got = raw_be($f::from_bytes_be_mod(bytes));
+                    assert_eq!(got, horner(bytes), "be mismatch (len {})", bytes.len());
+                    // LE 等价于字节反转后的 BE
+                    let mut rev = bytes.clone();
+                    rev.reverse();
+                    let got = raw_be($f::from_bytes_le_mod(bytes));
+                    assert_eq!(got, horner(&rev), "le mismatch (len {})", bytes.len());
+                }
+            }
+        };
+    }
+    from_bytes_oracle!(Fp256, 4, from_bytes_oracle_fp256);
+    from_bytes_oracle!(Fp384, 6, from_bytes_oracle_fp384);
+    from_bytes_oracle!(Fp25519, 4, from_bytes_oracle_fp25519);
+    from_bytes_oracle!(Fp25519ScalarL, 4, from_bytes_oracle_fp25519_scalar);
 }

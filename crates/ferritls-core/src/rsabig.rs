@@ -130,11 +130,8 @@ pub(crate) fn mont_mul(a: &[u64], b: &[u64], n: &[u64], n0: u64, out: &mut [u64]
         borrow = (b1 as u64) | (b2 as u64);
     }
     // hi=1：无条件减（回绕等价 T − n）；hi=0：r ≥ n（borrow == 0）才减。
-    let cond = if hi >= 1 {
-        u64::MAX
-    } else {
-        ((borrow == 0) as u64).wrapping_neg()
-    };
+    // 分支无关合成（hi ∈ {0,1}；操作数为秘密，不得分支）。
+    let cond = (hi | (borrow == 0) as u64).wrapping_neg();
     for j in 0..l {
         out[j] = r[j] ^ ((r[j] ^ tmp[j]) & cond);
     }
