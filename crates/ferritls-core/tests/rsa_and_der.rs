@@ -174,3 +174,162 @@ fn rsa_key_der_truncations_return_error_not_panic() {
     ver2[32] = 0x01;
     assert!(rsa::SigningKey::from_pkcs8_der(&ver2).is_err());
 }
+
+// ---------------------------------------------------------------------------
+// PKCS#8 AlgorithmIdentifier parameters 按算法强制（回归矩阵）：
+//   Ed25519 必须省略（RFC 8410 §7）、EC 必须为 namedCurve（RFC 5480）、
+//   RSA 必须为 NULL（RFC 8017 §A.1）。此前实现无条件要求 params TLV
+//   存在，把全部标准 Ed25519 PKCS#8 密钥（openssl genpkey 产物）
+//   误拒——真实加载路径（rustls KeyProvider::load_private_key）。
+// ---------------------------------------------------------------------------
+
+/// RFC 8032 §7.1 TEST 1 的种子与公钥（官方向量）。
+const ED25519_SEED: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
+const ED25519_PUB: &str = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+
+/// RFC 6979 A.2.5 的 P-256 私钥标量（官方向量），供 EC 编码构造。
+const P256_SCALAR: &str = "C9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721";
+
+/// Ed25519 PKCS#8 的规范 16 字节头（RFC 8410 §7 的固定编码：
+/// SEQUENCE{version 0, SEQ{OID 1.3.101.112}, OCTET STRING{OCTET STRING(32)}}，
+/// parameters 缺席）。
+const ED25519_PKCS8_PREFIX: &str = "302e020100300506032b657004220420";
+
+#[test]
+fn der_pkcs8_ed25519_params_absent_accepted() {
+    let mut der_bytes = hex(ED25519_PKCS8_PREFIX);
+    der_bytes.extend_from_slice(&hex(ED25519_SEED));
+    match der::parse_pkcs8_private_key(&der_bytes) {
+        Ok(der::ParsedPrivateKey::Ed25519(seed)) => {
+            assert_eq!(seed, hex(ED25519_SEED), "seed round trip");
+            // 解析出的种子即 RFC 8032 TEST 1 密钥：公钥逐字节核对
+            let sk = ferritls_core::sign::ed25519::SigningKey::from_seed(
+                seed.as_slice().try_into().expect("32-byte seed"),
+            );
+            assert_eq!(sk.public_key(), hex(ED25519_PUB).as_slice());
+        }
+        other => panic!("Ed25519 PKCS#8 (params absent) must parse, got {other:?}"),
+    }
+}
+
+#[test]
+fn der_pkcs8_ed25519_params_present_rejected() {
+    // RFC 8410 §7 要求 parameters MUST be absent——携带 NULL 一并拒绝
+    // （02 01 00 ‖ 30 07{06 03 2b6570, 05 00} ‖ 04 22 04 20 seed）
+    let mut der_bytes = hex("3030020100300706032b6570050004220420");
+    der_bytes.extend_from_slice(&hex(ED25519_SEED));
+    match der::parse_pkcs8_private_key(&der_bytes) {
+        Err(ferritls_core::Error::InvalidInput) => {}
+        other => panic!("Ed25519 PKCS#8 with NULL params must be rejected, got {other:?}"),
+    }
+}
+
+/// 构造 P-256 PKCS#8（SEC1 内层：version 1 + 32 字节标量，无 [1] 公钥）。
+fn p256_pkcs8(with_curve_params: bool) -> Vec<u8> {
+    // SEC1 ECPrivateKey ::= SEQUENCE { version INTEGER(1), privateKey OCTET STRING(32) }
+    let mut sec1 = Vec::new();
+    sec1.extend_from_slice(&hex("020101")); // SEC1 version 1
+    let mut priv_tlv = vec![0x04, 0x20];
+    priv_tlv.extend_from_slice(&hex(P256_SCALAR));
+    sec1.extend_from_slice(&priv_tlv);
+    let mut sec1_tlv = vec![0x30, sec1.len() as u8];
+    sec1_tlv.extend_from_slice(&sec1);
+
+    // AlgorithmIdentifier：OID id-ecPublicKey（+ 可选 namedCurve prime256v1）
+    let mut alg = Vec::new();
+    alg.extend_from_slice(&hex("06072a8648ce3d0201"));
+    if with_curve_params {
+        alg.extend_from_slice(&hex("06082a8648ce3d030107"));
+    }
+    let mut alg_tlv = vec![0x30, alg.len() as u8];
+    alg_tlv.extend_from_slice(&alg);
+
+    // privateKey OCTET STRING 包裹 SEC1
+    let mut key_tlv = vec![0x04, sec1_tlv.len() as u8];
+    key_tlv.extend_from_slice(&sec1_tlv);
+
+    let mut content = hex("020100"); // PKCS#8 version 0
+    content.extend_from_slice(&alg_tlv);
+    content.extend_from_slice(&key_tlv);
+    let mut out = vec![0x30, content.len() as u8];
+    out.extend_from_slice(&content);
+    out
+}
+
+#[test]
+fn der_pkcs8_ec_named_curve_required() {
+    // 带 namedCurve：解析为 P256 标量，逐字节等于 RFC 6979 A.2.5 的 d
+    let der_bytes = p256_pkcs8(true);
+    match der::parse_pkcs8_private_key(&der_bytes) {
+        Ok(der::ParsedPrivateKey::P256 { scalar, .. }) => {
+            assert_eq!(scalar.as_slice(), hex(P256_SCALAR).as_slice());
+        }
+        other => panic!("EC PKCS#8 with namedCurve must parse, got {other:?}"),
+    }
+    // 无 namedCurve（RFC 5480 要求必须存在）：拒绝
+    match der::parse_pkcs8_private_key(&p256_pkcs8(false)) {
+        Err(ferritls_core::Error::InvalidInput) => {}
+        other => panic!("EC PKCS#8 without namedCurve must be rejected, got {other:?}"),
+    }
+}
+
+#[test]
+fn der_pkcs8_rsa_params_must_be_null() {
+    // rsaEncryption 的 parameters 按 RFC 8017 §A.1 必须为 NULL。
+    // 内层 PKCS#1 用 4 字节占位（parse_pkcs8 不验证 RSA 内层结构，
+    // 返回原样字节）；NULL 的合规形态由 KEY_PKCS8（openssl 产物，
+    // 上方 RSA 测试）锚定。
+    const OID: &str = "06092a864886f70d010101";
+    let build = |params: &[u8]| {
+        let mut alg = hex(OID);
+        alg.extend_from_slice(params);
+        let mut content = hex("020100");
+        content.extend_from_slice(&[0x30, alg.len() as u8]);
+        content.extend_from_slice(&alg);
+        content.extend_from_slice(&[0x04, 0x04, 0xde, 0xad, 0xbe, 0xef]);
+        let mut out = vec![0x30, content.len() as u8];
+        out.extend_from_slice(&content);
+        out
+    };
+    // NULL（05 00）：通过，返回 PKCS#1 原样字节
+    match der::parse_pkcs8_private_key(&build(&hex("0500"))) {
+        Ok(der::ParsedPrivateKey::RsaPkcs1(pkcs1)) => {
+            assert_eq!(pkcs1, hex("deadbeef"));
+        }
+        other => panic!("RSA PKCS#8 with NULL params must parse, got {other:?}"),
+    }
+    // 无 parameters：拒绝
+    match der::parse_pkcs8_private_key(&build(&[])) {
+        Err(ferritls_core::Error::InvalidInput) => {}
+        other => panic!("RSA PKCS#8 without params must be rejected, got {other:?}"),
+    }
+    // 非 NULL 垃圾 params（OCTET STRING）：拒绝
+    match der::parse_pkcs8_private_key(&build(&hex("04020102"))) {
+        Err(ferritls_core::Error::InvalidInput) => {}
+        other => panic!("RSA PKCS#8 with garbage params must be rejected, got {other:?}"),
+    }
+}
+
+#[test]
+fn der_pkcs8_attributes_must_be_single_element() {
+    // Ed25519 PKCS#8 + 空 [0] attributes + 尾随垃圾：垃圾必须拒绝
+    //（此前仅检查首字节是否 0xa0，其后的任意字节被静默接受）。
+    // ED25519_PKCS8_PREFIX 含外层 SEQUENCE 头（长度字节在 out[1]），
+    // 追加 attributes/垃圾时须同步改写外层长度。
+    let build = |trailing: &[u8]| {
+        let mut out = hex(ED25519_PKCS8_PREFIX);
+        out.extend_from_slice(&hex(ED25519_SEED));
+        out[1] += (2 + trailing.len()) as u8; // 空 [0] TLV 占 2 字节
+        out.extend_from_slice(&hex("a000"));
+        out.extend_from_slice(trailing);
+        out
+    };
+    match der::parse_pkcs8_private_key(&build(&[])) {
+        Ok(der::ParsedPrivateKey::Ed25519(_)) => {}
+        other => panic!("empty [0] attributes must be accepted, got {other:?}"),
+    }
+    match der::parse_pkcs8_private_key(&build(&[0x2a])) {
+        Err(ferritls_core::Error::InvalidInput) => {}
+        other => panic!("trailing garbage after [0] must be rejected, got {other:?}"),
+    }
+}

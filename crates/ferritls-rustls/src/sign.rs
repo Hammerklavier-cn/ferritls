@@ -276,9 +276,16 @@ impl KeyLoader {
             ferritls_core::der::ParsedPrivateKey::RsaPkcs1(pkcs1) => {
                 RsaKey::from_pkcs1_der(&pkcs1).map(|k| Arc::new(k) as Arc<dyn SigningKey>)
             }
-            ferritls_core::der::ParsedPrivateKey::Ed25519(seed) => Ok(Arc::new(Ed25519Key::new(
-                seed.as_slice().try_into().expect("32-byte seed"),
-            ))),
+            ferritls_core::der::ParsedPrivateKey::Ed25519(seed) => {
+                // 显式错误而非 expect：长度不变式虽由 der 层保证，
+                // 跨 crate 依赖不宜落在 panic 上（密钥文件是攻击者
+                // 可控输入路径）
+                let seed: [u8; 32] = seed
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| RustlsError::General("invalid Ed25519 seed length".into()))?;
+                Ok(Arc::new(Ed25519Key::new(&seed)))
+            }
         }
     }
 }

@@ -145,6 +145,13 @@ pub enum ParsedPrivateKey {
 ///   privateKeyAlgorithm AlgorithmIdentifier,
 ///   privateKey OCTET STRING,
 ///   `attributes [0] IMPLICIT OPTIONAL` }
+///
+/// AlgorithmIdentifier 的 parameters 按算法强制（各自 RFC 的 MUST）：
+///
+/// - **Ed25519：必须省略**（RFC 8410 §7）——openssl
+///   `genpkey -algorithm ed25519` 产物即无参数形态；
+/// - **id-ecPublicKey：必须为 namedCurve OID**（RFC 5480 §2.1）；
+/// - **rsaEncryption：必须为 NULL**（RFC 8017 §A.1）。
 pub fn parse_pkcs8_private_key(der: &[u8]) -> Result<ParsedPrivateKey, Error> {
     let (seq, rest) = sequence(der)?;
     // PKCS#8 后不得有剩余字节
@@ -156,19 +163,27 @@ pub fn parse_pkcs8_private_key(der: &[u8]) -> Result<ParsedPrivateKey, Error> {
         return Err(Error::InvalidInput);
     }
     // AlgorithmIdentifier ::= SEQUENCE { algorithm OID, parameters ANY }
+    // parameters 的缺席/形态由各算法分支校验（Ed25519 要求缺席），
+    // 不在此处统一要求 TLV 存在。
     let (alg_seq, rest) = sequence(rest)?;
     let (oid, alg_rest) = object_identifier(alg_seq)?;
-    let (_ptag, _params, _alg_rest_rest) = match read_tlv(alg_rest) {
-        Ok(x) => x,
-        Err(_) => return Err(Error::InvalidInput),
-    };
     let (key_bytes, rest) = octet_string(rest)?;
-    // [0] attributes 可选——存在则忽略，但必须是 context-tag 0
-    if !rest.is_empty() && rest[0] != 0xa0 {
-        return Err(Error::InvalidInput);
+    // [0] attributes 可选——存在则必须恰为一个 [0] 元素（内容忽略）
+    if !rest.is_empty() {
+        if rest[0] != 0xa0 {
+            return Err(Error::InvalidInput);
+        }
+        let (_ptag, _content, tail) = read_tlv(rest)?;
+        if !tail.is_empty() {
+            return Err(Error::InvalidInput);
+        }
     }
 
     if oid == oid::ED25519 {
+        // RFC 8410 §7：parameters 必须省略
+        if !alg_rest.is_empty() {
+            return Err(Error::InvalidInput);
+        }
         // Ed25519 私钥 = OCTET STRING(32)
         let (seed, inner_rest) = octet_string(key_bytes)?;
         if !inner_rest.is_empty() || seed.len() != 32 {
@@ -177,14 +192,20 @@ pub fn parse_pkcs8_private_key(der: &[u8]) -> Result<ParsedPrivateKey, Error> {
         return Ok(ParsedPrivateKey::Ed25519(seed.to_vec()));
     }
     if oid == oid::RSA_ENCRYPTION {
+        // RFC 8017 §A.1：parameters 必须为 NULL（05 00）
+        match read_tlv(alg_rest) {
+            Ok((0x05, params, tail)) if params.is_empty() && tail.is_empty() => {}
+            _ => return Err(Error::InvalidInput),
+        }
         // privateKey OCTET STRING 的内容即 PKCS#1 RSAPrivateKey DER
         //（RSA 不再包一层 OCTET STRING；Ed25519 才是双层包裹）
         return Ok(ParsedPrivateKey::RsaPkcs1(key_bytes.to_vec()));
     }
     if oid == oid::EC_PUBLIC_KEY {
-        // parameters = namedCurve OID（TLV：tag 0x06 + 长度 + OID 内容）
-        let (ptag, params, _alg_rest_rest) = read_tlv(alg_rest)?;
-        if ptag != 0x06 {
+        // RFC 5480：parameters 必须为 namedCurve OID（TLV：tag 0x06 +
+        // 长度 + OID 内容），缺席即拒绝
+        let (ptag, params, tail) = read_tlv(alg_rest)?;
+        if ptag != 0x06 || !tail.is_empty() {
             return Err(Error::InvalidInput);
         }
         let curve_oid = params;
