@@ -28,6 +28,11 @@ env:
   # 阶段直接红，而不是在本地/下游随机暴露。唯一例外是 fuzz job——
   # fuzz/Cargo.lock 刻意不跟踪（见 audit job 注记），加 --locked 必挂。
 
+# 最小权限基线：GITHUB_TOKEN 只保留 checkout 所需的 contents: read；
+# 唯一提升点是 publish job（创建 GitHub Release 需 contents: write）。
+permissions:
+  contents: read
+
 jobs:
   fmt:
     runs-on: ubuntu-latest
@@ -232,8 +237,10 @@ jobs:
       - run: cargo doc --locked --no-deps --all-features
 
   # 慢测试（平时 #[ignore]）：RFC 7748 §5.2 1000 轮迭代金标准等，
-  # 随每周 schedule 与手动触发专职执行。
+  # 不阻塞日常 PR/push；每周全量（schedule）、手动触发、以及发布路径
+  # （tag push，经 publish.needs 强制）必跑。
   slow-tests:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -250,9 +257,17 @@ jobs:
   # 无需等待 crates.io 索引传播（rust-lang/cargo#1169）。interop 为
   # publish=false，自动跳过。前置：仓库 secrets 配置 CARGO_REGISTRY_TOKEN。
   publish:
-    needs: [fmt, clippy, test, deny]
+    # 全量门禁通过才可发布：格式/clippy、三平台测试、MSRV、fuzz 冒烟、
+    # deny（许可+供应链）、audit（RustSec 公告）、文档零警告、慢测试。
+    # coverage（度量非门禁）与 semver-checks（仅 PR 阶段生效，破坏性
+    # 变更应在合入前被拦）不在此列。
+    needs: [fmt, clippy, test, msrv, fuzz, deny, audit, docs, slow-tests]
     if: startsWith(github.ref, 'refs/tags/v') || inputs.tag != ''
     runs-on: ubuntu-latest
+    # 发布环境保护：workflow 侧声明环境 crates-io 作为挂载点；仓库
+    # Settings → Environments → crates-io 需人工配置 required reviewers
+    # 与 deployment tags 限定（v*），发布即需人工批准 + 审计留痕。
+    environment: crates-io
     permissions:
       # 创建/编辑 GitHub Release 仅需 contents 写权限（tag 由 push 事件
       # 本身携带），不给更大范围。
