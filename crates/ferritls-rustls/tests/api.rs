@@ -131,6 +131,90 @@ fn fips_mode_provider_smoke() {
     );
 }
 
+/// 验证算法表形状防漂移：默认表 9 项（含 Ed25519），批准表 8 项且是
+/// 默认表的子集（同一组静态 verifier）；scheme → 算法映射每组恰一
+/// 算法、算法都来自本表 `all` 清单（TLS 1.3 只取首项，单元素切片是
+/// 该语义的最保守形态）；scheme 差集恰为 ED25519。
+#[test]
+fn verification_tables_shape_and_fips_subset() {
+    use rustls::SignatureScheme;
+    use std::ptr;
+
+    let def = ferritls_rustls::verify::SUPPORTED_ALGORITHMS;
+    let fips = ferritls_rustls::verify::FIPS_SUPPORTED_ALGORITHMS;
+
+    assert_eq!(def.all.len(), 9, "默认表：ECDSA×2 + Ed25519 + RSA×6");
+    assert_eq!(fips.all.len(), 8, "批准表无 Ed25519");
+    for a in fips.all {
+        assert!(
+            def.all.iter().any(|b| ptr::eq(*a, *b)),
+            "批准表出现默认表之外的 verifier"
+        );
+    }
+
+    for (mapping, all, what) in [
+        (def.mapping, def.all, "默认表"),
+        (fips.mapping, fips.all, "批准表"),
+    ] {
+        let mut schemes: Vec<u16> = mapping.iter().map(|(s, _)| u16::from(*s)).collect();
+        schemes.sort_unstable();
+        schemes.dedup();
+        assert_eq!(schemes.len(), mapping.len(), "{what} scheme 键不得重复");
+        for (scheme, algs) in mapping {
+            assert_eq!(
+                algs.len(),
+                1,
+                "{what} {scheme:?} 映射必须单算法（TLS 1.3 首项语义的最保守形态）"
+            );
+            assert!(
+                all.iter().any(|b| ptr::eq(algs[0], *b)),
+                "{what} {scheme:?} 映射的 verifier 不在本表 all 中"
+            );
+        }
+    }
+
+    let def_schemes: Vec<u16> = def.mapping.iter().map(|(s, _)| u16::from(*s)).collect();
+    let fips_schemes: Vec<u16> = fips.mapping.iter().map(|(s, _)| u16::from(*s)).collect();
+    let diff: Vec<u16> = def_schemes
+        .iter()
+        .copied()
+        .filter(|s| !fips_schemes.contains(s))
+        .collect();
+    assert_eq!(
+        diff.as_slice(),
+        &[u16::from(SignatureScheme::ED25519)],
+        "批准表与默认表的 scheme 差集恰为 Ed25519"
+    );
+}
+
+/// FIPS 表消费防漂移：两个 provider 的验证算法表必须指针一致地指向
+/// 对应静态表，防止装配时误接（批准模式误接默认表会把 Ed25519 放进
+/// 批准面，反之会让默认模式丢算法）。
+#[test]
+fn providers_consume_their_verification_tables() {
+    use std::ptr;
+
+    let def = ferritls_rustls::default_provider();
+    let fips = ferritls_rustls::fips_mode_provider();
+
+    assert!(ptr::eq(
+        def.signature_verification_algorithms.all,
+        ferritls_rustls::verify::SUPPORTED_ALGORITHMS.all
+    ));
+    assert!(ptr::eq(
+        def.signature_verification_algorithms.mapping,
+        ferritls_rustls::verify::SUPPORTED_ALGORITHMS.mapping
+    ));
+    assert!(ptr::eq(
+        fips.signature_verification_algorithms.all,
+        ferritls_rustls::verify::FIPS_SUPPORTED_ALGORITHMS.all
+    ));
+    assert!(ptr::eq(
+        fips.signature_verification_algorithms.mapping,
+        ferritls_rustls::verify::FIPS_SUPPORTED_ALGORITHMS.mapping
+    ));
+}
+
 /// X25519MLKEM768 端到端形状与共享秘密一致性（M8.3）：
 /// 客户端 share 1216 B、服务端 share 1120 B、ss 64 B，两侧一致；
 /// 篡改 share 必须被拒绝（ek 模校验 / 密文长度）。

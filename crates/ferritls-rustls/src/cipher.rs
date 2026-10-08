@@ -707,3 +707,74 @@ pub fn fips_tls13_suites() -> Vec<SupportedCipherSuite> {
         tls13_aes_128_ccm_sha256(),
     ]
 }
+
+// ---------------------------------------------------------------------------
+// extract_keys 锚定（key log / secrets 导出路径，AGENTS §4）：GCM/ChaCha
+// 映射到对应 `ConnectionTrafficSecrets` 变体且密钥材料逐字节保真；CCM
+// 无公开变体恒 Err（`ConnectionTrafficSecrets` 无 CCM 变体，QUIC 亦不
+// 走此路径）。
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod extract_keys_tests {
+    use super::*;
+    use rustls::ConnectionTrafficSecrets;
+    use rustls::crypto::cipher::Tls13AeadAlgorithm;
+
+    // AeadKey 的公开构造（From<[u8; 32]>）恒 used = 32；extract_keys
+    // 对 key/iv 是恒等透传（截取只发生在 encrypter/decrypter 的
+    // key_bytes）。生产路径中 rustls 经 pub(crate) 的
+    // `with_length(key_len)` 构造 AeadKey（GCM-128 used = 16），故
+    // 导出物在真实使用中的形状即套件密钥长度——此处锚定的是「透传
+    // 不改写」契约与变体/IV 映射。
+    #[test]
+    fn extract_keys_roundtrips_key_material() {
+        let key32: [u8; 32] = core::array::from_fn(|i| i as u8);
+        let iv12: [u8; 12] = core::array::from_fn(|i| 0xa0u8.wrapping_add(i as u8));
+
+        let secrets = GCM128_AEAD
+            .extract_keys(AeadKey::from(key32), Iv::from(iv12))
+            .expect("gcm128 extract_keys");
+        match secrets {
+            ConnectionTrafficSecrets::Aes128Gcm { key, iv } => {
+                assert_eq!(key.as_ref(), &key32, "extract_keys 恒等透传 AeadKey");
+                assert_eq!(iv.as_ref(), &iv12);
+            }
+            _ => panic!("GCM-128 必须映射 Aes128Gcm 变体"),
+        }
+
+        let secrets = GCM256_AEAD
+            .extract_keys(AeadKey::from(key32), Iv::from(iv12))
+            .expect("gcm256 extract_keys");
+        match secrets {
+            ConnectionTrafficSecrets::Aes256Gcm { key, iv } => {
+                assert_eq!(key.as_ref(), &key32);
+                assert_eq!(iv.as_ref(), &iv12);
+            }
+            _ => panic!("GCM-256 必须映射 Aes256Gcm 变体"),
+        }
+
+        let secrets = CHACHA_AEAD
+            .extract_keys(AeadKey::from(key32), Iv::from(iv12))
+            .expect("chacha extract_keys");
+        match secrets {
+            ConnectionTrafficSecrets::Chacha20Poly1305 { key, iv } => {
+                assert_eq!(key.as_ref(), &key32);
+                assert_eq!(iv.as_ref(), &iv12);
+            }
+            _ => panic!("ChaCha 必须映射 Chacha20Poly1305 变体"),
+        }
+
+        assert!(
+            CCM128_AEAD
+                .extract_keys(AeadKey::from(key32), Iv::from(iv12))
+                .is_err(),
+            "CCM 恒不支持 secrets 导出"
+        );
+        assert!(
+            CCM8_AEAD
+                .extract_keys(AeadKey::from(key32), Iv::from(iv12))
+                .is_err(),
+            "CCM_8 恒不支持 secrets 导出"
+        );
+    }
+}
