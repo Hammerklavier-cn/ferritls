@@ -66,11 +66,14 @@ pub fn run_power_on_self_tests() -> SelfTestStatus {
         }
         _ => {}
     }
-    // 单飞：并发触发时只跑一次，其余等待结果
+    // 单飞：并发触发时只跑一次。锁保护**跨越 run_kats() 全程**——
+    // 其余调用者在锁上阻塞，拿到锁时状态必已写入（若在 run_kats 前
+    // 释放锁，后来的调用者会看到 guard=true 而 STATUS 仍为 NotRun，
+    // 误报 "self-test did not run"）。
     match SELF_TEST_RUN.lock() {
         Ok(mut guard) => {
             if *guard {
-                // 别的线程正在跑或已完成：以状态为准
+                // 持有者已完成：状态已定
                 return match STATUS.load(Ordering::SeqCst) {
                     STATUS_PASSED => SelfTestStatus::Passed,
                     STATUS_FAILED => SelfTestStatus::Failed("self-test failed"),
@@ -78,10 +81,10 @@ pub fn run_power_on_self_tests() -> SelfTestStatus {
                 };
             }
             *guard = true;
+            run_kats()
         }
-        Err(_) => return SelfTestStatus::Failed("self-test lock poisoned"),
+        Err(_) => SelfTestStatus::Failed("self-test lock poisoned"),
     }
-    run_kats()
 }
 
 static SELF_TEST_RUN: Mutex<bool> = Mutex::new(false);
@@ -385,7 +388,7 @@ fn kat_ecdsa_p256() -> Result<(), crate::Error> {
     if hex(SIG_HEX) != sig {
         return Err(crate::Error::SelfTestFailed("ecdsa-p256"));
     }
-    let q = sk.public_key_sec1();
+    let q = sk.public_key_sec1()?;
     ecdsa::p256::VerifyKey::from_sec1_point(&q)?.verify(b"sample", &sig)?;
     Ok(())
 }
@@ -930,9 +933,14 @@ use crate::drbg::CtrDrbg;
 #[cfg(test)]
 mod failure_injection {
     use super::*;
+    use std::sync::Mutex;
+
+    /// 串行化触及自检全局状态的测试（cargo test 默认多线程并行）。
+    static STATE_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn failed_state_gates_and_recovers() {
+        let _g = STATE_LOCK.lock().unwrap();
         reset_for_tests();
         // 正常自检通过
         assert_eq!(run_power_on_self_tests(), SelfTestStatus::Passed);
@@ -946,6 +954,24 @@ mod failure_injection {
         // 复位后恢复
         reset_for_tests();
         assert_eq!(run_power_on_self_tests(), SelfTestStatus::Passed);
+    }
+
+    /// 并发首次调用：单飞锁保护跨越 run_kats() 全程，所有等待者都以
+    /// 实际结果返回（修复前：guard 在 run_kats 前释放，后来者会看到
+    /// guard=true 而 STATUS 仍为 NotRun，误报 "self-test did not run"）。
+    #[test]
+    fn concurrent_first_call_all_get_result() {
+        let _g = STATE_LOCK.lock().unwrap();
+        reset_for_tests();
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                std::thread::spawn(|| assert_eq!(run_power_on_self_tests(), SelfTestStatus::Passed))
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("self-test thread panicked");
+        }
+        assert_eq!(status(), SelfTestStatus::Passed);
     }
 }
 
@@ -969,7 +995,7 @@ mod kat_debug {
                 "3046022100efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716022100f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8"
             )
         );
-        let q = sk.public_key_sec1();
+        let q = sk.public_key_sec1().expect("kat pubkey");
         let vk = crate::sign::ecdsa::p256::VerifyKey::from_sec1_point(&q).unwrap();
         println!("verify = {:?}", vk.verify(b"sample", &sig));
     }
