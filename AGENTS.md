@@ -542,8 +542,33 @@ mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——�
   （曾实际产出多余块、由边界长度等价测试拦截）；`fold_mod_p` 的
   掩码选择要求被丢弃的高位均已进位传播到下一字（donna 不变式），
   改动字组顺序前先重推值保持论证；
-- `fields.rs::from_bytes_be_mod`：条件减 p 的"还原"分支是空操作
-  （acc 从未被替换），曾被误写为 acc += p 造成全量污染；
+- `fields.rs::from_bytes_be_mod`：条件减 p 的"还原"选择语义——
+  value ≥ p 时才以 tmp = value − p 替换 acc，否则 acc 本就正确
+  （tmp 只是人质，勿写回），曾被误写为 acc += p 造成全量污染；
+  现为掩码选择（acc 是秘密累加器，禁止分支），`geq_canonical` 为
+  全宽比较（趟数与值无关），改动前先跑
+  `from_bytes_oracle_*`（Horner 域运算独立参照）；
+- `der.rs::parse_pkcs8_private_key`：AlgorithmIdentifier 的
+  parameters **按算法强制**——Ed25519 必须省略（RFC 8410 §7，
+  openssl genpkey 产物即此形态，曾被无条件要求 params TLV 误拒）、
+  EC 必须为 namedCurve OID（RFC 5480）、RSA 必须为 NULL（RFC 8017
+  §A.1）；`[0]` attributes 之后不得有尾随字节。回归矩阵在
+  `tests/rsa_and_der.rs` 的 `der_pkcs8_*`；
+- `selftest.rs::run_power_on_self_tests`：单飞锁（`SELF_TEST_RUN`）
+  保护**跨越 `run_kats()` 全程**——若在 KAT 前释放，并发后来者会
+  看到 guard=true 而 STATUS 仍为 NotRun，误报
+  "self-test did not run"（曾为真实缺陷，并发回归测试
+  `concurrent_first_call_all_get_result` 守护；触及自检状态的
+  单元测试须经 `STATE_LOCK` 串行化）；
+- `backend-x86_64/src/sha.rs`：`ShaNi::detect()` 探测 `sha` +
+  `ssse3` + `sse4.1` **三条**（kernel 的 `#[target_feature]` 三者
+  全要，后两条非 x86_64 基线；token 是对三者的证明）；
+  `power_up_kat` 经显式 token 进入 kernel，**KAT 通过后才**
+  `bind_token`（失败实现的执行核心不得全局可达）；
+- `ecdh.rs`/`sign.rs`：标量盲化（`blind`）消耗 OS 熵——
+  `mul_base`/`public_key`/`public_key_sec1` 返回 `Result`，
+  熵失败传播 `Error::EntropyFailed` 而非 panic（§5.3 约定：
+  getrandom 失败必须显式失败；勿"简化"回 unwrap）；
 - `ecdh.rs::x25519_ladder`：u 坐标导入后必须 `from_raw` 进
   Montgomery 域（曾漏掉 → 全错一个 R 因子）；
 - `ecdh.rs::mul_point_pub`：公开标量 k 入口先 k mod n 规范化——k ≥ n
