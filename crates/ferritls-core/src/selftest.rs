@@ -974,29 +974,3 @@ mod failure_injection {
         assert_eq!(status(), SelfTestStatus::Passed);
     }
 }
-
-#[cfg(test)]
-mod kat_debug {
-    use super::*;
-
-    #[test]
-    fn debug_ecdsa_kat() {
-        let d = hex("C9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721");
-        let sk = crate::sign::ecdsa::p256::SigningKey::from_seed(d.as_slice().try_into().unwrap());
-        let sig = sk.sign(b"sample").unwrap();
-        println!(
-            "sig  = {}",
-            sig.iter().map(|b| format!("{b:02x}")).collect::<String>()
-        );
-        println!("kat  = {}", hex("3046022100efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716022100f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8").iter().map(|b| format!("{b:02x}")).collect::<String>());
-        println!(
-            "eq   = {}",
-            sig == hex(
-                "3046022100efd48b2aacb6a8fd1140dd9cd45e81d69d2c877b56aaf991c34d0ea84eaf3716022100f7cb1c942d657c41d436c7a1b6e29f65f3e900dbb9aff4064dc4ab2f843acda8"
-            )
-        );
-        let q = sk.public_key_sec1().expect("kat pubkey");
-        let vk = crate::sign::ecdsa::p256::VerifyKey::from_sec1_point(&q).unwrap();
-        println!("verify = {:?}", vk.verify(b"sample", &sig));
-    }
-}

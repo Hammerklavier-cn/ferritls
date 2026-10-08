@@ -243,6 +243,14 @@ impl GcmInstance {
 }
 
 fn gcm_of<const N: usize>(key: &AeadKey) -> GcmInstance {
+    // 套件宏只以 16/32 实例化；编译期拦截未来错误的新增档位——
+    // 此前的 else 分支会把任意 N≠32 静默按 AES-128 处理。
+    const {
+        assert!(
+            N == 16 || N == 32,
+            "GCM supports AES-128/256 key sizes only"
+        );
+    }
     if N == 32 {
         GcmInstance::Aes256(Aes256Gcm::new(&key_bytes::<32>(key)))
     } else {
