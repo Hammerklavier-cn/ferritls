@@ -82,7 +82,8 @@ impl Sha256 {
         }
     }
 
-    /// 结束并输出摘要。消耗 `self` 以便内部状态被清零。
+    /// 结束并输出摘要。消耗 `self`；内部状态（h/缓冲）随 `Drop` 零化
+    ///（流可能吸收过秘密，见 `Drop` 文档）。
     ///
     /// 填充直接写入缓冲（0x80、零、64 位大端长度），数据等价于
     /// 旧实现「update(0x80) 后逐字节补零」的路径，但只取一次压缩
@@ -123,6 +124,17 @@ impl Sha256 {
 impl Default for Sha256 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for Sha256 {
+    fn drop(&mut self) {
+        // h（链值）与缓冲可能吸收过秘密——HMAC 的密钥块经 update 进入
+        // 内层/外层链，DRBG 派生亦然。finalize 的文档承诺（「消耗 self
+        // 以便内部状态被清零」）由本 Drop 兑现：终值提取后状态零化，
+        // Clone 出的每个副本独立零化。
+        self.h.fill(0);
+        self.buf.fill(0);
     }
 }
 
@@ -339,7 +351,7 @@ macro_rules! sha512_family {
                 }
             }
 
-            /// 结束并输出摘要。
+            /// 结束并输出摘要。消耗 `self`；内部状态随 `Drop` 零化。
             pub fn finalize(mut self) -> [u8; $out] {
                 let bit_len = (self.total as u128).wrapping_mul(8);
                 self.update(&[0x80]);
@@ -368,6 +380,15 @@ macro_rules! sha512_family {
         impl Default for $name {
             fn default() -> Self {
                 Self::new()
+            }
+        }
+
+        impl Drop for $name {
+            fn drop(&mut self) {
+                // 与 Sha256 同理：链值与缓冲可能吸收过秘密（HMAC
+                // 密钥块、DRBG 派生输入），终值提取后零化。
+                self.h.fill(0);
+                self.buf.fill(0);
             }
         }
     };
