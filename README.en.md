@@ -17,8 +17,11 @@ cryptographic module boundary.
 
 - **TLS 1.3 suites**: `TLS_AES_128_GCM_SHA256`,
   `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`,
-  `TLS_AES_128_CCM_SHA256`
-- **Key exchange**: X25519, secp256r1, secp384r1, X25519MLKEM768 hybrid
+  `TLS_AES_128_CCM_SHA256`, `TLS_AES_128_CCM_8_SHA256` (CCM_8 is
+  default-mode only — the 8-byte tag is outside the SP 800-52r2
+  approved suite set; ChaCha is not approved)
+- **Key exchange**: X25519, secp256r1, secp384r1, the X25519MLKEM768
+  hybrid, and the three pure ML-KEM groups (7 groups in total)
 - **Post-quantum**: FIPS 202 SHA-3/SHAKE and all three FIPS 203
   ML-KEM parameter sets (512/768/1024; implemented in-boundary, zero
   new dependencies, anchored on NIST ACVP vectors); key exchange
@@ -36,9 +39,9 @@ cryptographic module boundary.
   SP 800-90A CTR-DRBG (reseeded with OS entropy on every generate) +
   power-on self-test KATs
 - **Testing surface**: official RFC/NIST/CAVP vectors, NIST ACVP
-  ML-KEM-768 vectors, RFC 8448 key schedule, 2,349 Wycheproof cases,
-  rustls-ring cross-interop, webpki certificate chains, seven
-  cargo-fuzz targets
+  ML-KEM vectors for all three parameter sets, RFC 8448 key schedule,
+  2,349 Wycheproof cases, rustls-ring cross-interop, webpki
+  certificate chains, seven cargo-fuzz targets
   ([vector provenance](docs/VECTOR-PROVENANCE.md))
 - **Performance** (P1 autovectorization + P2 explicit `std::simd`, on
   by default, still zero `unsafe`): bitsliced AES + grouped GHASH
@@ -106,7 +109,7 @@ cloned checkout builds out of the box):
 ```bash
 # When depending on this crate (crates.io / path / git) — pick one:
 export RUSTC_BOOTSTRAP=1                      # (a) keep simd
-ferritls-core = { version = "0.6", default-features = false }  # (b) scalar fallback
+ferritls-core = { version = "0.9", default-features = false }  # (b) scalar fallback
 ```
 
 - Vector width follows the compile target: the default x86-64/aarch64

@@ -18,7 +18,8 @@
   `TLS_CHACHA20_POLY1305_SHA256`、`TLS_AES_128_CCM_SHA256`、
   `TLS_AES_128_CCM_8_SHA256`（后三者中 CCM_8 仅默认模式——8 字节
   标签不在 SP 800-52r2 批准套件面；ChaCha 非批准）
-- **密钥交换**：X25519、secp256r1、secp384r1、X25519MLKEM768 混合
+- **密钥交换**：X25519、secp256r1、secp384r1、X25519MLKEM768 混合、
+  纯 ML-KEM 三组（共 7 组）
 - **抗量子**：FIPS 202 SHA-3/SHAKE 与 FIPS 203 ML-KEM 全部三个
   参数集（512/768/1024，边界内自研、零新依赖、NIST ACVP 向量锚定）；
   密钥交换含 X25519MLKEM768 混合（draft-ietf-tls-ecdhe-mlkem，
@@ -30,7 +31,7 @@
 - **签名/验证**：ECDSA P-256/384、RSA-PSS/PKCS#1（SHA-256/384/512）、Ed25519
 - **批准模式**（`fips` feature）：仅 NIST 批准算法 + SP 800-90A
   CTR-DRBG（每次生成混入 OS 熵）+ 上电自检 KAT
-- **测试面**：RFC/NIST/CAVP 官方向量、NIST ACVP ML-KEM-768 向量、
+- **测试面**：RFC/NIST/CAVP 官方向量、NIST ACVP ML-KEM 三参数集向量、
   RFC 8448 密钥调度、Wycheproof 2349 用例、rustls-ring 交叉互操作、
   webpki 证书链、cargo-fuzz 七目标
   （[向量溯源](docs/VECTOR-PROVENANCE.md)）
@@ -91,7 +92,7 @@ TLS 1.3 套件（TLS 1.2 为 M8 余项），两代 reqwest 行为一致。
 ```bash
 # 依赖本仓库时（crates.io / path / git）——二选一：
 export RUSTC_BOOTSTRAP=1                      # ① 保留 simd
-ferritls-core = { version = "0.6", default-features = false }  # ② 标量回退
+ferritls-core = { version = "0.9", default-features = false }  # ② 标量回退
 ```
 
 - 通道宽度按编译目标自动选择：默认 x86-64/aarch64 基线（SSE2/NEON）；

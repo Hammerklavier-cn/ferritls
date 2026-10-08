@@ -78,7 +78,7 @@ RFC 8448 轨迹重放、cargo-fuzz 目标建立（DER/签名验证/AEAD）。
 - [x] rustls-ring 交叉互操作矩阵（3 套件 × 双方向）——打破自握手盲区
 - [x] webpki 真实证书链校验（含不可信根/篡改负例）；修正 verify.rs
       AlgorithmIdentifier 编码语义（SEQUENCE 内容，非完整 DER）
-- [x] cargo-fuzz 六目标 + 语料 + CI 冒烟（AGENTS §5.4 欠账清偿）
+- [x] cargo-fuzz 七目标 + 语料 + CI 冒烟（AGENTS §5.4 欠账清偿）
 - [x] docs/FIPS.md 升级为 SP 800-140Br1 安全策略底稿（§6）
 - [x] M4c：RSA 私钥运算乘法盲化落地（rᵉ 预盲 / r⁻¹ 去盲 + Garner
       回绕修正常数时间化；变量时间 xgcd 论证与中间值零化；openssl
@@ -93,7 +93,7 @@ RFC 8448 轨迹重放、cargo-fuzz 目标建立（DER/签名验证/AEAD）。
 - [x] **实际发布**：CARGO_REGISTRY_TOKEN 配置后发布管线已跑通，
       v0.1.0 → v0.6.0 经 tag 触发发布（推 `v*` 即发，见上条）
 
-## P1 — 性能轮（稳定版自动向量化，进行中 2026-09）
+## P1 — 性能轮（稳定版自动向量化，完成 2026-09-08）
 
 背景与决策：`std::simd`（portable_simd）截至 2026-09 仍 nightly-only，
 **不能**作为默认 feature（默认启用 = 强迫全部用户与发布 CI 上
@@ -366,13 +366,18 @@ docs/BENCHMARKS.md。
       2026-09-13 main push 与 2026-09-14 schedule 的 CI 运行均绿，
       三平台确认）。
 
-SHA-NI 已随 M8.2 落地（`ShaNi` token + `HashOps` 函数分发 kernel：
-流式 ~6×、HKDF ~5×、握手 X25519 双 Ni ~2.35×，见 BENCHMARKS §5.1）。
 2026-09-13：AES/CLMUL kernel 按同法完成 `#[target_feature]` 直调化
 （kernel 直调 intrinsic，`raw.rs` 收缩为纯内存包装；反汇编实测对
 intrinsic 桩的真实 callq 103 → 0），GCM 原语再提 5.2–6.6×、对软件
 路径 ~750–980×（见 BENCHMARKS §5.2）。CCM/ChaCha/P-256/Ed25519 加速
 与 aarch64 后端明确不在本节范围。
+
+### M8.2 SHA-NI 后端（完成 2026-09-13）
+
+`ShaNi` token（探测 sha + ssse3 + sse4.1 三条）+ `HashOps` 函数分发
+kernel：流式 SHA-256 ~6×、HKDF ~5×、握手 X25519 双 Ni ~2.35×
+（见 BENCHMARKS §5.1）。KAT 通过后才 `bind_token`（失败实现的执行
+核心不得全局可达）。aarch64 等价后端为 M8 余项。
 
 ### M8.3 ML-KEM（FIPS 203）+ X25519MLKEM768 混合（完成 2026-09-13）
 

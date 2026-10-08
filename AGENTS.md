@@ -471,7 +471,7 @@ mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——�
 - [x] M7：RFC 8448 §3 密钥调度向量（程序化提取 + Python 复算双核对）、
       Wycheproof 2349 用例（暴露并修复 DER 宽容解析/Ed25519 符号位
       缺陷）、rustls-ring 交叉互操作矩阵、webpki 真实证书链校验
-      （修正 verify.rs 算法 ID 编码）、cargo-fuzz 六目标 + CI 冒烟、
+      （修正 verify.rs 算法 ID 编码）、cargo-fuzz 七目标 + CI 冒烟、
       FIPS.md 升级 SP 800-140Br1 底稿、发布元数据 + dry-run 通过；
       crates.io 发布已自动化：推 tag `v*`（或手动 dispatch 填 tag）
       触发全量门禁后单次 `cargo publish`（cargo 1.90 起 workspace

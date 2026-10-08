@@ -8,8 +8,9 @@
 
 use rustls::crypto::CryptoProvider;
 
-/// 默认 provider（非批准模式）：全部 TLS 1.3 套件、三组密钥交换、
-/// 全部验证算法、OS 熵直读。
+/// 默认 provider（非批准模式）：全部 TLS 1.3 套件、七组密钥交换
+/// （经典 ECDH 3 + X25519MLKEM768 混合 1 + 纯 ML-KEM 3）、全部验证
+/// 算法、OS 熵直读。
 ///
 /// `fips()` 返回 `false`（见 lib.rs“fips() 语义”）。
 pub fn default_provider() -> CryptoProvider {
