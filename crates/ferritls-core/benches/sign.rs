@@ -33,7 +33,7 @@ fn bench_sign(c: &mut Criterion) {
 
     // ECDSA P-256（SHA-256，RFC 6979）
     let sk256 = sign::ecdsa::p256::SigningKey::from_seed([0x22u8; 32]);
-    let pub256 = sk256.public_key_sec1();
+    let pub256 = sk256.public_key_sec1().expect("p256 public key");
     let sig256 = sk256.sign(&msg).expect("p256 sign");
     group.bench_function("ecdsa-p256-sign", |b| {
         b.iter(|| sk256.sign(&msg).expect("p256 sign"))
@@ -45,7 +45,7 @@ fn bench_sign(c: &mut Criterion) {
 
     // ECDSA P-384（SHA-384，RFC 6979）
     let sk384 = sign::ecdsa::p384::SigningKey::from_seed([0x23u8; 48]);
-    let pub384 = sk384.public_key_sec1();
+    let pub384 = sk384.public_key_sec1().expect("p384 public key");
     let sig384 = sk384.sign(&msg).expect("p384 sign");
     group.bench_function("ecdsa-p384-sign", |b| {
         b.iter(|| sk384.sign(&msg).expect("p384 sign"))

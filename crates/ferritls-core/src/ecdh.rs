@@ -20,6 +20,7 @@
 //! 向量：RFC 7748 §6.1（tests/x25519.rs）；k·G 与 n·G 锚值由独立实现
 //! 交叉核对（ecdh 内嵌测试）；Wycheproof ECDH 在 M4 一并引入。
 
+use crate::ct::zeroize::Zeroize;
 use crate::fields::{Fp256, Fp256Scalar, Fp384, Fp384Scalar, Fp25519};
 
 /// 单字节 -> 掩码（全 1 / 全 0）。
@@ -123,7 +124,9 @@ pub mod x25519 {
         pub fn generate() -> Result<Self, crate::Error> {
             let mut seed = [0u8; 32];
             crate::entropy::fill(&mut seed)?;
-            Ok(Self::from_seed(seed))
+            let sk = Self::from_seed(seed);
+            seed.fill(0); // 熵衍生的标量材料，构造后零化
+            Ok(sk)
         }
 
         /// 由种子确定性构造（RFC 7748 钳制）。测试/向量入口。
@@ -430,6 +433,7 @@ macro_rules! sw_curve {
                         let mut seed = vec![0u8; 2 * COORD_LEN];
                         crate::entropy::fill(&mut seed)?;
                         let d = S::from_bytes_be_mod(&seed);
+                        seed.zeroize(); // 熵衍生的标量材料，导入后零化
                         if !d.is_zero() {
                             return Ok(Self { d: d.to_raw() });
                         }
@@ -444,15 +448,17 @@ macro_rules! sw_curve {
                 }
 
                 /// 导出对应公钥（未压缩 SEC1：0x04 || X || Y）。
-                pub fn public_key(&self) -> [u8; PUBLIC_KEY_LEN] {
-                    let (dk, bits) = blind(&self.d).expect("entropy available");
+                /// OS 熵不可用（标量盲化需要）返回 `Error::EntropyFailed`。
+                pub fn public_key(&self) -> Result<[u8; PUBLIC_KEY_LEN], crate::Error> {
+                    let (mut dk, bits) = blind(&self.d)?;
                     let p = ladder(&dk, bits, &gx(), &gy());
+                    dk.zeroize(); // d + r·n，秘密等价
                     let (x, y) = to_affine(&p);
                     let mut out = [0u8; PUBLIC_KEY_LEN];
                     out[0] = 0x04;
                     out[1..1 + COORD_LEN].copy_from_slice(&x.to_bytes_be());
                     out[1 + COORD_LEN..].copy_from_slice(&y.to_bytes_be());
-                    out
+                    Ok(out)
                 }
 
                 /// 计算共享秘密（对端公钥须为 0x04 || X || Y；点须在
@@ -462,8 +468,9 @@ macro_rules! sw_curve {
                     peer_public: &[u8],
                 ) -> Result<SharedSecret, crate::Error> {
                     let (qx, qy) = parse_public(peer_public)?;
-                    let (dk, bits) = blind(&self.d)?;
+                    let (mut dk, bits) = blind(&self.d)?;
                     let p = ladder(&dk, bits, &qx, &qy);
+                    dk.zeroize(); // d + r·n，秘密等价
                     if p.is_infinity() {
                         return Err(crate::Error::VerificationFailed);
                     }
@@ -520,11 +527,13 @@ macro_rules! sw_curve {
             }
 
             /// M4 复用：标量乘基点（ECDSA r = x(k·G)）。
+            /// OS 熵不可用（标量盲化需要）返回 `Error::EntropyFailed`。
             #[allow(dead_code)]
-            pub(crate) fn mul_base(d: &[u64; S::LIMBS]) -> (F, F) {
-                let (dk, bits) = blind(d).expect("entropy available");
+            pub(crate) fn mul_base(d: &[u64; S::LIMBS]) -> Result<(F, F), crate::Error> {
+                let (mut dk, bits) = blind(d)?;
                 let p = ladder(&dk, bits, &gx(), &gy());
-                to_affine(&p)
+                dk.zeroize(); // d + r·n，秘密等价
+                Ok(to_affine(&p))
             }
 
             /// M4/测试复用：任意点标量乘（验证路径，公开数据）。

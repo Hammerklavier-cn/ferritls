@@ -18,6 +18,11 @@ fn map_dh_err(_: ferritls_core::Error) -> RustlsError {
     RustlsError::PeerMisbehaved(PeerMisbehaved::InvalidKeyShare)
 }
 
+/// 本地故障（OS 熵不可用）映射：不得归咎为对端不当行为。
+fn map_local_err(_: ferritls_core::Error) -> RustlsError {
+    RustlsError::General("local entropy source failed".into())
+}
+
 /// X25519（RFC 7748）密钥交换组。
 #[derive(Debug)]
 pub struct X25519;
@@ -32,7 +37,7 @@ pub struct SecP384R1;
 
 impl SupportedKxGroup for X25519 {
     fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, RustlsError> {
-        let sk = x25519::SecretKey::generate().map_err(map_dh_err)?;
+        let sk = x25519::SecretKey::generate().map_err(map_local_err)?;
         let pk = sk.public_key();
         Ok(Box::new(ActiveX25519 { sk, pk }))
     }
@@ -49,8 +54,8 @@ impl SupportedKxGroup for X25519 {
 
 impl SupportedKxGroup for SecP256R1 {
     fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, RustlsError> {
-        let sk = p256::SecretKey::generate().map_err(map_dh_err)?;
-        let pk = sk.public_key();
+        let sk = p256::SecretKey::generate().map_err(map_local_err)?;
+        let pk = sk.public_key().map_err(map_local_err)?;
         Ok(Box::new(ActiveSecP256R1 { sk, pk }))
     }
 
@@ -66,8 +71,8 @@ impl SupportedKxGroup for SecP256R1 {
 
 impl SupportedKxGroup for SecP384R1 {
     fn start(&self) -> Result<Box<dyn ActiveKeyExchange>, RustlsError> {
-        let sk = p384::SecretKey::generate().map_err(map_dh_err)?;
-        let pk = sk.public_key();
+        let sk = p384::SecretKey::generate().map_err(map_local_err)?;
+        let pk = sk.public_key().map_err(map_local_err)?;
         Ok(Box::new(ActiveSecP384R1 { sk, pk }))
     }
 

@@ -13,8 +13,12 @@ use ferritls_core::sign::ecdsa;
 fn p256_ecdh_round_trip() {
     let a = p256::SecretKey::generate().expect("generate A");
     let b = p256::SecretKey::generate().expect("generate B");
-    let ss_a = a.diffie_hellman(&b.public_key()).expect("A completes");
-    let ss_b = b.diffie_hellman(&a.public_key()).expect("B completes");
+    let ss_a = a
+        .diffie_hellman(&b.public_key().expect("pubkey B"))
+        .expect("A completes");
+    let ss_b = b
+        .diffie_hellman(&a.public_key().expect("pubkey A"))
+        .expect("B completes");
     assert_eq!(ss_a.as_bytes(), ss_b.as_bytes());
     // 非法对端公钥（点不在曲线上）必须被拒绝——具体向量 M3 从
     // Wycheproof “invalid” 分组引入。
@@ -50,7 +54,11 @@ fn p256_ecdsa_rfc6979_sample() {
         "0460FED4BA255A9D31C961EB74C6356D68C049B8923B61FA6CE669622E60F29FB6\
          7903FE1008B8BC99A41AE9E95628BC64F2F1B20C2D7E9F5177A3C294D4462299",
     );
-    assert_eq!(sk.public_key_sec1(), q_expected.as_slice(), "public key");
+    assert_eq!(
+        sk.public_key_sec1().expect("public key"),
+        q_expected.as_slice(),
+        "public key"
+    );
 
     let sig = sk.sign(b"sample").expect("sign");
     // 解析 DER 中的 (r, s)
@@ -86,7 +94,7 @@ fn p256_ecdsa_rfc6979_sample() {
 fn p256_ecdsa_rfc6979_test() {
     let d = hex("C9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721");
     let sk = ecdsa::p256::SigningKey::from_seed(d.as_slice().try_into().unwrap());
-    let q = sk.public_key_sec1();
+    let q = sk.public_key_sec1().expect("public key");
     let sig = sk.sign(b"test").expect("sign");
     let (body, _) = der::sequence(&sig).expect("der");
     let (r_bytes, rest) = der::integer(body).expect("r");

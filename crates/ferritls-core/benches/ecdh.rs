@@ -19,15 +19,19 @@ fn bench_ecdh(c: &mut Criterion) {
     });
 
     let sk256 = p256::SecretKey::from_seed(seed32);
-    let pk256 = sk256.public_key();
-    group.bench_function("p256-public-key", |b| b.iter(|| sk256.public_key()));
+    let pk256 = sk256.public_key().expect("p256 public key");
+    group.bench_function("p256-public-key", |b| {
+        b.iter(|| sk256.public_key().expect("p256 public key"))
+    });
     group.bench_function("p256-dh", |b| {
         b.iter(|| sk256.diffie_hellman(&pk256).expect("shared secret"))
     });
 
     let sk384 = p384::SecretKey::from_seed([0x12u8; 48]);
-    let pk384 = sk384.public_key();
-    group.bench_function("p384-public-key", |b| b.iter(|| sk384.public_key()));
+    let pk384 = sk384.public_key().expect("p384 public key");
+    group.bench_function("p384-public-key", |b| {
+        b.iter(|| sk384.public_key().expect("p384 public key"))
+    });
     group.bench_function("p384-dh", |b| {
         b.iter(|| sk384.diffie_hellman(&pk384).expect("shared secret"))
     });

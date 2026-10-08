@@ -51,7 +51,11 @@ fn p384_ecdsa_rfc6979_sample() {
          DEF8F0EA9055866064A254515480BC138015D9B72D7D57244EA8EF9AC0C6218967\
          08A59367F9DFB9F54CA84B3F1C9DB1288B231C3AE0D4FE7344FD2533264720",
     );
-    assert_eq!(sk.public_key_sec1(), q_expected.as_slice(), "public key");
+    assert_eq!(
+        sk.public_key_sec1().expect("public key"),
+        q_expected.as_slice(),
+        "public key"
+    );
 
     let sig = sk.sign(b"sample").expect("sign");
     let (body, rest) = der::sequence(&sig).expect("der");

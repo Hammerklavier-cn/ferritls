@@ -87,13 +87,14 @@ macro_rules! ecdsa_curve {
                 }
 
                 /// 公钥（未压缩 SEC1：0x04 || X || Y）。
-                pub fn public_key_sec1(&self) -> [u8; 1 + 2 * SEED_LEN] {
-                    let (x, y) = crv::mul_base(&self.d);
+                /// OS 熵不可用（标量盲化需要）返回 `Error::EntropyFailed`。
+                pub fn public_key_sec1(&self) -> Result<[u8; 1 + 2 * SEED_LEN], crate::Error> {
+                    let (x, y) = crv::mul_base(&self.d)?;
                     let mut out = [0u8; 1 + 2 * SEED_LEN];
                     out[0] = 0x04;
                     out[1..1 + SEED_LEN].copy_from_slice(&x.to_bytes_be());
                     out[1 + SEED_LEN..].copy_from_slice(&y.to_bytes_be());
-                    out
+                    Ok(out)
                 }
 
                 /// 对消息签名：返回 DER 编码的 ECDSA-Sig-Value。
@@ -145,7 +146,7 @@ macro_rules! ecdsa_curve {
                             }
                         }
                         let k_s = S::from_bytes_be_mod(&v); // v < n 时无损
-                        let (x, _) = crv::mul_base(&k_s.to_raw());
+                        let (x, _) = crv::mul_base(&k_s.to_raw())?;
                         let r_s = S::from_bytes_be_mod(&x.to_bytes_be());
                         let s = k_s.invert().mul(&z.add(&r_s.mul(&d_m)));
                         if nonzero && !ge_n && !r_s.is_zero() && !s.is_zero() {
@@ -160,6 +161,13 @@ macro_rules! ecdsa_curve {
                         k = $hmac::one_shot(&k, &b2);
                         v = $hmac::one_shot(&k, &v);
                     }
+                }
+            }
+
+            /// 私钥标量 Drop 零化（同 Ed25519/RSA 两实例的纪律）。
+            impl Drop for SigningKey {
+                fn drop(&mut self) {
+                    self.d.fill(0);
                 }
             }
 
