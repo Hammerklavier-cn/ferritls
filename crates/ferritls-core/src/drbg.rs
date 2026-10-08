@@ -30,12 +30,21 @@ const MAX_REQUEST: usize = 65536;
 const RESEED_INTERVAL: u64 = 1u64 << 48;
 
 /// SP 800-90A CTR-DRBG（无推导函数，AES-256）。
-#[derive(Debug)]
 pub struct CtrDrbg {
     aes: Aes256,
     key: [u8; 32],
     v: [u8; 16],
     reseed_counter: u64,
+}
+
+/// 脱敏 Debug：Key/V 是 DRBG 秘密状态，绝不进入日志
+///（crate 内持密类型的统一纪律，同 Aes/GCM/ChaCha 的手写 Debug）。
+impl std::fmt::Debug for CtrDrbg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CtrDrbg")
+            .field("reseed_counter", &self.reseed_counter)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Drop for CtrDrbg {
@@ -277,6 +286,20 @@ mod health_tests {
             *s = 0x00;
         }
         assert_eq!(entropy_health_tests(&seed), Err(Error::EntropyFailed));
+    }
+
+    /// Debug 输出不得包含 Key/V 状态（回归：曾为 `#[derive(Debug)]`，
+    /// 会把 48 字节秘密状态完整打印）。
+    #[test]
+    fn debug_output_leaks_no_state() {
+        let mut d = CtrDrbg::new(&[0xa5u8; SEEDLEN], b"pers").expect("instantiate");
+        d.generate(&mut [0u8; 32]).expect("generate");
+        let s = format!("{d:?}");
+        assert!(s.starts_with("CtrDrbg"), "unexpected Debug form: {s}");
+        assert!(s.contains("reseed_counter"), "unexpected Debug form: {s}");
+        assert!(!s.contains("key"), "Debug leaks key state: {s}");
+        assert!(!s.contains(" v:"), "Debug leaks V state: {s}");
+        assert!(!s.contains("aes"), "Debug leaks AES state: {s}");
     }
 }
 #[cfg(test)]

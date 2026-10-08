@@ -38,31 +38,35 @@ impl ChaCha20Poly1305 {
 
     /// 加密：返回 `密文 || 标签`。
     pub fn seal(&self, nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
-        let poly_key = chacha20_block(&self.key, 0, nonce);
+        let mut poly_key = chacha20_block(&self.key, 0, nonce);
         let mut ct = vec![0u8; plaintext.len() + Self::TAG_LEN];
         let (body, tail) = ct.split_at_mut(plaintext.len());
         keystream_xor(&self.key, nonce, plaintext, body);
         let tag = poly1305_tag(&poly_key, aad, body);
+        poly_key.fill(0); // Poly1305 一次性密钥，用后零化
         tail.copy_from_slice(&tag);
         ct
     }
 
     /// 解密并验证；失败统一返回
     /// [`Error::VerificationFailed`](crate::Error::VerificationFailed)。
+    ///
+    /// 先验后出：标签验证先于任何解密，失败路径不产生明文缓冲。
     pub fn open(
         &self,
         nonce: &[u8; 12],
         aad: &[u8],
         ct_and_tag: &[u8],
     ) -> Result<Vec<u8>, crate::Error> {
-        if ct_and_tag.len() < 16 {
+        if ct_and_tag.len() < Self::TAG_LEN {
             return Err(crate::Error::VerificationFailed);
         }
-        let split = ct_and_tag.len() - 16;
+        let split = ct_and_tag.len() - Self::TAG_LEN;
         let (ct, tag) = ct_and_tag.split_at(split);
 
-        let poly_key = chacha20_block(&self.key, 0, nonce);
+        let mut poly_key = chacha20_block(&self.key, 0, nonce);
         let computed = poly1305_tag(&poly_key, aad, ct);
+        poly_key.fill(0); // Poly1305 一次性密钥，用后零化
         crate::ct::verify_tag(&computed, tag)?;
 
         let mut pt = vec![0u8; ct.len()];

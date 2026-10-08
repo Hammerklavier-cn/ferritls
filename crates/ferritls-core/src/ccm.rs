@@ -24,8 +24,12 @@
 //! M=16 与全 M 矩阵的 TLS 形态期望值由 python-cryptography（OpenSSL
 //! 后端，先对官方原文校验通过）生成——见 `tests/ccm.rs` 与
 //! docs/VECTOR-PROVENANCE.md。上电自检覆盖（M5）。
+//!
+//! open 纪律同 gcm：**标签验证在返回任何明文前完成**，失败时解密
+//! 缓冲零化丢弃（CBC-MAC 的明文暂存缓冲一并零化）。
 
 use crate::aes::Aes128;
+use zeroize::Zeroize;
 
 // ---------------------------------------------------------------------------
 // 运行时引擎：标签长/nonce 长均为协议协商的**公开量**，分支与长度域
@@ -150,6 +154,8 @@ fn cbc_mac(
         aes.encrypt_block(&mut block);
         t = block;
     }
+    // buf 缓冲过明文（open 路径的失败分支尤甚）——用后零化丢弃
+    buf.zeroize();
     t
 }
 
@@ -198,12 +204,18 @@ fn open_core(
     let split = ct_and_tag.len() - tag_len;
     let (ct, tag) = ct_and_tag.split_at(split);
 
-    let pt = ctr_xor(aes, nonce, l, 1, ct);
+    let mut pt = ctr_xor(aes, nonce, l, 1, ct);
     let mut t = cbc_mac(aes, nonce, l, tag_len, aad, &pt);
     let s0 = ctr_block(aes, nonce, l, 0);
     tag_finish(&mut t, &s0, tag_len);
-    crate::ct::verify_tag(&t[..tag_len], tag)?;
-    Ok(pt)
+    if crate::ct::ct_eq(&t[..tag_len], tag) {
+        Ok(pt)
+    } else {
+        // 失败路径：解出的"明文"（攻击者翻转 tag 字节时即为真实明文）
+        // 对齐 gcm 的纪律零化后再丢弃
+        pt.zeroize();
+        Err(crate::Error::VerificationFailed)
+    }
 }
 
 // ---------------------------------------------------------------------------
