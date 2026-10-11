@@ -31,7 +31,14 @@
 | `ed25519_test.json` | Ed25519 验证 | 139 |
 | `rsa_signature_2048_sha{256,384,512}_test.json` | RSA PKCS#1 v1.5 验证 | 254/253/254 |
 | `rsa_pss_2048_sha256_mgf1_32_test.json` | RSA-PSS 验证 | 61 |
+| `aes_gcm_test.json` | AES-128/256-GCM seal/open | 74 |
+| `chacha20_poly1305_test.json` | ChaCha20-Poly1305 seal/open | 124 |
 
 注意：不引入 `rsa_pkcs1_2048_test.json`（那是 RSAES **解密**向量；本项目
 不做 RSA 解密）。ECDH 用 `*_ecpoint` 变体（`public` 为 `04‖X‖Y` 裸点，
-与本实现的 API 输入一致；`asn` 变体是 SPKI 编码）。
+与本实现的 API 输入一致；`asn` 变体是 SPKI 编码）。两个 AEAD 文件按
+参数空间裁组：只保留 nonce-96/tag-128（GCM 另限 AES-128/256）——非此
+参数空间的组（非 96 位 IV 的 GHASH 型 J0 派生、AES-192、截断标签）不在
+本实现 API 面内，由 `trim_wycheproof.py` 的组过滤器裁掉并在驱动里断言。
+AEAD 入库（2026-10）填补了 AEAD 领域此前仅有手写 tamper 用例的空白；
+逐字段核对脚本对上游原文全量比对通过（198/198）。

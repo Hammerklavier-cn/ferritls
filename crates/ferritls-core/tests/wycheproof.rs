@@ -13,11 +13,15 @@
 //! - ECDSA/Ed25519/RSA：`valid` → Ok；`invalid` → Err；唯一例外是
 //!   PKCS#1 的 `MissingNull`（acceptable）：本实现按「逐字节重构期望 EM」
 //!   的严格策略拒绝它，Wycheproof 认为拒收也是合规行为，故断言 Err。
+//! - AEAD（AES-GCM/ChaCha20-Poly1305，仅含 valid/invalid 两类结果）：
+//!   `valid` → seal 密文‖标签逐字节一致且 open 还原明文；`invalid` →
+//!   open 返回 Err。文件的参数空间已在裁剪时限定到本实现的 API 面
+//!   （GCM：AES-128/256 × nonce-96 × tag-128；ChaCha：256 × 96 × 128）。
 
 mod common;
 
-use common::{assert_hex, hex};
-use ferritls_core::{ecdh, sign};
+use common::{assert_hex, hex, to_hex};
+use ferritls_core::{chacha20poly1305, ecdh, gcm, sign};
 
 const ZERO32: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 const ZERO48: &str = concat!(
@@ -352,4 +356,139 @@ fn wycheproof_rsa_pss_sha256() {
         n_ok >= 10 && n_err >= 30,
         "coverage too low: ok={n_ok} err={n_err}"
     );
+}
+
+/// AEAD 公开 API 的统一视图（三个实现同形：seal → `密文‖标签`）。
+trait AeadApi {
+    fn seal(&self, nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8>;
+    fn open(
+        &self,
+        nonce: &[u8; 12],
+        aad: &[u8],
+        ct_and_tag: &[u8],
+    ) -> Result<Vec<u8>, ferritls_core::Error>;
+}
+
+impl AeadApi for gcm::Aes128Gcm {
+    fn seal(&self, nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
+        gcm::Aes128Gcm::seal(self, nonce, aad, plaintext)
+    }
+    fn open(
+        &self,
+        nonce: &[u8; 12],
+        aad: &[u8],
+        ct_and_tag: &[u8],
+    ) -> Result<Vec<u8>, ferritls_core::Error> {
+        gcm::Aes128Gcm::open(self, nonce, aad, ct_and_tag)
+    }
+}
+
+impl AeadApi for gcm::Aes256Gcm {
+    fn seal(&self, nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
+        gcm::Aes256Gcm::seal(self, nonce, aad, plaintext)
+    }
+    fn open(
+        &self,
+        nonce: &[u8; 12],
+        aad: &[u8],
+        ct_and_tag: &[u8],
+    ) -> Result<Vec<u8>, ferritls_core::Error> {
+        gcm::Aes256Gcm::open(self, nonce, aad, ct_and_tag)
+    }
+}
+
+impl AeadApi for chacha20poly1305::ChaCha20Poly1305 {
+    fn seal(&self, nonce: &[u8; 12], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
+        chacha20poly1305::ChaCha20Poly1305::seal(self, nonce, aad, plaintext)
+    }
+    fn open(
+        &self,
+        nonce: &[u8; 12],
+        aad: &[u8],
+        ct_and_tag: &[u8],
+    ) -> Result<Vec<u8>, ferritls_core::Error> {
+        chacha20poly1305::ChaCha20Poly1305::open(self, nonce, aad, ct_and_tag)
+    }
+}
+
+/// AEAD 通用驱动：valid → seal 密文‖标签逐字节一致且 open 还原明文；
+/// invalid → open Err（含空明文/空 AAD/单字节差分等边界攻击面）。
+/// 参数空间断言（iv-96/tag-128）守护裁剪约定：文件若重新引入 API 面
+/// 外的组会在此报错。
+fn aead_suite(file: &str, make: fn(&[u8]) -> Box<dyn AeadApi>, min_ok: u32, min_err: u32) {
+    let doc = load(file);
+    let (mut n_ok, mut n_err) = (0u32, 0u32);
+    for group in arr(&doc, "testGroups") {
+        assert_eq!(
+            group["ivSize"].as_u64(),
+            Some(96),
+            "{file}: nonce-96 parameter space (trim contract)"
+        );
+        assert_eq!(
+            group["tagSize"].as_u64(),
+            Some(128),
+            "{file}: tag-128 parameter space (trim contract)"
+        );
+        for t in arr(group, "tests") {
+            let id = tcid(t);
+            let comment = str_field(t, "comment");
+            let key = hex(str_field(t, "key"));
+            let iv: [u8; 12] = hex(str_field(t, "iv")).try_into().unwrap();
+            let aad = hex(str_field(t, "aad"));
+            let msg = hex(str_field(t, "msg"));
+            let ct = hex(str_field(t, "ct"));
+            let tag = hex(str_field(t, "tag"));
+            assert_eq!(tag.len(), 16, "tcId {id}: tag-16 parameter space");
+            let aead = make(&key);
+            match str_field(t, "result") {
+                "valid" => {
+                    let mut expect = ct;
+                    expect.extend_from_slice(&tag);
+                    let sealed = aead.seal(&iv, &aad, &msg);
+                    assert_hex(&sealed, &to_hex(&expect), &format!("tcId {id} ({comment})"));
+                    let opened = aead
+                        .open(&iv, &aad, &expect)
+                        .unwrap_or_else(|e| panic!("tcId {id} ({comment}): open got {e:?}"));
+                    assert_eq!(opened, msg, "tcId {id} ({comment}): opened plaintext");
+                    n_ok += 1;
+                }
+                "invalid" => {
+                    let mut ct_tag = ct;
+                    ct_tag.extend_from_slice(&tag);
+                    assert!(
+                        aead.open(&iv, &aad, &ct_tag).is_err(),
+                        "tcId {id} ({comment}): expected rejection"
+                    );
+                    n_err += 1;
+                }
+                other => panic!("{file} tcId {id}: unexpected result {other}"),
+            }
+        }
+    }
+    assert!(
+        n_ok >= min_ok && n_err >= min_err,
+        "{file}: coverage too low: ok={n_ok} err={n_err}"
+    );
+}
+
+#[test]
+fn wycheproof_aead_aes_gcm() {
+    fn make(key: &[u8]) -> Box<dyn AeadApi> {
+        match key.len() {
+            16 => Box::new(gcm::Aes128Gcm::new(key.try_into().unwrap())),
+            32 => Box::new(gcm::Aes256Gcm::new(key.try_into().unwrap())),
+            n => panic!("unexpected AES key length {n}"),
+        }
+    }
+    aead_suite("aes_gcm_test.json", make, 15, 40);
+}
+
+#[test]
+fn wycheproof_aead_chacha20_poly1305() {
+    fn make(key: &[u8]) -> Box<dyn AeadApi> {
+        Box::new(chacha20poly1305::ChaCha20Poly1305::new(
+            key.try_into().unwrap(),
+        ))
+    }
+    aead_suite("chacha20_poly1305_test.json", make, 50, 45);
 }
