@@ -20,7 +20,15 @@ CSR、.srl 序号文件不留存（丢弃后无法延签，重新生成整链即
 | RSA-2048 | `rsa_root`/`rsa_int`/`rsa_leaf` | PKCS#1 v1.5 与 PSS × SHA-256/384/512（`webpki_rsa_*`） |
 | Ed25519 | `ed25519_root`/`ed25519_int`/`ed25519_leaf` | Ed25519（`webpki_ed25519_*`） |
 | P-384 | `p384_root`/`p384_int`/`p384_leaf` | ECDSA P-384/SHA-384（`webpki_p384_*`） |
+| 客户端链 | `client_root`/`client_leaf` | mTLS 客户端认证（mtls.rs；EKU clientAuth） |
 | 无关根 | `root2.pem` | 「不可信根」负例 |
+
+客户端链 profile：`client_root` 自签（`CA:TRUE, pathlen:0` +
+`keyCertSign`）；`client_leaf` 为 `CN=ferritls test client`、`CA:FALSE`、
+`digitalSignature`、`extendedKeyUsage=clientAuth`（**无 SAN**——客户端
+证书不做主机名校验）。leaf 由 client_root 直接签发（隔一层中间）。
+「不可信客户端证书」负例复用 Ed25519 服务器链（issuer 不在
+client_root 信任锚内），不另发证书。
 
 ## 再生成命令（OpenSSL 3.x）
 
@@ -61,6 +69,33 @@ openssl pkcs8 -topk8 -nocrypt -in /tmp/ed_leaf.key.pem -outform DER \
   -out ed25519_leaf.key.der
 
 rm -f *.srl   # 序号文件不入库
+```
+
+客户端链（mTLS，P-256，PemObject 按 PrivateKeyDer::Pkcs8 解析）：
+
+```bash
+# client_root（自签；只发叶子，pathlen:0 即可）
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+  -pkeyopt ec_param_enc:named_curve -out /tmp/cl_root.key.pem
+openssl req -x509 -new -key /tmp/cl_root.key.pem -out client_root.pem \
+  -days 7300 -subj "/CN=ferritls test client root" -sha256 \
+  -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+  -addext "keyUsage=critical,keyCertSign"
+
+# client_leaf（client_root 直签，EKU clientAuth，无 SAN）
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+  -pkeyopt ec_param_enc:named_curve -out /tmp/cl_leaf.key.pem
+openssl req -new -key /tmp/cl_leaf.key.pem -subj "/CN=ferritls test client" \
+  -out /tmp/cl_leaf.csr
+printf "basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\nextendedKeyUsage=clientAuth\n" > /tmp/cl_leaf.ext
+openssl x509 -req -in /tmp/cl_leaf.csr -CA client_root.pem \
+  -CAkey /tmp/cl_root.key.pem -CAcreateserial -days 7300 \
+  -extfile /tmp/cl_leaf.ext -sha256 -out client_leaf.pem
+# 同上：EC 私钥必须显式转 PKCS#8
+openssl pkcs8 -topk8 -nocrypt -in /tmp/cl_leaf.key.pem -outform DER \
+  -out client_leaf.key.der
+
+rm -f *.srl
 ```
 
 链完整性自检：

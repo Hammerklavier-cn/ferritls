@@ -111,6 +111,52 @@ pub fn server_config(provider: CryptoProvider) -> Result<ServerConfig, Box<dyn s
         .map_err(|e| format!("server config: {e}").into())
 }
 
+/// 带客户端认证的服务端配置：客户端证书由调用方提供的验证器校验
+/// （`WebPkiClientVerifier::builder_with_provider(roots, provider)`，
+/// 验证算法面取自 ferritls provider）。
+pub fn server_config_with_client_auth(
+    provider: CryptoProvider,
+    verifier: Arc<dyn rustls::server::danger::ClientCertVerifier>,
+) -> Result<ServerConfig, Box<dyn std::error::Error>> {
+    let certs: Vec<CertificateDer<'static>> =
+        vec![CertificateDer::from_pem_slice(SERVER_CERT_PEM.as_bytes())?];
+    let key = PrivateKeyDer::from_pem_slice(SERVER_KEY_PEM.as_bytes())?;
+    ServerConfig::builder_with_provider(Arc::new(provider))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(certs, key)
+        .map_err(|e| format!("server config: {e}").into())
+}
+
+/// tests/certs/ 下的证书文件（PemObject 解析）。
+pub fn cert_from_certs_dir(name: &str) -> CertificateDer<'static> {
+    let path = format!("{}/tests/certs/{name}", env!("CARGO_MANIFEST_DIR"));
+    CertificateDer::from_pem_file(&path).unwrap_or_else(|e| panic!("read {path}: {e}"))
+}
+
+/// tests/certs/ 下的私钥文件（PKCS#8 DER）。
+pub fn key_from_certs_dir(name: &str) -> PrivateKeyDer<'static> {
+    let path = format!("{}/tests/certs/{name}", env!("CARGO_MANIFEST_DIR"));
+    let der = std::fs::read(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    PrivateKeyDer::Pkcs8(der.into())
+}
+
+/// 携带客户端证书的客户端配置（密钥经 provider 的 KeyProvider 加载）。
+pub fn client_config_with_certs(
+    provider: CryptoProvider,
+    chain: Vec<CertificateDer<'static>>,
+    key: PrivateKeyDer<'static>,
+) -> ClientConfig {
+    ClientConfig::builder_with_provider(Arc::new(provider))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AcceptAll))
+        .with_client_auth_cert(chain, key)
+        .expect("client auth cert")
+}
+
 pub fn client_config(provider: CryptoProvider) -> ClientConfig {
     ClientConfig::builder_with_provider(Arc::new(provider))
         .with_safe_default_protocol_versions()
@@ -125,6 +171,17 @@ pub fn handshake_ping_pong(
     server_cfg: ServerConfig,
     client_cfg: ClientConfig,
     expect: CipherSuite,
+) -> Result<String, Box<dyn std::error::Error>> {
+    handshake_ping_pong_with(server_cfg, client_cfg, expect, |_| {})
+}
+
+/// 同上，但服务端握手完成后先执行回调（用于断言 `peer_certificates`
+/// 等 mTLS 观察点），再进入 ping/pong。
+pub fn handshake_ping_pong_with(
+    server_cfg: ServerConfig,
+    client_cfg: ClientConfig,
+    expect: CipherSuite,
+    on_server_handshake_done: impl FnOnce(&mut ServerConnection) + Send + 'static,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
@@ -143,6 +200,7 @@ pub fn handshake_ping_pong(
         while conn.is_handshaking() {
             conn.complete_io(&mut server_io).map_err(io_err)?;
         }
+        on_server_handshake_done(&mut conn);
         // 先读 ping 再回 pong（避免服务端先退出导致 RST 竞态）
         let mut got = 0;
         let mut buf = [0u8; 4];
