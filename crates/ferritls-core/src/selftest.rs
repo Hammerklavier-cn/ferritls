@@ -2,10 +2,10 @@
 //!
 //! 模块首次使用前必须执行**已知答案测试（KAT）**，覆盖全部批准算法：
 //! SHA-256/384/512、SHA3-224/256/384/512（FIPS 202）、HMAC-SHA256、
-//! HKDF-SHA256、AES-128-GCM、AES-128-CCM、
-//! ECDSA P-256（RFC 6979 确定性签名逐字节比对 + 验证）、RSA PKCS#1 v1.5
-//! 签名/验证（内建 KAT 密钥）、CTR-DRBG（CAVP 向量流程）。任一失败 →
-//! 模块进入错误状态，此后所有密码操作返回
+//! HKDF-SHA256/SHA384、AES-128/256-GCM、AES-128-CCM、
+//! ECDSA P-256/384（RFC 6979 确定性签名逐字节比对 + 验证）、RSA PKCS#1
+//! v1.5 与 PSS 签名/验证（内建 KAT 密钥）、CTR-DRBG（CAVP 向量流程）。
+//! 任一失败 → 模块进入错误状态，此后所有密码操作返回
 //! [`Error::SelfTestFailed`](crate::Error)；整个模块拒绝服务，不做部分
 //! 降级（非批准算法亦不例外）。
 //!
@@ -93,7 +93,7 @@ static SELF_TEST_RUN: Mutex<bool> = Mutex::new(false);
 type KatFn = fn() -> Result<(), crate::Error>;
 
 fn run_kats() -> SelfTestStatus {
-    let kats: [(&'static str, KatFn); 16] = [
+    let kats: [(&'static str, KatFn); 20] = [
         ("sha256", kat_sha256),
         ("sha384", kat_sha384),
         ("sha512", kat_sha512),
@@ -103,10 +103,14 @@ fn run_kats() -> SelfTestStatus {
         ("sha3-512", kat_sha3_512),
         ("hmac-sha256", kat_hmac_sha256),
         ("hkdf-sha256", kat_hkdf_sha256),
+        ("hkdf-sha384", kat_hkdf_sha384),
         ("aes128-gcm", kat_aes128_gcm),
+        ("aes256-gcm", kat_aes256_gcm),
         ("aes128-ccm", kat_aes128_ccm),
         ("ecdsa-p256", kat_ecdsa_p256),
+        ("ecdsa-p384", kat_ecdsa_p384),
         ("rsa-pkcs1v15", kat_rsa_pkcs1v15),
+        ("rsa-pss", kat_rsa_pss),
         ("mlkem512", kat_mlkem512),
         ("mlkem768", kat_mlkem768),
         ("mlkem1024", kat_mlkem1024),
@@ -317,6 +321,29 @@ fn kat_hkdf_sha256() -> Result<(), crate::Error> {
 }
 
 // ---------------------------------------------------------------------------
+// KAT：HKDF-SHA-384（TLS_AES_256_GCM_SHA384 套件的密钥调度原语）。
+// RFC 5869 无 SHA-384 用例——期望值来自 tests/hkdf.rs 的双参照链
+// （纯 python RFC 5869 参照实现 + python-cryptography/OpenSSL HKDF 互验）。
+// ---------------------------------------------------------------------------
+
+fn kat_hkdf_sha384() -> Result<(), crate::Error> {
+    let expect: [u8; 42] = [
+        0xc8, 0xc9, 0x6e, 0x71, 0x0f, 0x89, 0xb0, 0xd7, 0x99, 0x0b, 0xca, 0x68, 0xbc, 0xde, 0xc8,
+        0xcf, 0x85, 0x40, 0x62, 0xe5, 0x4c, 0x73, 0xa7, 0xab, 0xc7, 0x43, 0xfa, 0xde, 0x9b, 0x24,
+        0x2d, 0xaa, 0xcc, 0x1c, 0xea, 0x56, 0x70, 0x41, 0x5b, 0x52, 0x84, 0x9c,
+    ];
+    let ikm = [0x0bu8; 22];
+    let prk = crate::hkdf::extract_sha384(&[], &ikm);
+    let mut okm = [0u8; 42];
+    crate::hkdf::expand_sha384(&prk, &[], &mut okm)?;
+    if okm == expect {
+        Ok(())
+    } else {
+        Err(crate::Error::SelfTestFailed("hkdf-sha384"))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // KAT：AES-128-GCM（GCM 规范 Test Case 3：加密 + 打开 + 篡改拒绝）
 // ---------------------------------------------------------------------------
 
@@ -340,6 +367,35 @@ fn kat_aes128_gcm() -> Result<(), crate::Error> {
     let opened = gcm.open(&NONCE, b"", &sealed)?;
     if opened != PT {
         return Err(crate::Error::SelfTestFailed("aes128-gcm"));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// KAT：AES-256-GCM（GCM 规范 Test Case 14：加密 + 打开。
+// CT/TAG 已经 python-cryptography（OpenSSL 后端）独立复算确认，2026-10）
+// ---------------------------------------------------------------------------
+
+fn kat_aes256_gcm() -> Result<(), crate::Error> {
+    const KEY: [u8; 32] = [0; 32];
+    const NONCE: [u8; 12] = [0; 12];
+    const PT: [u8; 16] = [0; 16];
+    const CT: [u8; 16] = [
+        0xce, 0xa7, 0x40, 0x3d, 0x4d, 0x60, 0x6b, 0x6e, 0x07, 0x4e, 0xc5, 0xd3, 0xba, 0xf3, 0x9d,
+        0x18,
+    ];
+    const TAG: [u8; 16] = [
+        0xd0, 0xd1, 0xc8, 0xa7, 0x99, 0x99, 0x6b, 0xf0, 0x26, 0x5b, 0x98, 0xb5, 0xd4, 0x8a, 0xb9,
+        0x19,
+    ];
+    let gcm = crate::gcm::Aes256Gcm::new(&KEY);
+    let sealed = gcm.seal(&NONCE, b"", &PT);
+    if sealed[..16] != CT || sealed[16..] != TAG {
+        return Err(crate::Error::SelfTestFailed("aes256-gcm"));
+    }
+    let opened = gcm.open(&NONCE, b"", &sealed)?;
+    if opened != PT {
+        return Err(crate::Error::SelfTestFailed("aes256-gcm"));
     }
     Ok(())
 }
@@ -390,6 +446,28 @@ fn kat_ecdsa_p256() -> Result<(), crate::Error> {
     }
     let q = sk.public_key_sec1()?;
     ecdsa::p256::VerifyKey::from_sec1_point(&q)?.verify(b"sample", &sig)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// KAT：ECDSA P-384（RFC 6979 A.2.6 确定性签名逐字节 + 验证；
+// DER 期望值由 RFC 原文的 r/s 经脚本构造，与 tests/p384.rs 同源核对）
+// ---------------------------------------------------------------------------
+
+fn kat_ecdsa_p384() -> Result<(), crate::Error> {
+    use crate::sign::ecdsa;
+    const D_HEX: &str = "6B9D3DAD2E1B8C1C05B19875B6659F4DE23C3B667BF297BA9AA47740787137D896D5724E4C70A825F872C9EA60D2EDF5";
+    const SIG_HEX: &str = "\
+306602310094EDBB92A5ECB8AAD4736E56C691916B3F88140666CE9FA73D64C4EA95AD133C81A648152E44ACF96E36DD1E80FABE46\
+02310099EF4AEB15F178CEA1FE40DB2603138F130E740A19624526203B6351D0A3A94FA329C145786E679E7B82C71A38628AC8";
+    let d = hex(D_HEX);
+    let sk = ecdsa::p384::SigningKey::from_seed(d.as_slice().try_into().expect("fixed width"));
+    let sig = sk.sign(b"sample")?;
+    if hex(SIG_HEX) != sig {
+        return Err(crate::Error::SelfTestFailed("ecdsa-p384"));
+    }
+    let q = sk.public_key_sec1()?;
+    ecdsa::p384::VerifyKey::from_sec1_point(&q)?.verify(b"sample", &sig)?;
     Ok(())
 }
 
@@ -905,6 +983,35 @@ fn kat_rsa_pkcs1v15() -> Result<(), crate::Error> {
 }
 
 const RSA_KAT_PUB_SPKI: &str = include_str!("kat_rsa_spki.hex");
+
+// ---------------------------------------------------------------------------
+// KAT：RSA-PSS（验证方向逐字节锚定 + 签名往返）。
+// salt 长度 = 哈希长度（32）时 sign_pss 使用 OS 熵盐，签名非确定——
+// 期望签名为实现生成后经 `openssl dgst -sha256 -sigopt
+// rsa_padding_mode:pss -sigopt rsa_pss_saltlen:32` 独立验证锚定
+// （2026-10，见 docs/VECTOR-PROVENANCE.md）。
+// ---------------------------------------------------------------------------
+
+fn kat_rsa_pss() -> Result<(), crate::Error> {
+    use crate::sign::rsa;
+    const SIG_HEX: &str = "\
+8252293b2e264a29a71a139d760d32a5849601066a22af71b37808d52be3b46fbd7e2c3b230d60eb1bbc9e3c5d06300d11bfa78dcc6701573060158cba1909a60f0859f0d010c2791f10abfd652973a6ad1bd4d02f4cc89a3db033de5bd91cbec9b272c9dfc7f2189930ec32034b598f60fad44291b21401e67658e4cc18f4d745e0bdb129a8c619c15339a6e2bdacb235c407a57faa601760039ae3b9376dd3868a65440a60da05760265f2719b18f653110810b103829801bb4028434d2ca8b6424a1ddecc5220f6e2c8754ac6d3f76bdb941604b966e752606b02da9c07b0f1d7a5481b98ffe2831219643f41577bd617ceeb8871c72ab58ede545c2cd353";
+    let sk = rsa::SigningKey::from_pkcs8_der(&hex(RSA_KAT_PKCS8_HEX))?;
+    let pk = rsa::VerifyKey::from_spki_der(&hex(RSA_KAT_PUB_SPKI))?;
+    // 验证方向：openssl 锚定的已知好签名必须通过，末字节翻转必须拒绝
+    let good = hex(SIG_HEX);
+    pk.verify_pss(256, b"sample", &good)?;
+    let mut bad = good.clone();
+    let last = bad.len() - 1;
+    bad[last] ^= 1;
+    if pk.verify_pss(256, b"sample", &bad).is_ok() {
+        return Err(crate::Error::SelfTestFailed("rsa-pss"));
+    }
+    // 签名方向：自产签名可被验证路径接受（密钥跨 SK/PK 一致性）
+    let sig = sk.sign_pss(256, b"sample")?;
+    pk.verify_pss(256, b"sample", &sig)?;
+    Ok(())
+}
 
 // ---------------------------------------------------------------------------
 // KAT：CTR-DRBG（CAVP [AES-256 no df] 流程：Instantiate → Reseed →
