@@ -172,16 +172,17 @@ pub fn handshake_ping_pong(
     client_cfg: ClientConfig,
     expect: CipherSuite,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    handshake_ping_pong_with(server_cfg, client_cfg, expect, |_| {})
+    handshake_ping_pong_with(server_cfg, client_cfg, expect, |_| {}, |_| {})
 }
 
-/// 同上，但服务端握手完成后先执行回调（用于断言 `peer_certificates`
-/// 等 mTLS 观察点），再进入 ping/pong。
+/// 同上，但两侧握手完成后先分别执行回调（用于断言 `peer_certificates`、
+/// `handshake_kind` 等观察点），再进入 ping/pong。
 pub fn handshake_ping_pong_with(
     server_cfg: ServerConfig,
     client_cfg: ClientConfig,
     expect: CipherSuite,
     on_server_handshake_done: impl FnOnce(&mut ServerConnection) + Send + 'static,
+    on_client_handshake_done: impl FnOnce(&mut ClientConnection),
 ) -> Result<String, Box<dyn std::error::Error>> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     let addr = listener.local_addr().expect("addr");
@@ -257,6 +258,8 @@ pub fn handshake_ping_pong_with(
     let negotiated = conn.negotiated_cipher_suite().expect("negotiated");
     assert_eq!(negotiated.suite(), expect, "negotiated suite");
 
+    on_client_handshake_done(&mut conn);
+
     retry_would_block(|| conn.writer().write_all(b"ping"))?;
     while conn.wants_write() {
         match conn.complete_io(&mut client_io) {
@@ -312,6 +315,151 @@ pub fn retry_would_block<T, F: FnMut() -> std::io::Result<T>>(mut f: F) -> std::
             }
             Err(e) => return Err(e),
         }
+    }
+}
+
+/// 推进客户端一次 complete_io。complete_io 把 TLS 层错误包成
+/// InvalidData 的 io::Error——源错误经 downcast 还原，alert 语义
+/// （如 `Error::AlertReceived`）才能被负例断言识别。
+pub fn drive_client(
+    conn: &mut ClientConnection,
+    io: &mut (impl std::io::Read + std::io::Write),
+) -> Result<(), rustls::Error> {
+    conn.complete_io(io).map(|_| ()).map_err(unpack_tls_error)
+}
+
+/// 同 [`drive_client`]，服务端侧。
+pub fn drive_server(
+    conn: &mut ServerConnection,
+    io: &mut (impl std::io::Read + std::io::Write),
+) -> Result<(), rustls::Error> {
+    conn.complete_io(io).map(|_| ()).map_err(unpack_tls_error)
+}
+
+/// 还原 complete_io 包装的 rustls 错误（非 TLS 错误归一为 General）。
+pub fn unpack_tls_error(e: std::io::Error) -> rustls::Error {
+    if let Some(tls) = e
+        .get_ref()
+        .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+    {
+        return tls.clone();
+    }
+    rustls::Error::General(format!("io: {e}"))
+}
+
+/// 从 rustls reader 读满 `buf`（解密后的流没有消息边界；
+/// WouldBlock 时以 complete_io 拉取新记录）。
+fn read_exact_tls(
+    conn: &mut ServerConnection,
+    io: &mut std::net::TcpStream,
+    buf: &mut [u8],
+) -> Result<(), Box<dyn std::error::Error + Send>> {
+    let io_err = |e| Box::new(e) as Box<dyn std::error::Error + Send>;
+    let mut got = 0;
+    while got < buf.len() {
+        match conn.reader().read(&mut buf[got..]) {
+            Ok(0) => {
+                return Err(io_err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "eof",
+                )));
+            }
+            Ok(n) => got += n,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                conn.complete_io(io).map_err(io_err)?;
+            }
+            Err(e) => return Err(io_err(e)),
+        }
+    }
+    Ok(())
+}
+
+/// 完整握手后传输任意长度负载：客户端发 `payload`，服务端读全并回显，
+/// 客户端读回比对。超过单条记录容量（16384 B）时由 rustls 分片——
+/// 用于 16 KiB 满记录与 `max_fragment_size` 强制多片传输。
+pub fn transfer_roundtrip(
+    server_cfg: ServerConfig,
+    client_cfg: ClientConfig,
+    payload: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server_io = std::net::TcpStream::connect(addr).expect("connect");
+    let client_io = listener
+        .incoming()
+        .next()
+        .expect("incoming")
+        .expect("accept");
+
+    let expected = payload.to_vec();
+    let server = std::thread::spawn(move || -> Result<(), Box<dyn std::error::Error + Send>> {
+        let mut conn = ServerConnection::new(Arc::new(server_cfg))
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)?;
+        let mut server_io = server_io;
+        let io_err = |e| Box::new(e) as Box<dyn std::error::Error + Send>;
+        while conn.is_handshaking() {
+            conn.complete_io(&mut server_io).map_err(io_err)?;
+        }
+        let mut received = vec![0u8; expected.len()];
+        read_exact_tls(&mut conn, &mut server_io, &mut received)?;
+        assert_eq!(received, expected, "server received altered payload");
+        retry_would_block(|| conn.writer().write_all(&expected)).map_err(io_err)?;
+        while conn.wants_write() {
+            match conn.complete_io(&mut server_io) {
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                Err(e) => return Err(io_err(e)),
+            }
+        }
+        Ok(())
+    });
+
+    let mut conn = ClientConnection::new(
+        Arc::new(client_cfg),
+        ServerName::try_from("localhost".to_string()).unwrap(),
+    )
+    .map_err(|e| format!("client conn: {e}"))?;
+    let mut client_io = client_io;
+    while conn.is_handshaking() {
+        match conn.complete_io(&mut client_io) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    retry_would_block(|| conn.writer().write_all(payload))?;
+    while conn.wants_write() {
+        match conn.complete_io(&mut client_io) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    let mut echoed = vec![0u8; payload.len()];
+    {
+        let mut got = 0;
+        while got < echoed.len() {
+            match conn.reader().read(&mut echoed[got..]) {
+                Ok(0) => return Err("eof".into()),
+                Ok(n) => got += n,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    conn.complete_io(&mut client_io)?;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+    assert_eq!(echoed, payload, "echo roundtrip mismatch");
+    match server.join() {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(format!("server thread: {e}").into()),
+        Err(e) => Err(format!("server thread panicked: {e:?}").into()),
     }
 }
 

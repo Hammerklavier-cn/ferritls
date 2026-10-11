@@ -16,12 +16,11 @@
 
 mod common;
 
-use std::io::{Read, Write};
 use std::sync::Arc;
 
 use common::{
-    cert_from_certs_dir, client_config, client_config_with_certs, ferritls_pinned,
-    key_from_certs_dir, server_config_with_client_auth,
+    cert_from_certs_dir, client_config, client_config_with_certs, drive_client, drive_server,
+    ferritls_pinned, key_from_certs_dir, server_config_with_client_auth,
 };
 use rustls::pki_types::{CertificateDer, ServerName};
 use rustls::{CipherSuite, ClientConnection, ServerConnection};
@@ -92,6 +91,7 @@ fn mtls_client_cert_accepted_and_visible_to_server() {
                 .unwrap_or_else(|| panic!("server must observe client certificate"));
             assert!(!certs.is_empty(), "client cert chain empty");
         },
+        |_| {},
     )
     .unwrap_or_else(|e| panic!("mtls handshake failed: {e}"));
 }
@@ -156,7 +156,7 @@ fn expect_rejected(
         let mut conn = ServerConnection::new(Arc::new(server_cfg))?;
         let mut io = server_io;
         while conn.is_handshaking() {
-            server_drive(&mut conn, &mut io)?;
+            drive_server(&mut conn, &mut io)?;
         }
         Err(rustls::Error::General(
             "server handshake completed — client auth was not enforced".into(),
@@ -173,7 +173,7 @@ fn expect_rejected(
     let client_err = loop {
         rounds += 1;
         assert!(rounds < 50, "client never observed the rejection");
-        match client_drive(&mut conn, &mut io) {
+        match drive_client(&mut conn, &mut io) {
             Err(e) => break e,
             Ok(()) if conn.is_handshaking() => {}
             Ok(()) => {
@@ -194,31 +194,4 @@ fn expect_rejected(
         Ok(Err(_)) => {} // 服务端停在验证错误上：预期
         Err(panic) => std::panic::panic_any(panic),
     }
-}
-
-/// 推进客户端一次 complete_io。complete_io 把 TLS 层错误包成
-/// InvalidData 的 io::Error——源错误经 downcast 还原，alert 语义
-/// （AlertReceived）才能被上层断言识别。
-fn client_drive(
-    conn: &mut ClientConnection,
-    io: &mut (impl Read + Write),
-) -> Result<(), rustls::Error> {
-    conn.complete_io(io).map(|_| ()).map_err(unpack_tls_error)
-}
-
-fn server_drive(
-    conn: &mut ServerConnection,
-    io: &mut (impl Read + Write),
-) -> Result<(), rustls::Error> {
-    conn.complete_io(io).map(|_| ()).map_err(unpack_tls_error)
-}
-
-fn unpack_tls_error(e: std::io::Error) -> rustls::Error {
-    if let Some(tls) = e
-        .get_ref()
-        .and_then(|inner| inner.downcast_ref::<rustls::Error>())
-    {
-        return tls.clone();
-    }
-    rustls::Error::General(format!("io: {e}"))
 }
