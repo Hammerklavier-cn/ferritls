@@ -23,9 +23,9 @@
 | `sha3.rs` | FIPS 202 示例（空串/"abc"/448·896 位填充边界/多块消息的 SHA3-256/512 与 SHAKE128/256 输出）+ FIPS 203 附录 A 的 G/H/J/PRF/XOF 示例值（"Input to an invocation of …" 固定输入） | 官方示例值逐字节核对（2026-09-13）；附录 A 值另经 RustCrypto `ml-kem`（ACVP 全绿实现）`crypto.rs` 测试常量交叉核对 |
 | `sha3.rs`（224/384，2026-09-17 补全） | FIPS 202 全家族的 Keccak 团队公布示例（SHA3-224/384 的空串与 "abc"）+ 同文件 448/896 位标准消息 | "abc"/空串与 Keccak 团队公布值逐字节比对一致；四组均经 python hashlib（OpenSSL 后端）独立复算；selftest 新增 SHA3-224/256/384/512 KAT（"abc"，同源值） |
 | `mlkem.rs` | **NIST ACVP-Server** `gen-val/json-files/ML-KEM-keyGen-FIPS203` 与 `ML-KEM-encapDecap-FIPS203` 的 `internalProjection.json` 原件，**三参数集**（M8.4，2026-09-15 提取；NIST 上游 2026-09 重生成了 sample 向量，与 M8.3 所用 RustCrypto/KEMs 镜像快照 commit 65370b8 不同代——768 两代互验一致，算法为确定性锚定）：每集 keyGen 3 例（d,z→ek,dk，含 dk 解析校验）+ 封装 3 例（ek,m→c,ss）+ 解封装 2 valid + 1 "modified ciphertext"（隐式拒绝）+ KeyCheck 负例（encapsulationKeyCheck 模校验 / decapsulationKeyCheck h 校验，各含官方 valid 对照）；另 `mlkem.rs` 内置 KAT 三集（selftest，同源五元组） | **程序化提取**（tools/extract_mlkem_acvp.py，从官方 JSON 逐字段转写；子集选择确定）；文件 SHA-256 与获取日期记录于生成文件头（2026-09-15） |
-| `selftest.rs` | 上表 KAT 的汇编（实现一致性，无独立官方来源） | — |
+| `selftest.rs` | 上表 KAT 的汇编（实现一致性，无独立官方来源） | —；2026-10 扩充的四个 KAT 的锚定：AES-256-GCM = GCM 规范 Test Case 14（CT/TAG 经 python-cryptography（OpenSSL 后端）独立复算一致）；HKDF-SHA-384 = `hkdf.rs` 双参照链同源值；ECDSA P-384 = RFC 6979 A.2.6（与 `p384.rs` 同源，DER 由 r/s 经脚本构造）；RSA-PSS = 实现生成一次后经 `openssl dgst -sha256 -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:32` 验证锚定（盐随机，签名方向无法逐字节锚定，故 KAT 走验证方向 + 篡改拒绝 + 自产签名往返） |
 | `schedule_rfc8448.rs` | RFC 8448 §3 官方轨迹 | **程序化提取**（tools/extract_rfc8448.py，脚本内含 Python 独立复算比对） |
-| `wycheproof.rs` | C2SP/wycheproof testvectors_v1（裁剪入库） | 文件级入库，见 tests/vectors/README.md |
+| `wycheproof.rs` | C2SP/wycheproof testvectors_v1（裁剪入库） | 文件级入库，见 tests/vectors/README.md；AEAD 两文件（aes_gcm/chacha20_poly1305，2026-10 入库）按参数空间裁组后与上游原文逐字段核对 198/198 |
 | `ferritls-rustls/src/quic_vectors.rs`（M8.5） | **RFC 9001 附录 A 原文**（rfc-editor.org，2026-09-15 下载）：§A.1 密钥与掩码（client/server hp + sample→mask）、§A.2 客户端 Initial 完整包（AES-128-GCM，1162 B 载荷 = 245 B CRYPTO 帧 + 917 B 零 PADDING，1200 B 受保护包）、§A.3 服务端 Initial 完整包（99 B 载荷，135 B 受保护包）、§A.5 ChaCha20 短头包（key/iv/hp/sample/mask/最终 21 B 包）；另 picoquic `multipath_test.c` 经 rustls 测试转引的 multipath 向量因 rustls `KeyBuilder` 为 `pub(crate)`（第三方无法从 secret 经公开 API 重建 PacketKey）**未采用**，`for_path` 以 rustls 公开 `Nonce::for_path` 同式 + 往返/非碰撞测试覆盖 | **程序化提取 + 派生关系校验**（python 脚本从 RFC 文本按行提取 hex 并验证：nonce = iv⊕pn、掩码位应用后包头、sample 取位 `[pn_offset+4 .. +16]` 全部闭合）；§A.2/A.3 测试经公开 `quic::Suite::keys` 路径运行，覆盖 HKDF/HMAC + "quic key/iv/hp" 派生全链 |
 
 ## 2026-09-07 修订说明
@@ -50,3 +50,10 @@
    用例（同一案例的 dk/c 真值对，每参数集 valid + modified-ct 各一）
    生成，格式 `sel ‖ dk ‖ ct`；向量更新后重跑脚本即可，
    `tests/fuzz_seeds.rs` 冒烟守护漂移。
+6. fuzz 种子（其余 target，2026-10 补齐）：由 python-cryptography
+   生成的真实密钥材料构造（valid/tampered 对），遵循各 target 的
+   输入协议（`fuzz/fuzz_targets/*.rs` 的 sel 字节与固定长度切割；
+   `ccm_tls` 形状恒预留 13 字节 nonce 字段、CcmTls 取前 12）；
+   RSA PKCS#8 解析种子复用 selftest 内建 KAT 密钥。
+   `tests/fuzz_seeds.rs` 对全部 target 同构冒烟（valid 必须 Ok、
+   tampered/truncated 必须 Err）。

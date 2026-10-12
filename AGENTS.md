@@ -343,17 +343,26 @@ targets 在 M6 建立，语料进 `fuzz/`），零 panic。
 - `crates/ferritls-core/tests/schedule_rfc8448.rs`：TLS 1.3 密钥调度
   全链外部真值（**由 tools/extract_rfc8448.py 生成，勿手改**）。
 - `crates/ferritls-core/tests/wycheproof.rs` + `tests/vectors/`：
-  Wycheproof 对抗性向量（裁剪入库，策略见 vectors/README.md）。
+  Wycheproof 对抗性向量（裁剪入库，策略见 vectors/README.md）；
+  含 AEAD 两文件（aes_gcm/chacha20_poly1305，2026-10，按参数空间
+  nonce-96/tag-128 裁组）。
 - `crates/ferritls-core/tests/fuzz_seeds.rs`：fuzz 种子语料冒烟——按
-  fuzz target 同构逻辑跑 `fuzz/corpus/` 种子（防漂移；种子由
-  `tools/gen_mlkem_fuzz_seeds.py` 从 mlkem_acvp.rs 的 ACVP 用例生成）。
+  **全部** fuzz target 同构逻辑跑 `fuzz/corpus/` 种子（防漂移：
+  valid 种子必须成功、tampered/truncated 必须失败；mlkem-decaps
+  种子由 `tools/gen_mlkem_fuzz_seeds.py` 生成，其余由
+  python-cryptography 构造，溯源见 docs/VECTOR-PROVENANCE.md §6）。
 - `crates/ferritls-rustls/tests/api.rs`：清单断言 + provider 冒烟。
 - `crates/ferritls-interop/tests/`：互操作矩阵（M6）、ring 交叉互操作
   与 webpki 真实证书链校验（M7）、内存 QUIC 回环握手含 ring 交叉
-  （M8.5，`quic.rs`）、Ni 后端 A/B 握手（`interop_ni.rs`）；
+  （M8.5，`quic.rs`）、Ni 后端 A/B 握手（`interop_ni.rs`）、
+  mTLS 客户端认证（`mtls.rs`，2026-10）、会话恢复 + KeyLog 端到端
+  （`session.rs`）、记录层边界（`records.rs`：16 KiB 满记录/
+  max_fragment_size 分片）、套件协商顺序含 fips 协商面拒绝
+  （`negotiation.rs`）（后四项 2026-10 测试加固轮）；
   `tests/certs/` 为 openssl 生成的
   测试专用链（root→intermediate→leaf + 无关根；P-256/RSA-2048/
-  Ed25519/P-384 四条链，profile 与再生成命令见 tests/certs/README.md
+  Ed25519/P-384 四条链 + mTLS 客户端链 client_root/client_leaf
+  （EKU clientAuth），profile 与再生成命令见 tests/certs/README.md
   ——注意 EC leaf 私钥必须显式 `pkcs8 -topk8` 转 DER，`openssl pkey`
   对 EC 输出的是 SEC1；P-384 签发必须 `-sha384` 配对曲线）。
 - `crates/ferritls-interop/tests/reqwest.rs`：应用层集成冒烟——reqwest
@@ -454,7 +463,7 @@ mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——�
 
 ---
 
-## 9. 当前状态（2026-09，M0–M7 与 M8.1–M8.5 完成）
+## 9. 当前状态（2026-10，M0–M7 与 M8.1–M8.5 完成）
 
 - [x] 双许可（Apache-2.0 OR MIT）、workspace、CI、cargo-deny
 - [x] ferritls-core 全模块实现（无 `todo!()` 残留）
@@ -528,6 +537,17 @@ mingw64 DLL 会**静默崩溃**（cc-rs 报 exit 1 且无诊断输出）——�
       Settings 配置）；slow-tests 触发域收窄（schedule/手动/tag）；
       workflow 最小权限、job 超时、concurrency 取消、rust-cache。
       策略记录在 §7
+- [x] 测试加固轮（完成 2026-10-12）：Wycheproof AEAD 向量入库
+      （aes_gcm + chacha20_poly1305，198 例，参数空间裁组 + 逐字段
+      核对）；上电自检 KAT 16 → 20（补 AES-256-GCM、HKDF-SHA-384、
+      ECDSA P-384、RSA-PSS，锚定见 VECTOR-PROVENANCE selftest 行）；
+      mTLS 客户端认证互操作（正例 + 无证书/不可信 CA 负例）；
+      TLS 1.3 会话恢复（Full→Resumed 双侧观察）与 KeyLog 端到端
+      （extract_keys 接线）；记录层边界（16 KiB 满记录/分片/1 字节）；
+      套件协商顺序（客户端序默认尊重/server 偏好/fips 协商面拒绝
+      ChaCha）；fuzz 种子补齐 + 全 target 同构冒烟（防漂移断言
+      valid→Ok / tampered→Err）；ct 原语单元测试与 X25519 小阶点
+      直接拒绝断言
 - [ ] M8 余项：TLS 1.2 / aarch64 后端；候选余项 X448 / P-521（含
       ecdsa_secp521r1_sha512）/ Ed448（出口条件草案见 ROADMAP）
 
