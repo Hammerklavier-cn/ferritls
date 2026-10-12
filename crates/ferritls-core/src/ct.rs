@@ -22,3 +22,38 @@ pub fn verify_tag(computed: &[u8], received: &[u8]) -> Result<(), crate::Error> 
         Err(crate::Error::VerificationFailed)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ct_eq_matches_and_length_mismatch() {
+        assert!(ct_eq(b"", b""));
+        assert!(ct_eq(b"abcdef", b"abcdef"));
+        assert!(!ct_eq(b"abcdef", b"abcdeg"));
+        // 同长度不同内容：每个字节位都要能区分
+        for i in 0..6 {
+            let mut b = *b"abcdef";
+            b[i] ^= 1;
+            assert!(!ct_eq(b"abcdef", &b), "bit flip at byte {i} must differ");
+        }
+        // 长度不等（长度非秘密，可短路）恒 false，包括空 vs 非空
+        assert!(!ct_eq(b"", b"a"));
+        assert!(!ct_eq(b"ab", b"abc"));
+    }
+
+    #[test]
+    fn verify_tag_maps_to_verification_failed() {
+        assert_eq!(verify_tag(b"tag-value-16byt", b"tag-value-16byt"), Ok(()));
+        assert_eq!(
+            verify_tag(b"tag-value-16byt", b"tag-value-16byz"),
+            Err(crate::Error::VerificationFailed)
+        );
+        // 长度不等也归一到同一错误（AEAD open 的统一契约）
+        assert_eq!(
+            verify_tag(b"short", b"shorter"),
+            Err(crate::Error::VerificationFailed)
+        );
+    }
+}

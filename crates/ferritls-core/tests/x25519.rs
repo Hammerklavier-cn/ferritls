@@ -70,3 +70,26 @@ fn x25519_rfc7748_iterated() {
         "after 1000 iterations",
     );
 }
+
+/// 小阶点直接拒绝：全零 u（无穷远）与 u=1（阶 1）的输出为全零，
+/// 必须返回 `VerificationFailed`（AGENTS §5.2：TLS 层必须终止握手）。
+/// Wycheproof 的 LowOrderPublic 组以对拍形式覆盖同一路径；此处直接
+/// 断言错误值，防止契约被无意放宽。
+#[test]
+fn x25519_low_order_points_rejected() {
+    let sk = x25519::SecretKey::from_seed([9u8; 32]);
+    for (what, u) in [
+        ("u = 0 (infinity)", [0u8; 32]),
+        ("u = 1 (order 1)", {
+            let mut u = [0u8; 32];
+            u[0] = 1;
+            u
+        }),
+    ] {
+        let got = sk.diffie_hellman(&u).err();
+        assert!(
+            matches!(got, Some(ferritls_core::Error::VerificationFailed)),
+            "{what} must be rejected with VerificationFailed, got {got:?}"
+        );
+    }
+}
