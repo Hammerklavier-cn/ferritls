@@ -1,67 +1,111 @@
 //! # ferritls-core
 //!
-//! 纯 Rust 实现的密码学核心，为 [ferritls-rustls](https://docs.rs/ferritls-rustls)
-//! （rustls `CryptoProvider` 适配层）提供全部密码原语。
+//! Pure-Rust cryptographic primitives, providing everything that
+//! [ferritls-rustls](https://docs.rs/ferritls-rustls) (the rustls
+//! `CryptoProvider` adapter) needs. No C, no assembly, no `unsafe`.
 //!
-//! ## FIPS 140-3 模块边界
+//! ## FIPS 140-3 module boundary
 //!
-//! 本 crate 是规划中提交 CMVP 验证的**模块边界**：所有算法在边界内用纯 Rust
-//! 自研实现（无 C、无汇编、`#![forbid(unsafe_code)]`），依赖白名单仅
-//! [`subtle`] 与 [`zeroize`]（M3 起增加 `getrandom` 作为边界外熵源输入）。
-//! 任何新依赖都必须先更新 `docs/FIPS.md` 的白名单与审计依据（见 AGENTS.md
-//! 硬性规则 2）。
+//! This crate is the **module boundary** intended for future CMVP
+//! validation: every algorithm is implemented in-boundary in pure Rust
+//! (`#![forbid(unsafe_code)]`), and the dependency whitelist is exactly
+//! [`subtle`], [`zeroize`] and [`getrandom`] (OS entropy input). New
+//! dependencies require updating the whitelist and audit rationale in
+//! `docs/FIPS.md` first (AGENTS.md hard rule 2).
 //!
-//! ## 默认 feature `simd`（P2）
+//! Note that the module is **not yet CMVP-validated**; the `fips` cargo
+//! feature selects the approved-algorithm mode, it is not a
+//! certification claim.
 //!
-//! 默认启用的 `simd` feature 在 AES/ChaCha20 热路径使用标准库
-//! `core::simd`（portable_simd）的显式向量类型——属 std，**不是第三方
-//! 依赖，白名单不变**。stable 工具链上需要 `RUSTC_BOOTSTRAP=1` 环境变量
-//! （本仓库 `.cargo/config.toml` 已提供；下游用户自带该 env 或以
-//! `default-features = false` 退出到标量回退）。通道宽度按编译目标自动
-//! 选择（SSE2/NEON 基线；用户以 RUSTFLAGS 开启 target-feature 时升级
-//! AVX2/AVX-512），无运行时分发、无 unsafe。
+//! ## Default feature `simd`
 //!
-//! ## 模块地图
+//! The default `simd` feature uses the standard library's `core::simd`
+//! (portable_simd) for explicit vectorization of the AES and ChaCha20
+//! hot paths — `std` code, not a third-party dependency, so the
+//! whitelist is unchanged. On the **stable toolchain** it compiles via
+//! `RUSTC_BOOTSTRAP=1` (provided by this repository's
+//! `.cargo/config.toml`; downstream users set the env themselves or opt
+//! out with `default-features = false`, which keeps the scalar fallback
+//! path). Vector width follows the compile target (SSE2/NEON baseline,
+//! widening to AVX2/AVX-512 with the corresponding `target-feature`
+//! RUSTFLAGS); there is no runtime dispatch and no `unsafe`.
 //!
-//! | 模块 | 内容 | FIPS 批准状态 | 落地里程碑 |
-//! |---|---|---|---|
-//! | [`sha2`] | SHA-256/384/512 | 批准 | M1 |
-//! | [`sha3`] | SHA3-224/256/384/512、SHAKE-128/256（FIPS 202 全家族） | 批准 | M8.3 |
-//! | [`hmac`] / [`hkdf`] | HMAC、HKDF | 批准 | M1 |
-//! | [`aes`] / [`gcm`] / [`ccm`] | AES、AES-GCM、AES-CCM | 批准 | M2 |
-//! | [`chacha20poly1305`] | ChaCha20-Poly1305 | 非批准 | M2 |
-//! | [`ecdh`] | X25519（非批准）、P-256/384（批准） | 混合 | M3 |
-//! | [`mlkem`] | ML-KEM-768（FIPS 203，批准 KEM） | 批准 | M8.3 |
-//! | [`sign`] | ECDSA、RSA、Ed25519（非批准） | 混合 | M4 |
-//! | [`drbg`] / [`entropy`] | SP 800-90A CTR-DRBG、OS 熵 | 批准 | M5 |
-//! | [`selftest`] | 上电自检（KAT） | 要求项 | M5 |
-//! | [`der`] | 最小 DER/PKCS#8/SEC1 解析 | — | M4 |
-//! | `rsabig`（内部） | RSA 固定宽度大数 + Montgomery 模幂 | 非公开支撑 | M4 |
-//! | [`ct`] / [`policy`] / [`ops`] | 常数时间工具、批准策略、后端分发 | — | M0（M8.1 分发实装） |
+//! ## Usage
 //!
-//! ## 实现状态
+//! Hashing:
 //!
-//! M1–M7 已全部落地：上表各模块的实现与向量测试（NIST/RFC 官方向量、
-//! Wycheproof、RFC 8448 密钥调度）均已启用并全绿，无 `todo!()` 残留。
-//! M8.1 起 AES-GCM 公开类型经 [`ops`] 对象分发、SHA-256 块压缩经
-//! [`ops`] 函数分发（均为默认软件直连、零开销；可安装边界外硬件
-//! 后端 crate 替换执行核心，见 [`ops`] 模块文档）。
-//! 新增测试向量时沿用既有流程：核对官方原文 → 入库 → 全绿
-//! （见 AGENTS.md“测试体系”）。
+//! ```
+//! use ferritls_core::sha2::Sha256;
+//!
+//! let digest = Sha256::one_shot(b"abc");
+//! assert_eq!(&digest[..4], &[0xba, 0x78, 0x16, 0xbf]); // FIPS 180-4 example
+//! ```
+//!
+//! Authenticated encryption (AES-128-GCM; the same shape exists for
+//! [`gcm::Aes256Gcm`], [`ccm`] and [`chacha20poly1305`]):
+//!
+//! ```
+//! use ferritls_core::gcm::Aes128Gcm;
+//!
+//! let cipher = Aes128Gcm::new(&[7u8; 16]);
+//! let nonce = [9u8; 12]; // unique per key — never repeat a (key, nonce) pair
+//!
+//! let ct_and_tag = cipher.seal(&nonce, b"aad", b"plaintext");
+//! let plaintext = cipher.open(&nonce, b"aad", &ct_and_tag).expect("authentic");
+//! assert_eq!(plaintext, b"plaintext");
+//!
+//! // Tampered ciphertexts fail verification before any plaintext is returned:
+//! let mut tampered = ct_and_tag.clone();
+//! tampered[0] ^= 0x01;
+//! assert!(cipher.open(&nonce, b"aad", &tampered).is_err());
+//! ```
+//!
+//! Key agreement, signatures, KEMs and the DRBG follow the same pattern:
+//! typed keys, explicit errors (no panics on attacker-controlled input),
+//! and zeroization of secret material on drop.
+//!
+//! ## Module map
+//!
+//! | Module | Contents | FIPS approval |
+//! |---|---|---|
+//! | [`sha2`] | SHA-256/384/512 | approved |
+//! | [`sha3`] | SHA3-224/256/384/512, SHAKE-128/256 (full FIPS 202 family) | approved |
+//! | [`hmac`] / [`hkdf`] | HMAC, HKDF | approved |
+//! | [`aes`] / [`gcm`] / [`ccm`] | AES, AES-GCM, AES-CCM | approved |
+//! | [`chacha20poly1305`] | ChaCha20-Poly1305 | not approved |
+//! | [`ecdh`] | X25519 (not approved), P-256/384 (approved) | mixed |
+//! | [`mlkem`] | ML-KEM-512/768/1024 (FIPS 203) | approved |
+//! | [`sign`] | ECDSA, RSA (approved), Ed25519 (not approved) | mixed |
+//! | [`drbg`] / [`entropy`] | SP 800-90A CTR-DRBG, OS entropy | approved |
+//! | [`selftest`] | Power-on self-tests (KATs) | required |
+//! | [`der`] | Minimal DER/PKCS#8/SEC1 parsing | — |
+//! | [`ct`] / [`policy`] / [`ops`] | Constant-time utilities, approval policy, backend dispatch | — |
+//!
+//! All modules are fully implemented and covered by official
+//! NIST/RFC/CAVP vectors, Wycheproof and the RFC 8448 key schedule (see
+//! `docs/VECTOR-PROVENANCE.md` for sources). AES-GCM and SHA-256 public
+//! types dispatch through [`ops`]: the default is a zero-overhead direct
+//! software path, and an optional out-of-boundary hardware backend crate
+//! can be installed to replace the execution core (see [`ops`]).
 
 #![forbid(unsafe_code)]
-// 默认 feature `simd`（P2）：显式 core::simd（portable_simd）向量化路径，
-// 属标准库、全部 safe 代码。stable 工具链上经 RUSTC_BOOTSTRAP=1 编译该
-// feature gate（仓内 .cargo/config.toml [env] / CI env 提供，下游自带 env
-// 或 default-features = false 退出到标量回退）。约束集与档位选择规则见
-// AGENTS.md §5.5；portable_simd 稳定后拆除 RUSTC_BOOTSTRAP 依赖。
+// Default feature `simd`: explicit core::simd (portable_simd) paths — std
+// code, entirely safe. On stable toolchains the feature gate compiles via
+// RUSTC_BOOTSTRAP=1 (repo .cargo/config.toml [env] / CI env; downstream
+// users provide the env or opt out with default-features = false, which
+// keeps the scalar fallback). Constraints and lane-width selection rules:
+// AGENTS.md §5.5. Remove the bootstrap dependency once portable_simd
+// stabilizes.
 #![cfg_attr(feature = "simd", feature(portable_simd))]
-// 未来硬件加速后端（AES-NI/SHA 扩展）必然需要 unsafe；它们不得进入本 crate，
-// 而是作为边界外的独立后端 crate 通过 ops 模块的 trait 挂接（见 ops 模块文档
-// 与 docs/ARCHITECTURE.md），届时是否将后端纳入 FIPS 边界需重新评估。
+// Future hardware backends (AES-NI/SHA extensions) inevitably need unsafe;
+// they must not enter this crate — they live in separate out-of-boundary
+// backend crates hooked up through the ops module traits (see the ops
+// module docs and docs/ARCHITECTURE.md). Whether such a backend ever joins
+// the FIPS boundary is a phase-C decision.
 
-/// `simd` feature 编译金丝雀：确保当前配置下 portable_simd 真正可用
-///（P2 各模块的热路径在 aes / chacha20poly1305 中使用）。
+/// Compile canary for the `simd` feature: ensures portable_simd is truly
+/// available in the current configuration (the hot paths live in the
+/// [`aes`] and [`chacha20poly1305`] modules).
 #[cfg(feature = "simd")]
 #[allow(dead_code)]
 fn _portable_simd_canary(v: std::simd::u32x4) -> std::simd::u32x4 {
@@ -91,26 +135,30 @@ pub mod sign;
 
 pub use policy::Approval;
 
-/// 边界内统一的错误类型。
+/// The unified error type of the module boundary.
 ///
-/// 规则：攻击者可控输入（网络数据、证书、密钥文件）不得引发 panic，
-/// 一切失败以本错误返回（AGENTS.md 硬性规则 5）。`non_exhaustive`：
-/// 实现里程碑落地时允许追加变体。
+/// Rule: attacker-controlled input (network data, certificates, key
+/// files) must never panic — every failure is returned as this error
+/// (AGENTS.md hard rule 4). `non_exhaustive`: variants may be added as
+/// milestones land.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
-    /// 输入长度或格式不满足算法要求。
+    /// Input length or format does not satisfy the algorithm's requirements.
     InvalidInput,
-    /// 密钥/IV/标签等验证失败（认证加密打开失败、签名验证失败等）。
-    /// 比较必须常数时间，不得通过错误类型区分失败原因。
+    /// Verification of a key/IV/tag failed (AEAD open, signature
+    /// verification, etc.). Comparisons are constant-time; the error must
+    /// not distinguish failure reasons.
     VerificationFailed,
-    /// 请求的算法或曲线在当前构建（批准模式）下不可用。
+    /// The requested algorithm or curve is unavailable in this build
+    /// (approved mode).
     Unsupported,
-    /// 熵源失败（OS 随机数不可用）。
+    /// Entropy source failure (OS randomness unavailable).
     EntropyFailed,
-    /// DRBG 失败（健康测试不过、超出生成上限等）。
+    /// DRBG failure (health test failed, generation limit exceeded, etc.).
     RngError,
-    /// 上电自检失败：模块处于错误状态，拒绝服务，直到重新初始化。
+    /// Power-on self-test failed: the module is in an error state and
+    /// refuses service until re-initialized.
     SelfTestFailed(&'static str),
 }
 

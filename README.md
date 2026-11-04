@@ -1,125 +1,88 @@
 # ferritls
 
-[简体中文](README.md) | [English](README.en.md)
+[English](README.md) | [简体中文](README.zh.md)
 
-纯 Rust 的 [rustls](https://github.com/rustls/rustls) `CryptoProvider`
-密码后端：无 C、无汇编、无 `unsafe`，按 FIPS 140-3 模块边界组织。
+ferritls is a pure-Rust [rustls](https://github.com/rustls/rustls)
+`CryptoProvider`: no C, no assembly, no `unsafe` in the cryptographic
+core, organized as a FIPS 140-3 cryptographic module boundary. It is a
+maintained, fully auditable alternative to `aws-lc-rs` (C/assembly,
+cmake, slow builds) and the unmaintained `rustls-rustcrypto`.
 
-## 为什么
+## Highlights
 
-| 替代对象 | 痛点 | ferritls |
-|---|---|---|
-| rustls-rustcrypto | 停更（2024-04 最后发版，README 挂"禁止生产使用"） | 活跃维护，接口锁定 rustls 0.23 |
-| aws-lc-rs | C/汇编、cmake、编译慢、绑定 AWS-LC | 纯 Rust，`cargo build` 即得，边界全可审 |
+- **TLS 1.3** cipher suites: AES-128/256-GCM, AES-128-CCM (and CCM_8),
+  ChaCha20-Poly1305
+- **Key exchange**: X25519, secp256r1, secp384r1, post-quantum
+  **ML-KEM** 512/768/1024 (FIPS 203) and the X25519MLKEM768 hybrid
+- **Certificate signatures**: ECDSA P-256/384, RSA-PSS / PKCS#1 v1.5,
+  Ed25519
+- **QUIC** packet protection (RFC 9001) for the GCM and ChaCha suites
+- **Approved mode** (`fips` feature): NIST-approved algorithms only,
+  SP 800-90A CTR-DRBG, power-on self-tests
+- Optional **x86_64 hardware backend** (AES-NI / SHA-NI), a separate
+  crate registered at runtime
+- Tested against NIST/RFC/CAVP vectors, 2,300+ Wycheproof cases,
+  cross-interop with rustls-ring, and continuous fuzzing
 
-## 能力
-
-- **TLS 1.3 套件**：`TLS_AES_128_GCM_SHA256`、`TLS_AES_256_GCM_SHA384`、
-  `TLS_CHACHA20_POLY1305_SHA256`、`TLS_AES_128_CCM_SHA256`、
-  `TLS_AES_128_CCM_8_SHA256`（后三者中 CCM_8 仅默认模式——8 字节
-  标签不在 SP 800-52r2 批准套件面；ChaCha 非批准）
-- **密钥交换**：X25519、secp256r1、secp384r1、X25519MLKEM768 混合、
-  纯 ML-KEM 三组（共 7 组）
-- **抗量子**：FIPS 202 SHA-3/SHAKE 与 FIPS 203 ML-KEM 全部三个
-  参数集（512/768/1024，边界内自研、零新依赖、NIST ACVP 向量锚定）；
-  密钥交换含 X25519MLKEM768 混合（draft-ietf-tls-ecdhe-mlkem，
-  codepoint 0x11EC，X25519 进入批准模式的通道）与纯 ML-KEM 三组
-  （draft-ietf-tls-mlkem-key-agreement，codepoint 0x0200–0x0202）
-- **QUIC**（RFC 9001，M8.5）：AES-GCM/ChaCha20-Poly1305 三套件的
-  QUIC 包保护（`quic::Algorithm`：包保护 + 头保护 + multipath），
-  RFC 9001 附录 A 样本逐字节锚定，与 rustls-ring 交叉互操作
-- **签名/验证**：ECDSA P-256/384、RSA-PSS/PKCS#1（SHA-256/384/512）、Ed25519
-- **批准模式**（`fips` feature）：仅 NIST 批准算法 + SP 800-90A
-  CTR-DRBG（每次生成混入 OS 熵）+ 上电自检 KAT
-- **测试面**：RFC/NIST/CAVP 官方向量、NIST ACVP ML-KEM 三参数集向量、
-  RFC 8448 密钥调度、Wycheproof 2349 用例、rustls-ring 交叉互操作、
-  webpki 证书链、cargo-fuzz 七目标
-  （[向量溯源](docs/VECTOR-PROVENANCE.md)）
-- **性能**（P1 自动向量化 + P2 显式 `std::simd`，默认启用，仍零
-  `unsafe`）：位切片 AES + 分组 GHASH 表 + 批处理 ChaCha20——AES-GCM
-  记录层较纯掩码基线提升约 19–21 倍（基线 ISA）；以
-  `RUSTFLAGS="-C target-cpu=native"` 构建可自动启用 AVX2/AVX-512
-  宽通道，详见 [docs/ROADMAP.md](docs/ROADMAP.md) P1/P2 节
-- **可选硬件后端**（`ferritls-backend-x86_64`，边界外独立 crate，仅
-  x86_64）：AES-NI + CLMUL 的 AES-GCM 整消息 kernel 与 SHA-NI 的
-  SHA-256 分发，运行时 CPU 探测 + 安装 KAT 自检，批准模式固定软件
-  路径——GCM 原语较软件路径约 750–980 倍，详见
-  [docs/BENCHMARKS.md](docs/BENCHMARKS.md) §5
-
-```rust
-let provider = ferritls_rustls::default_provider();
-provider.install_default()?;
-// 之后 ClientConfig::builder() / ServerConfig::builder() 默认使用它。
-```
-
-## 与 reqwest 集成
-
-reqwest 0.12 与 0.13 两代依赖的都是 `rustls ^0.23`，与 ferritls 同一条
-版本线——Cargo 统一为同一 rustls 实例，两代均直接兼容（interop
-`tests/reqwest.rs` 以 0.12 线回环握手作回归防线）。feature 必须选
-**no-provider 变体**，否则 reqwest 会编入 ring/aws-lc 并可能抢先成为
-进程默认 provider（此后 `install_default()` 失败）：
+## Usage
 
 ```toml
-# reqwest 0.13（rustls 为默认 TLS 后端；系统根证书走 rustls-platform-verifier）
-reqwest = { version = "0.13", default-features = false,
-            features = ["rustls-no-provider", "http2", "charset"] }
-
-# reqwest 0.12（rustls 为可选后端；内置 webpki 根证书集）
-reqwest = { version = "0.12", default-features = false,
-            features = ["rustls-tls-webpki-roots-no-provider", "http2", "charset"] }
-# 想用系统根证书：换成 rustls-tls-native-roots-no-provider。
+[dependencies]
+ferritls-rustls = "0.9"
 ```
 
 ```rust
-// 必须在创建第一个 Client 之前安装：
+// Once per process, before building any TLS config:
 ferritls_rustls::default_provider().install_default()?;
-let client = reqwest::Client::new();
+
+// rustls now uses ferritls by default:
+let config = rustls::ClientConfig::builder()
+    .with_root_certificates(roots)
+    .with_no_client_auth();
 ```
 
-不想碰进程全局状态时，可显式构建 `ClientConfig` 经
-`use_preconfigured_tls` 注入（0.12/0.13 均支持）；此时信任根与
-**ALPN** 都要在 `ClientConfig` 里自行设置——reqwest 不修改预配置的
-config，ALPN 缺失则 HTTP/2 静默不可用。另注意 ferritls 目前仅提供
-TLS 1.3 套件（TLS 1.2 为 M8 余项），两代 reqwest 行为一致。
+Prefer to avoid process-global state? Pass the provider explicitly:
 
-## 构建要求（默认 `simd` feature）
+```rust
+use std::sync::Arc;
 
-`ferritls-core` 的默认 feature `simd` 使用标准库 `core::simd`
-（portable_simd），在 **stable 工具链**上需要 `RUSTC_BOOTSTRAP=1`
-环境变量编译（本仓库内置 `.cargo/config.toml` 已自动提供，克隆即用）：
+let provider = Arc::new(ferritls_rustls::default_provider());
+let config = rustls::ClientConfig::builder_with_provider(provider)
+    .with_safe_default_protocol_versions()?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+```
+
+Detailed usage — server configuration, approved mode, QUIC, reqwest
+integration, and the hardware backend — lives in the
+**[API documentation](https://docs.rs/ferritls-rustls)**.
+
+## Build requirements
+
+The default `simd` feature uses the standard library's `core::simd`
+(portable_simd), which on the **stable toolchain** requires
+`RUSTC_BOOTSTRAP=1` (this repository's `.cargo/config.toml` already
+sets it):
 
 ```bash
-# 依赖本仓库时（crates.io / path / git）——二选一：
-export RUSTC_BOOTSTRAP=1                      # ① 保留 simd
-ferritls-core = { version = "0.9", default-features = false }  # ② 标量回退
+export RUSTC_BOOTSTRAP=1                                     # (a) keep simd
+# or, in your Cargo.toml:                                    # (b) scalar fallback
+# ferritls-core = { version = "0.9", default-features = false }
 ```
 
-- 通道宽度按编译目标自动选择：默认 x86-64/aarch64 基线（SSE2/NEON）；
-  以 `RUSTFLAGS="-C target-feature=+avx2"` 或 `-C target-cpu=native`
-  构建时同一份源码自动升级到 AVX2/AVX-512 通道。
-- portable_simd 在 Rust 稳定通道发布后，此环境变量要求将自动移除。
-- nightly 工具链无需该变量（原生支持 feature gate）。
+Nightly toolchains need no variable; the requirement goes away once
+portable_simd stabilizes.
 
-## FIPS 140-3 声明
+## FIPS 140-3 status
 
-ferritls 按 FIPS 140-3 密码模块边界组织（边界 = `ferritls-core`
-crate），**尚未通过 CMVP 认证**：一切 `fips()` 钩子在认证落地前返回
-`false`，`fips` feature 表示“按批准模式运行”而非认证声明。目前没有
-任何纯 Rust 模块通过 CMVP；路线与成本见 [docs/FIPS.md](docs/FIPS.md)。
+ferritls is organized as a FIPS 140-3 cryptographic module boundary
+(the `ferritls-core` crate); it is **not yet CMVP-validated**. Every
+`fips()` hook returns `false`, and the `fips` feature means "runs in
+the approved-algorithm mode", not a certification claim. Roadmap:
+[docs/FIPS.md](docs/FIPS.md).
 
-## 仓库结构
+## License
 
-| crate | 职责 |
-|---|---|
-| `ferritls-core` | 密码学核心 = FIPS 模块边界（`#![forbid(unsafe_code)]`） |
-| `ferritls-rustls` | rustls CryptoProvider 适配层 |
-| `ferritls-backend-x86_64` | AES-NI/SHA-NI 硬件后端（边界外，仅 x86_64，经 `ops` 注册） |
-| `ferritls-interop` | 互操作/E2E 测试宿主 |
-
-贡献（人类或 AI 代理）请先读 [AGENTS.md](AGENTS.md)。
-
-## 许可
-
-Apache-2.0 OR MIT（见 [LICENSE-APACHE](LICENSE-APACHE)、
-[LICENSE-MIT](LICENSE-MIT)）。
+Apache-2.0 OR MIT (see [LICENSE-APACHE](LICENSE-APACHE) and
+[LICENSE-MIT](LICENSE-MIT)). Contributors — human or AI agents — should
+read [AGENTS.md](AGENTS.md) first.
