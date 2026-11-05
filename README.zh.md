@@ -86,6 +86,19 @@ export RUSTC_BOOTSTRAP=1                                     # ① 保留 simd
 
 nightly 工具链无需该变量；portable_simd 稳定后此要求自动移除。
 
+## 测试
+
+```bash
+cargo test --workspace                 # 全量（加 --all-features 跑 ring 交叉互操作）
+cargo test -p ferritls-core --no-default-features   # 标量回退路径
+cargo test -p ferritls-core --features fips         # 批准模式门控
+FERRITLS_TEST_NI=1 cargo test -p ferritls-rustls -p ferritls-interop  # x86_64：在 AES-NI/SHA-NI 后端上重跑
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+`RUSTC_BOOTSTRAP=1` 已由 `.cargo/config.toml` 提供，stable 上上述命令
+可直接运行。完整测试矩阵与约定见 [AGENTS.md](AGENTS.md)。
+
 ## FIPS 140-3 状态
 
 ferritls 按 FIPS 140-3 密码模块边界组织（边界 = `ferritls-core`

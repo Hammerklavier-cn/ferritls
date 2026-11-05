@@ -91,6 +91,20 @@ export RUSTC_BOOTSTRAP=1                                     # (a) keep simd
 Nightly toolchains need no variable; the requirement goes away once
 portable_simd stabilizes.
 
+## Testing
+
+```bash
+cargo test --workspace                 # full suite (add --all-features for the ring cross-interop)
+cargo test -p ferritls-core --no-default-features   # scalar fallback path
+cargo test -p ferritls-core --features fips         # approved-mode gates
+FERRITLS_TEST_NI=1 cargo test -p ferritls-rustls -p ferritls-interop  # x86_64: re-run on the AES-NI/SHA-NI backend
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+`RUSTC_BOOTSTRAP=1` is already set by `.cargo/config.toml`, so the
+commands above run as-is on stable. The full test matrix and
+conventions live in [AGENTS.md](AGENTS.md).
+
 ## FIPS 140-3 status
 
 ferritls is organized as a FIPS 140-3 cryptographic module boundary
