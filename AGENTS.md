@@ -111,7 +111,7 @@ rustls（应用层）
 
 ---
 
-## 4. rustls 对接层速查（0.23.45 实测，防坑清单）
+## 4. rustls 对接层速查（0.23.46 实测，防坑清单）
 
 以下事实均已核实，写代码时直接查表，不要再猜：
 
@@ -147,9 +147,13 @@ rustls（应用层）
   经典 ECDH 不必覆写；KEM/混合组才需要。
 - `ActiveKeyExchange::complete(self: Box<Self>, ...)` **消费 self**；
   `pub_key()` 是方法名（不是 `public_key()`）。
-- `Tls13AeadAlgorithm::extract_keys()` 被 rustls 用于导出 traffic
-  secrets（key log 等），不支持时返回 `Err(UnsupportedOperationError)`
-  ——GCM/ChaCha 按能力实现，CCM 无变体恒 `Err`；QUIC 不走此路径。
+- `Tls13AeadAlgorithm::extract_keys()` 只服务 `dangerous_extract_secrets`
+  与 `refresh_traffic_keys`——**key log 不经过它**（rustls 0.23.46
+  实测：`KeyLog::log` 由 key_schedule 的原始 traffic secret 直供，
+  CCM 连接同样产生 key log；`session.rs` 的 ccm keylog 测试钉住此
+  事实）；不支持时返回 `Err(UnsupportedOperationError)`
+  ——GCM/ChaCha 按能力实现，CCM 无变体恒 `Err`（推论：CCM 连接的
+  secret 提取与 key update 必 Err）；QUIC 不走此路径。
 - `WebPkiSupportedAlgorithms.mapping`：TLS 1.3 对每个 scheme 只用
   **第一个**算法；TLS 1.2 会尝试全部。
 - `SignatureVerificationAlgorithm`（pki-types 1.15 **本地实测**，
@@ -216,7 +220,12 @@ rustls（应用层）
   必须拒绝。
 - **RSA**：padding 检查严格且全部错误归一化为同一错误；私钥运算乘法
   盲化（M4c：rᵉ 预盲 + r⁻¹ 去盲；r⁻¹ 的变量时间 xgcd 仅限单次随机
-  输入）；模长 <2048 拒绝。
+  输入）；模长 <2048 拒绝。装载期校验对齐 BoringSSL 解析期层级
+  （p·q = n、qInv 同余、CRT 分量范围含下界 ≥2、d ↔ CRT 一致、
+  e·d ≡ 1 mod (p−1)/(q−1)——详见 §9 sign.rs 注记）；PSS 验证按
+  RFC 8017 严格解码**任意盐长**（MGF1 哈希固定同消息哈希）。CRT
+  limb 形状按模长半宽定长分配，非均衡素数拆分（p 显著大于 q）在
+  装载层拒绝——既定约束。
 - **ChaCha20-Poly1305**：32 位计数器与 96 位 nonce 的 IETF 拼接；
   Poly1305 字组转整数的小端序。
 - **Ed25519**：RFC 8032 逐条实现，含 SHA-512 两段式与 cofactor 处理；
@@ -291,7 +300,15 @@ targets 在 `fuzz/`），零 panic。
 - `tests/schedule_rfc8448.rs`：TLS 1.3 密钥调度全链外部真值（由
   tools/extract_rfc8448.py 生成，**勿手改**）。
 - `tests/wycheproof.rs` + `tests/vectors/`：Wycheproof 对抗性向量
-  （裁剪入库，策略见 vectors/README.md；含 AEAD 两文件）。
+  （裁剪入库，策略见 vectors/README.md；2026-11 扩至 25 文件——
+  新增 HMAC/HKDF/CCM/RSA 扩展/签名侧 sig_gen；子目录 `shs/` =
+  NIST SHAVS/SHA3VS 长消息+蒙特卡洛、`ccm/` = NIST SP800-38C CAVS、
+  `d2i/` + `corpus/` = 攻击者语料回归，溯源见
+  docs/VECTOR-PROVENANCE.md）。
+- `tests/attacker_corpus.rs`：d2i/语料逐文件结果钉住 + 全解析面
+  no-panic（438 文件一次性烟测零 panic 后入库精选子集）。
+- `tests/ops_default.rs`：ops 注册表默认态观测（独立测试二进制，
+  不安装后端——与 ops_dispatch.rs 的 mock 安装二进制分离）。
 - `tests/fuzz_seeds.rs`：按**全部** fuzz target 同构逻辑跑
   `fuzz/corpus/` 种子（valid 必须成功、tampered/truncated 必须失败；
   种子生成脚本与溯源见 VECTOR-PROVENANCE.md「再核对指引」）。
@@ -301,7 +318,10 @@ targets 在 `fuzz/`），零 panic。
   （`interop_ni.rs`）、mTLS（`mtls.rs`）、会话恢复 + KeyLog
   （`session.rs`）、记录层边界（`records.rs`）、套件协商顺序含 fips
   协商面拒绝（`negotiation.rs`）、reqwest 应用层集成（`reqwest.rs`，
-  0.12 线回环，覆盖 install_default 与 use_preconfigured_tls 双路径）。
+  0.12 线回环，覆盖 install_default 与 use_preconfigured_tls 双路径）、
+  损坏/截断记录失败路径 + TLS 1.2-only 拒绝（`failures.rs`，驱动
+  适配层 MessageDecrypter 短记录 guard 并钉住 DecryptError→
+  bad_record_mac 映射）。
   `tests/certs/` 为 openssl 生成的测试专用链（root→intermediate→leaf
   + 无关根；P-256/RSA-2048/Ed25519/P-384 + mTLS 客户端链；再生成命令
   见该目录 README.md——EC leaf 私钥必须显式 `pkcs8 -topk8` 转 DER，
@@ -525,6 +545,31 @@ M0–M7 与 M8.1–M8.5 全部完成（含 P1/P2 性能轮、参数化收口轮�
   见 §4；interop 内存回环 `drive` 必须逐包投递 + 每包后 flush 接收端
   （KeyChange 在本端 `write_hs` 才被消费安装，整批投递会在对端升级前
   送抵高层级包，曾以 "rx keys" panic 拦截）。
+- `hkdf.rs`（RFC 5869 符合性，2026-11）：`expand_*` 拒绝
+  `prk.len() < HashLen`（`InvalidInput`）——此前静默接受短 PRK；
+  TLS 1.3 密钥调度走 rustls `HkdfUsingHmac` 不经此模块，改动只影响
+  边界内公开 API（tests/hkdf.rs + wycheproof hkdf 组钉住）。
+- `fields.rs`（from_bytes_le_mod 修复，2026-11）：条件减的选择语义
+  必须与 from_bytes_be_mod 一致——LE 旧实现只看
+  `geq_canonical(acc) && borrow==0`，漏掉倍增移位出 carry 的归约
+  （carry=1 ⟹ value ≥ p 恒成立，须以回绕 tmp = acc − p + 2^(64n)
+  归约）；曾产出未归约错误值，由超长导入 oracle
+  （`from_bytes_oracle_overlength_*`）拦截——定长 oracle 的触发
+  窗口 ~2⁻²⁴/步故此前未暴露。改任一 from_bytes_* 前先跑定长 +
+  超长双 oracle。
+- `sign.rs`（RSA 装载校验层级，2026-11）：对齐 BoringSSL 解析期
+  `RSA_check_key` 层级——CRT 分量下界 ≥2、d mod (p−1) == dp、
+  d mod (q−1) == dq（等式同时强制完全约简）、e·d ≡ 1 mod (p−1) 与
+  mod (q−1)（等价于 mod λ(n)，无需大数长除）；d 字节长度上限
+  n_bytes + 8（d0 < λ < n，+8 容纳 d0 + k·λ 的合理编码）。素性、
+  √2 下界、|p−q| 距离与 n 小因子检验属 SP 800-56B 生成期层级，
+  **不在装载路径**（OpenSSL 同为 opt-in/生成期）。校验块操作密钥
+  文件材料、装载时一次，不涉消息级秘密（§5.1 纪律针对每消息运算）。
+- `sign.rs`（verify_pss 盐长，2026-11）：由"盐长 = 哈希长度"放宽为
+  按 RFC 8017 编码严格解码任意盐长（PS 全零 + 首个非零字节必须为
+  0x01，salt 为其后任意长度）；MGF1 哈希仍固定同消息哈希（API 面
+  约定，Wycheproof pss_misc 的 DistinctHash 组被裁剪过滤）。放宽
+  只影响验证接受面（更合规）， wycheproof pss 组 18 例全绿钉住。
 
 修订实现前重读 §5 与上述注记；下一步动手前先细化 ROADMAP「M8 发布后
 方向」的出口条件草案。

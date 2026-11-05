@@ -22,7 +22,66 @@
 | M8.5 | QUIC 包保护（RFC 9001） | 完成（2026-09-15） |
 | 参数化收口轮 | SHA-3 全家族、HKDF API 宏化、CCM 全 M + CCM_8 套件 | 完成（2026-09-17） |
 | CI/发布加固 + 测试加固轮 | CI 全线 `--locked`、MSRV 1.88 门禁、publish needs 全门禁 + 人工批准；Wycheproof AEAD 入库、自检 KAT 16→20、mTLS/会话恢复/记录层/协商测试、fuzz 种子补全（策略已收敛入 AGENTS §6/§7） | 完成（2026-10） |
+| 测试完备性轮 | 权威实现对照（OpenSSL/BoringSSL/aws-lc）驱动的测试补齐 + 三处修复；详见下节 | 完成（2026-11-05） |
 | M8 余项 | TLS 1.2 / aarch64 后端；候选 X448 / P-521 / Ed448 | **未排期** |
+
+## 测试完备性轮（完成 2026-11-05）
+
+以 OpenSSL / aws-lc / BoringSSL 的测试实践为参照（源码研究结论沉淀在
+docs/VECTOR-PROVENANCE.md「2026-11-05 修订说明」），补齐测试面并修复
+三处缺陷：
+
+**修复（行为变更，文档先行）**
+
+- HKDF-Expand 拒绝 PRK < HashLen（RFC 5869 §2.3；此前静默接受）。
+- RSA 装载校验补强至 BoringSSL 解析期层级：CRT 分量下界 ≥2、
+  d ↔ CRT 一致、e·d ≡ 1 mod (p−1)/(q−1)（素性等生成期检查按分层
+  决策不纳入）；verify_pss 按 RFC 8017 严格解码任意盐长（原固定
+  hLen，Wycheproof pss_misc 参数变体驱动）。
+- `fields::from_bytes_le_mod` 条件减漏归约真实算术缺陷（倍增移位出
+  carry 分支；由新增超长导入 oracle 拦截，定长 oracle 触发窗口
+  ~2⁻²⁴/步故此前未暴露）。
+- 测试 harness 缺陷修复：三个 Ni 测试二进制的 `setup()` 曾把
+  "重复安装 Err(Unsupported)" 误当"CPU 不支持"跳过——每二进制仅
+  1 个测试真正跑 Ni 路径（约 14 个测试静默空转）；改 `OnceLock`
+  缓存式安装 + 双安装拒绝测试 + `installed_*` 可观测断言。
+
+**向量/语料入库（+2100 用例）**
+
+- Wycheproof 新模块 15 文件：HMAC（全量，含 520-bit 超块密钥）、
+  HKDF（含 255·HashLen+1 超限负例）、AES-CCM（全参数矩阵 +
+  越界参数拒绝）、RSA 3072/4096 验证、rsa_pss_misc 盐长变体、
+  rsa_pkcs1_*_sig_gen 签名侧 KAT。
+- 完整 CAVP SHAVS/SHA3VS：SHA-2/SHA-3 长消息 + 蒙特卡洛（各 100
+  检查点 1000 迭代官方算法复算）+ SHAKE 长消息；tests/sha2.rs:78
+  既有 TODO 完成。NIST SP800-38C CCMVS（经 OpenSSL 转载）补齐
+  2026-09-07 修订所记缺口。
+- 攻击者语料：OpenSSL d2i-tests + BoringSSL fuzz corpus 精选 41 文件
+  逐文件钉住；全量 438 文件一次性烟测（全部解析/验证入口）零 panic。
+
+**测试面扩充（约 +130 测试）**
+
+- core：DER 原语/PKCS#8 分支/RSA 结构变异扫描矩阵、各算法错误变体
+  钉住（ChaCha 短输入、X25519/EC 点错误变体、ECDSA/Ed25519 边界、
+  HMAC 密钥边界、DRBG 熵边界、CCM Any 边界、SHAKE rate 跨界）、
+  fields 超长 oracle + invert 退化锚、ops/policy/selftest（含 per-KAT
+  失败归因，对应 aws-lc/BoringSSL break-KAT 负测试传统）。
+- 适配层（+21）：choose_scheme 负例与 PREFERRED 顺序、签名→core
+  验证往返、经典 ECDH 恶意对端、KeyLoader/any_ecdsa_type、HMAC/哈希
+  适配器 KAT、QUIC AES-256 全路径、verify.rs alg-ID 表与 pki-types
+  `alg-*.der` 权威字节逐字节一致（12/12）。
+- interop（+12）：损坏/截断记录失败路径（驱动 MessageDecrypter 短
+  记录 guard，DecryptError→bad_record_mac 钉住）、TLS 1.2-only 拒绝、
+  CCM 数据面/恢复/secret 提取 Err 面。
+
+**依赖安全补丁（lock-only）**：RUSTSEC-2026-0382（rustls-webpki
+0.103.15 → 0.103.16）与 RUSTSEC-2026-0346/0347/0348/0349（rustls
+0.23.45 → 0.23.46）——仅 Cargo.lock 升级（M8.4 修 RUSTSEC-2026-0285
+同模式），全测试矩阵复验绿。
+
+**顺带修复**：der.rs `read_tlv` 的 32 位 usize 溢出 panic 路径
+（4 字节长形式近 u32::MAX 时先加后比回绕；改减法方向比较，64 位
+行为不变）——RSA/DER 对抗矩阵测试过程中的潜在缺陷发现。
 
 ## M7 — 发布 0.1 与 FIPS 就绪（完成 2026-09）
 
