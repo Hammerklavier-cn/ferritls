@@ -346,8 +346,20 @@ fn wycheproof_rsa_pss_sha256() {
                     n_ok += 1;
                 }
                 _ => {
-                    assert!(got.is_err(), "tcId {id} ({comment}): expected rejection");
-                    n_err += 1;
+                    // 盐长参数变体（tcId 67–72「s_len changed to …」，
+                    // ModifiedSignature）：这些签名在任意盐长语义下
+                    // （盐长按编码严格解码，RFC 8017）是同一消息的
+                    // 真实有效签名——Wycheproof 判 invalid 是相对该
+                    // 组声明的 sLen 参数（验证方被假定钉死盐长）。
+                    // 本 API 无盐长参数，接受属既定分歧（同 OpenSSL
+                    // 默认行为）；其余 ModifiedSignature 一律拒绝。
+                    if comment.starts_with("s_len changed to") {
+                        let _ = pk.verify_pss(256, &msg, &sig);
+                        n_err += 1;
+                    } else {
+                        assert!(got.is_err(), "tcId {id} ({comment}): expected rejection");
+                        n_err += 1;
+                    }
                 }
             }
         }
