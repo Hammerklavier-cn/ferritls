@@ -374,10 +374,21 @@ macro_rules! fp_field {
                             borrow = (b1 as u64) | (b2 as u64);
                             j += 1;
                         }
-                        let ge = (Self::geq_canonical(&acc) & (borrow == 0)) as u64;
+                        // 与 from_bytes_be_mod 同一选择语义（2026-11 修复）：
+                        // LE 旧实现只看 `geq_canonical(acc) && borrow == 0`，
+                        // 漏掉倍增移位出 carry 的情形——carry=1 时
+                        // value = acc + 2^(64n) ≥ p 恒成立（2p < 2^(64n+1)
+                        // 保证 carry=1 ⟹ low < p），必须以回绕 tmp =
+                        // acc − p + 2^(64n) = value − p 归约；旧代码在该
+                        // 分支保持 acc = low 不变，产出未归约的错误值
+                        //（由超长导入 oracle 拦截；定长 oracle 的触发
+                        // 窗口 ~2⁻²⁴/步故此前未暴露）。
+                        let under = carry.overflowing_sub(borrow).1;
+                        let take_tmp = (!under) as u64;
+                        let m = take_tmp.wrapping_neg();
                         let mut j = 0;
                         while j < $n {
-                            acc[j] = acc[j] ^ ((acc[j] ^ tmp[j]) & ge.wrapping_neg());
+                            acc[j] = acc[j] ^ ((acc[j] ^ tmp[j]) & m);
                             j += 1;
                         }
                     }
@@ -749,4 +760,118 @@ mod tests {
     from_bytes_oracle!(Fp384, 6, from_bytes_oracle_fp384);
     from_bytes_oracle!(Fp25519, 4, from_bytes_oracle_fp25519);
     from_bytes_oracle!(Fp25519ScalarL, 4, from_bytes_oracle_fp25519_scalar);
+
+    /// 超长输入（> 域宽度字节）导入 oracle：Horner 按位归约逐字节
+    /// 等价。生产路径只用定长输入，超长路径的条件减/进位链（acc 翻
+    /// 倍越界的 carry 还原）是深层未测算术——覆盖到 64n 字节上限与
+    /// 全 0xff 最大进位链（AGENTS.md §9 fields 注记）。
+    macro_rules! from_bytes_oracle_overlength {
+        ($f:ident, $n:expr, $name:ident) => {
+            #[test]
+            fn $name() {
+                let base = $f::from_raw({
+                    let mut r = [0u64; $n];
+                    r[0] = 256;
+                    r
+                });
+                let byte = |b: u8| {
+                    $f::from_raw({
+                        let mut r = [0u64; $n];
+                        r[0] = u64::from(b);
+                        r
+                    })
+                };
+                let horner = |bytes: &[u8]| -> Vec<u8> {
+                    let mut acc = $f::zero();
+                    for &b in bytes {
+                        acc = acc.mul(&base).add(&byte(b));
+                    }
+                    acc.to_raw()
+                        .iter()
+                        .flat_map(|w| w.to_be_bytes())
+                        .collect::<Vec<u8>>()
+                };
+                let raw_be = |f: $f| -> Vec<u8> {
+                    f.to_raw()
+                        .iter()
+                        .flat_map(|w| w.to_be_bytes())
+                        .collect::<Vec<u8>>()
+                };
+                // 长度梯度：域宽 +1/+2/+8、两倍、四倍、上限 8n 字节。
+                let mut lens = [
+                    8 * $n + 1,
+                    8 * $n + 2,
+                    8 * $n + 8,
+                    16 * $n,
+                    32 * $n,
+                    64 * $n,
+                ];
+                let mut st = 0x9e3779b97f4a7c15u64;
+                for len in lens.iter_mut() {
+                    let mut b = Vec::with_capacity(*len);
+                    for _ in 0..*len {
+                        st ^= st << 13;
+                        st ^= st >> 7;
+                        st ^= st << 17;
+                        b.push(st as u8);
+                    }
+                    let got = raw_be($f::from_bytes_be_mod(&b));
+                    assert_eq!(got, horner(&b), "overlength be (len {})", b.len());
+                    let mut rev = b.clone();
+                    rev.reverse();
+                    let got = raw_be($f::from_bytes_le_mod(&b));
+                    assert_eq!(got, horner(&rev), "overlength le (len {})", b.len());
+                }
+                // 全 0xff（最大进位链）与全零（恒等归约）。
+                for fill in [0xffu8, 0x00] {
+                    let b = vec![fill; 64 * $n];
+                    let got = raw_be($f::from_bytes_be_mod(&b));
+                    assert_eq!(got, horner(&b), "overlength fill {fill:#x} (be)");
+                    let got = raw_be($f::from_bytes_le_mod(&b));
+                    assert_eq!(got, horner(&b), "overlength fill {fill:#x} (le)");
+                }
+            }
+        };
+    }
+    from_bytes_oracle_overlength!(Fp256, 4, from_bytes_oracle_overlength_fp256);
+    from_bytes_oracle_overlength!(Fp384, 6, from_bytes_oracle_overlength_fp384);
+    from_bytes_oracle_overlength!(Fp25519, 4, from_bytes_oracle_overlength_fp25519);
+
+    /// Fermat 逆的退化锚：invert(0) = 0（`to_affine` 处理无穷远点时
+    /// 依赖该性质，见 ecdh.rs）、invert(1) = 1，加伪随机往返性质。
+    #[test]
+    fn invert_degenerate_and_roundtrip() {
+        assert_eq!(Fp256::zero().invert().to_raw(), [0, 0, 0, 0]);
+        assert_eq!(Fp256::one().invert().to_raw(), Fp256::one().to_raw());
+        assert_eq!(Fp384::zero().invert().to_raw(), [0; 6]);
+        assert_eq!(Fp25519::zero().invert().to_raw(), [0; 4]);
+
+        let mut st = 0x51633e2d02f9fffbu64;
+        for _ in 0..8 {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            let a = Fp256::from_raw([
+                st,
+                st.wrapping_mul(0x9e3779b97f4a7c15),
+                st ^ 0xdead_beef_cafe_babe,
+                0x01,
+            ]);
+            let inv = a.invert();
+            assert_eq!(a.mul(&inv).to_raw(), Fp256::one().to_raw(), "a·a⁻¹ = 1");
+            assert_eq!(inv.invert().to_raw(), a.to_raw(), "(a⁻¹)⁻¹ = a");
+
+            let b = Fp384::from_raw([
+                st,
+                st.wrapping_mul(0x9e3779b97f4a7c15),
+                st ^ 0xdead_beef_cafe_babe,
+                st.wrapping_add(1),
+                st ^ 0x1234_5678,
+                0x01,
+            ]);
+            let binv = b.invert();
+            assert_eq!(b.mul(&binv).to_raw(), Fp384::one().to_raw(), "b·b⁻¹ = 1");
+            assert_eq!(binv.invert().to_raw(), b.to_raw(), "(b⁻¹)⁻¹ = b");
+        }
+    }
 }
