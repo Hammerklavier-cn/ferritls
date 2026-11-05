@@ -17,6 +17,8 @@
 //! 并回传协商事实（ALPN / 协议版本 / 套件）供断言，证明流量确实
 //! 跑在 ferritls 上。
 
+mod common;
+
 use std::io::{ErrorKind, Read, Write};
 use std::net::TcpListener;
 use std::sync::Arc;

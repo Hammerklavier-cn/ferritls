@@ -11,6 +11,8 @@
 //! 跨 crate 不能 `include_bytes!` 互操作 crate 的文件，故复制为
 //! 本 crate 的测试夹具。
 
+mod common;
+
 /// RSA-2048 测试私钥（PKCS#8 PrivateKeyInfo DER）。
 const RSA_PKCS8_DER: &[u8] = include_bytes!("data/rsa_leaf_pkcs8.der");
 

@@ -11,6 +11,10 @@
 //!
 //! CPU 不支持时 `install()` 失败，测试打印后跳过；CCM/ChaCha 不经
 //! AES 路径，不在本矩阵重复（软件路径已由 interop.rs 覆盖）。
+//!
+//! 全量 Ni 覆盖由 `FERRITLS_TEST_NI=1` 腿承担（两 crate 的 tests/common
+//! 经 ctor 预 main 完成 AES-NI + SHA-NI 双安装，全部既有测试原样重跑）；
+//! 本文件保留显式 A/B 职责：Ni 安装后的握手矩阵与 ring 交叉裁决。
 
 #![cfg(target_arch = "x86_64")]
 
@@ -26,12 +30,27 @@ use std::sync::OnceLock;
 static NI_INSTALLED: OnceLock<bool> = OnceLock::new();
 
 fn setup() -> bool {
+    // FERRITLS_TEST_NI 腿下 ctor 钩子已预 main 完成双安装：core 拒绝重复
+    // 安装，先查注册表，已装直接复用（钩子侧安装失败是硬失败，此处只处理
+    // 默认腿的"CPU 不支持"软跳过）。
+    if ferritls_core::ops::installed_aead().is_some() {
+        return true;
+    }
     *NI_INSTALLED.get_or_init(|| match ferritls_backend_x86_64::install() {
         Ok(()) => {
             assert!(
                 ferritls_core::ops::installed_aead().is_some(),
                 "installed AES backend must be observable via the core ops registry"
             );
+            // SHA-NI 与 AES 安装相互独立：缺 SHA 扩展时告警继续（AES 矩阵
+            // 仍有效），KAT 失败则 panic。
+            match ferritls_backend_x86_64::install_hash() {
+                Ok(()) => {}
+                Err(ferritls_core::Error::Unsupported) => {
+                    eprintln!("sha-ni backend unavailable; AES-NI matrix still runs");
+                }
+                Err(e) => panic!("sha-ni power-up self-test failed: {e:?}"),
+            }
             true
         }
         Err(e) => {

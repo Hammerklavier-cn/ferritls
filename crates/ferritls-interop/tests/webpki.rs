@@ -17,6 +17,8 @@
 //!   签名族的真实链校验（此前 Ed25519/P-384 verifier 只有单元级覆盖，
 //!   未被 webpki 驱动过完整链）。
 
+mod common;
+
 use std::io::Read;
 use std::io::Write;
 use std::sync::Arc;

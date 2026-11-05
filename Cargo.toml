@@ -39,6 +39,9 @@ rustls = { version = "0.23", default-features = false, features = ["std"] }
 getrandom = "0.2"
 subtle = { version = "2", default-features = false }
 zeroize = { version = "1", default-features = false }
+# ctor 仅供 rustls/interop 两处 tests/common 的 FERRITLS_TEST_NI 预 main
+# 安装钩子（纯测试基础设施，不进入 FIPS 边界，见 AGENTS.md §6.1）。
+ctor = "1"
 
 [profile.release]
 lto = "thin"

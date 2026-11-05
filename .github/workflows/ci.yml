@@ -120,6 +120,17 @@ jobs:
           cargo test --locked -p ferritls-core --no-default-features
           cargo test --locked -p ferritls-rustls --no-default-features
           cargo test --locked -p ferritls-interop --no-default-features
+      # Ni 后端全量腿：同一套 rustls/interop 测试在 AES-NI + SHA-NI 内核
+      # 上重跑（两 crate 的 tests/common 经 ctor 预 main 完成双安装，
+      # FERRITLS_TEST_NI=1 触发；core 向量套件不接——ops_default 与
+      # ops_dispatch 的观测/mock 语义会被自动安装打断，见 AGENTS §6.1）。
+      # 安装失败即 panic（x86_64 runner 必有对应扩展；静默降级会变成
+      # "软件重跑"的假覆盖）。不得与 fips 构建叠加（core 拒绝一切安装）。
+      - name: Run tests (Ni backend, FERRITLS_TEST_NI)
+        if: runner.arch == 'X64'
+        env:
+          FERRITLS_TEST_NI: "1"
+        run: cargo test --locked -p ferritls-rustls -p ferritls-interop
       # 宽 ISA 代码档（P2）：AVX2 在 x86_64 runner 上普遍可用，实跑测试；
       # AVX-512 未必可用，只做编译检查防 SIGILL（本机 Zen 4 实跑兜底）。
       # 两腿均经 CARGO_BUILD_TARGET 显式钉住目标三元组：cargo 只在

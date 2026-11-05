@@ -312,7 +312,9 @@ targets 在 `fuzz/`），零 panic。
 - `tests/fuzz_seeds.rs`：按**全部** fuzz target 同构逻辑跑
   `fuzz/corpus/` 种子（valid 必须成功、tampered/truncated 必须失败；
   种子生成脚本与溯源见 VECTOR-PROVENANCE.md「再核对指引」）。
-- `crates/ferritls-rustls/tests/api.rs`：清单断言 + provider 冒烟。
+- `crates/ferritls-rustls/tests/api.rs` + `tests/common/mod.rs`：清单断言 +
+  provider 冒烟；common 仅承载 Ni 预 main 安装钩子（`FERRITLS_TEST_NI=1`
+  时经 ctor 在测试 harness 入口前完成 AES-NI + SHA-NI 双安装）。
 - `crates/ferritls-interop/tests/`：互操作矩阵、ring 交叉互操作与
   webpki 真实链校验、内存 QUIC 回环（`quic.rs`）、Ni 后端 A/B 握手
   （`interop_ni.rs`）、mTLS（`mtls.rs`）、会话恢复 + KeyLog
@@ -326,6 +328,16 @@ targets 在 `fuzz/`），零 panic。
   + 无关根；P-256/RSA-2048/Ed25519/P-384 + mTLS 客户端链；再生成命令
   见该目录 README.md——EC leaf 私钥必须显式 `pkcs8 -topk8` 转 DER，
   P-384 签发必须 `-sha384`）。
+- Ni 腿（`FERRITLS_TEST_NI=1`，仅 x86_64）：两 crate 的 `tests/common`
+  经 ctor 预 main 完成 `install()` + `install_hash()` 双安装，同一套
+  rustls/interop 测试在硬件内核上原样重跑（CI test job 的独立一腿；
+  本地同名命令见 §6.3）。安装失败即 panic（静默降级 = 假覆盖），且
+  不得与 `fips` 构建叠加（core 侧拒绝）。`interop_ni.rs` 保留显式 A/B
+  职责（Ni 安装后的矩阵 + ring 交叉裁决），其 `setup()` 先查
+  `ops::installed_aead()` 以兼容 Ni 腿的预安装。
+- core 向量套件**不接** Ni 腿：`ops_default.rs`（默认态观测）与
+  `ops_dispatch.rs`（mock 安装）的语义会被自动安装打断；内核正确性由
+  backend 自带的安装 KAT + 2000 组软/Ni 差分兜底。
 
 ### 6.2 里程碑的“测试完成”定义
 
@@ -349,6 +361,7 @@ cargo build --workspace
 cargo test --workspace                 # 全量（当前无 ignored 测试）
 cargo test -p ferritls-core --no-default-features   # 标量回退路径
 cargo test -p ferritls-core --features fips
+FERRITLS_TEST_NI=1 cargo test -p ferritls-rustls -p ferritls-interop  # Ni 后端全量腿（x86_64；安装失败即 panic，不与 fips 叠加）
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 cargo deny check                       # 需已安装 cargo-deny
