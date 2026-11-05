@@ -346,7 +346,7 @@ targets 在 `fuzz/`），零 panic。
 
 ```bash
 cargo build --workspace
-cargo test --workspace                 # ignored 默认跳过（simd 路径）
+cargo test --workspace                 # 全量（当前无 ignored 测试）
 cargo test -p ferritls-core --no-default-features   # 标量回退路径
 cargo test -p ferritls-core --features fips
 cargo clippy --workspace --all-targets -- -D warnings
@@ -354,7 +354,6 @@ cargo fmt --all
 cargo deny check                       # 需已安装 cargo-deny
 cargo run -p ferritls-interop --release --example perf # 基准（同机前后对比）
 RUSTFLAGS="-C target-feature=+avx2" cargo test --workspace          # AVX2 档
-cargo test -p ferritls-core --test sha2 -- --ignored   # 单个 ignored 测试
 cargo bench -p ferritls-core           # criterion 基准（aead/hash/ecdh/sign/drbg/kem）
 cargo bench -p ferritls-interop        # 全握手基准（含 ring 基线）
 cargo bench -p ferritls-backend-x86_64 # 软/Ni 逐记录 A/B（aead_ni）
