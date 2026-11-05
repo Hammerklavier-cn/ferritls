@@ -257,3 +257,124 @@ fn hkdf_cross_hash_prk_differ() {
         "SHA-384 vs SHA-512 PRK prefix must differ"
     );
 }
+
+/// 短 PRK 显式拒绝（RFC 5869 §2.3：PRK ≥ HashLen 为前提；R1 修复的
+/// 回归门——修复前短 PRK 会被静默接受并产出弱化密钥材料）：PRK 长
+/// 度 = HashLen − 1 与 0 一律 `InvalidInput`；恰为 HashLen 仍成功。
+/// 三个宏实例全部覆盖（31/32、47/48、63/64 边界各钉一次）。
+#[test]
+fn hkdf_expand_rejects_prk_below_hash_len() {
+    use ferritls_core::hkdf::{expand_sha256, expand_sha384, expand_sha512};
+
+    let info = hex("f0f1f2f3f4f5f6f7f8f9");
+
+    // SHA-256：PRK 31 / 0 拒绝，32 通过
+    for prk_len in [0usize, 31] {
+        let prk = vec![0x0bu8; prk_len];
+        let mut okm = vec![0u8; 32];
+        assert_eq!(
+            expand_sha256(&prk, &info, &mut okm).map(|_| ()),
+            Err(ferritls_core::Error::InvalidInput),
+            "SHA-256 PRK len {prk_len} must be InvalidInput"
+        );
+    }
+    let prk = vec![0x0bu8; 32];
+    let mut okm = vec![0u8; 42];
+    assert_eq!(
+        expand_sha256(&prk, &info, &mut okm).map(|_| ()),
+        Ok(()),
+        "SHA-256 PRK len 32 must succeed"
+    );
+
+    // SHA-384：PRK 47 / 0 拒绝，48 通过
+    for prk_len in [0usize, 47] {
+        let prk = vec![0x0bu8; prk_len];
+        let mut okm = vec![0u8; 32];
+        assert_eq!(
+            expand_sha384(&prk, &info, &mut okm).map(|_| ()),
+            Err(ferritls_core::Error::InvalidInput),
+            "SHA-384 PRK len {prk_len} must be InvalidInput"
+        );
+    }
+    let prk = vec![0x0bu8; 48];
+    let mut okm = vec![0u8; 42];
+    assert_eq!(
+        expand_sha384(&prk, &info, &mut okm).map(|_| ()),
+        Ok(()),
+        "SHA-384 PRK len 48 must succeed"
+    );
+
+    // SHA-512：PRK 63 / 0 拒绝，64 通过
+    for prk_len in [0usize, 63] {
+        let prk = vec![0x0bu8; prk_len];
+        let mut okm = vec![0u8; 32];
+        assert_eq!(
+            expand_sha512(&prk, &info, &mut okm).map(|_| ()),
+            Err(ferritls_core::Error::InvalidInput),
+            "SHA-512 PRK len {prk_len} must be InvalidInput"
+        );
+    }
+    let prk = vec![0x0bu8; 64];
+    let mut okm = vec![0u8; 42];
+    assert_eq!(
+        expand_sha512(&prk, &info, &mut okm).map(|_| ()),
+        Ok(()),
+        "SHA-512 PRK len 64 must succeed"
+    );
+}
+
+/// okm 长度为 0 的平凡边界：Expand 必须返回 `Ok(())`（T 链不启动、
+/// 不产出任何字节），与 RFC 5869 §2.3 的空输出语义一致。
+#[test]
+fn hkdf_expand_empty_okm_is_ok() {
+    use ferritls_core::hkdf::{expand_sha256, expand_sha384, expand_sha512};
+
+    let prk = [0x07u8; 32];
+    let mut empty: [u8; 0] = [];
+    assert_eq!(expand_sha256(&prk, b"info", &mut empty).map(|_| ()), Ok(()));
+    let prk384 = [0x07u8; 48];
+    assert_eq!(
+        expand_sha384(&prk384, b"info", &mut empty).map(|_| ()),
+        Ok(())
+    );
+    let prk512 = [0x07u8; 64];
+    assert_eq!(
+        expand_sha512(&prk512, b"info", &mut empty).map(|_| ()),
+        Ok(())
+    );
+}
+
+/// 空 IKM 的 Extract 确定性钉子（RFC 5869 允许 IKM 为任意长度 ≥ 0，
+/// HMAC 对空消息语义良定义）：extract(salt, "") 必须与直接经 HMAC
+/// 入口计算的 HMAC(salt, "") 逐字节一致，且两次调用结果相同——
+/// 钉死"空 IKM 被特判改道"类的实现漂移。
+#[test]
+fn hkdf_extract_empty_ikm_self_consistent() {
+    use ferritls_core::hkdf::extract_sha256;
+    use ferritls_core::hmac::HmacSha256;
+
+    let salt = hex("000102030405060708090a0b0c");
+    let expected = HmacSha256::one_shot(&salt, b"");
+    let prk = extract_sha256(&salt, b"");
+    assert_eq!(
+        &prk[..],
+        &expected[..],
+        "empty IKM must equal HMAC(salt, \"\")"
+    );
+
+    // 确定性：两次 Extract 输出一致
+    assert_eq!(
+        extract_sha256(&salt, b""),
+        prk,
+        "extract must be deterministic"
+    );
+
+    // 空 salt 形态（RFC 5869：空 salt 按 HashLen 个零字节处理）同样自洽
+    let prk_empty_salt = extract_sha256(&[], b"");
+    let expected_empty_salt = HmacSha256::one_shot(&[0u8; 32], b"");
+    assert_eq!(
+        &prk_empty_salt[..],
+        &expected_empty_salt[..],
+        "empty salt + empty IKM must equal HMAC(zeros, \"\")"
+    );
+}

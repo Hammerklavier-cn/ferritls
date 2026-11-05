@@ -322,3 +322,230 @@ static FIPS_SCHEME_MAP: &[(SignatureScheme, &[&dyn SignatureVerificationAlgorith
     (SignatureScheme::RSA_PSS_SHA384, &[&RsaPssSha384]),
     (SignatureScheme::RSA_PSS_SHA512, &[&RsaPssSha512]),
 ];
+
+// ---------------------------------------------------------------------------
+// AlgorithmIdentifier 静态表锚定：webpki 用 `der::expect_tag` 剥外层
+// SEQUENCE 后与 `public_key_alg_id()` / `signature_alg_id()` 的返回
+// 逐字节比对（pki-types 1.15 本地实测语义），因此表内容必须与
+// rustls-pki-types 的权威算法标识数据逐字节一致。
+//
+// 权威来源：rustls-pki-types 1.15.1 `src/data/alg-*.der`（该 crate 经
+// `AlgorithmIdentifier::from_slice(include_bytes!(...))` 直接装载这些
+// 文件为 `alg_id::*` 常量）。下方 hex 为开发期从上述文件 `xxd -p`
+// 读出后录入（文件：版本见 Cargo.lock 锚定的 rustls-pki-types
+// 1.15.1），并与 `rustls::pki_types::alg_id::*` 常量双重比对——两个
+// 断言任一漂移都会被拦截。
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod alg_id_tests {
+    use super::*;
+    use rustls::pki_types::alg_id;
+
+    /// 表常量 = 权威文件的逐字节 SEQUENCE 内容（无外层 30 xx 头）。
+    #[test]
+    fn alg_id_tables_match_pki_types_authority_files() {
+        // 来源：rustls-pki-types 1.15.1 src/data/alg-ecdsa-p256.der
+        assert_eq!(
+            PK_EC_P256,
+            &[
+                0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x08, 0x2a, 0x86, 0x48,
+                0xce, 0x3d, 0x03, 0x01, 0x07,
+            ][..],
+        );
+        // 来源：alg-ecdsa-p384.der
+        assert_eq!(
+            PK_EC_P384,
+            &[
+                0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01, 0x06, 0x05, 0x2b, 0x81, 0x04,
+                0x00, 0x22,
+            ][..],
+        );
+        // 来源：alg-ecdsa-sha256.der
+        assert_eq!(
+            SIG_ECDSA_SHA256,
+            &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x02][..],
+        );
+        // 来源：alg-ecdsa-sha384.der
+        assert_eq!(
+            SIG_ECDSA_SHA384,
+            &[0x06, 0x08, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x04, 0x03, 0x03][..],
+        );
+        // 来源：alg-ed25519.der
+        assert_eq!(ID_ED25519, &[0x06, 0x03, 0x2b, 0x65, 0x70][..]);
+        // 来源：alg-rsa-encryption.der（rsaEncryption + NULL 参数）
+        assert_eq!(
+            PK_RSA,
+            &[
+                0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01, 0x05, 0x00
+            ][..],
+        );
+        // 来源：alg-rsa-pkcs1-sha256.der
+        assert_eq!(
+            SIG_RSA_PKCS1_SHA256,
+            &[
+                0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b, 0x05, 0x00
+            ][..],
+        );
+        // 来源：alg-rsa-pkcs1-sha384.der
+        assert_eq!(
+            SIG_RSA_PKCS1_SHA384,
+            &[
+                0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0c, 0x05, 0x00
+            ][..],
+        );
+        // 来源：alg-rsa-pkcs1-sha512.der
+        assert_eq!(
+            SIG_RSA_PKCS1_SHA512,
+            &[
+                0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0d, 0x05, 0x00
+            ][..],
+        );
+        // 来源：alg-rsa-pss-sha256.der（RSASSA-PSS OID + RFC 4055 §3.1
+        // 参数：SHA-256 / MGF1-SHA256 / salt 32）
+        assert_eq!(
+            SIG_RSA_PSS_SHA256,
+            &[
+                0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0a, 0x30, 0x34, 0xa0,
+                0x0f, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01,
+                0x05, 0x00, 0xa1, 0x1c, 0x30, 0x1a, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d,
+                0x01, 0x01, 0x08, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04,
+                0x02, 0x01, 0x05, 0x00, 0xa2, 0x03, 0x02, 0x01, 0x20,
+            ][..],
+        );
+        // 来源：alg-rsa-pss-sha384.der（SHA-384 / MGF1-SHA384 / salt 48）
+        assert_eq!(
+            SIG_RSA_PSS_SHA384,
+            &[
+                0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0a, 0x30, 0x34, 0xa0,
+                0x0f, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x02,
+                0x05, 0x00, 0xa1, 0x1c, 0x30, 0x1a, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d,
+                0x01, 0x01, 0x08, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04,
+                0x02, 0x02, 0x05, 0x00, 0xa2, 0x03, 0x02, 0x01, 0x30,
+            ][..],
+        );
+        // 来源：alg-rsa-pss-sha512.der（SHA-512 / MGF1-SHA512 / salt 64）
+        assert_eq!(
+            SIG_RSA_PSS_SHA512,
+            &[
+                0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0a, 0x30, 0x34, 0xa0,
+                0x0f, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x03,
+                0x05, 0x00, 0xa1, 0x1c, 0x30, 0x1a, 0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d,
+                0x01, 0x01, 0x08, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04,
+                0x02, 0x03, 0x05, 0x00, 0xa2, 0x03, 0x02, 0x01, 0x40,
+            ][..],
+        );
+    }
+
+    /// 每个 verifier 实例的 `public_key_alg_id()` / `signature_alg_id()`
+    /// 必须逐字节等于对应静态表条目，且等于 pki-types 装载权威 .der
+    /// 文件得到的 `alg_id::*` 常量（双重锚定，pki-types 升级若改动
+    /// 权威数据即刻暴露）。
+    #[test]
+    fn verifier_alg_ids_match_tables_and_pki_types_constants() {
+        use rustls::pki_types::SignatureVerificationAlgorithm as SVA;
+
+        type VerifierCase = (
+            &'static dyn SVA,
+            &'static [u8],
+            &'static [u8],
+            AlgorithmIdentifier,
+            AlgorithmIdentifier,
+        );
+        let cases: &[VerifierCase] = &[
+            (
+                &EcdsaP256Sha256,
+                PK_EC_P256,
+                SIG_ECDSA_SHA256,
+                alg_id::ECDSA_P256,
+                alg_id::ECDSA_SHA256,
+            ),
+            (
+                &EcdsaP384Sha384,
+                PK_EC_P384,
+                SIG_ECDSA_SHA384,
+                alg_id::ECDSA_P384,
+                alg_id::ECDSA_SHA384,
+            ),
+            (
+                &Ed25519,
+                ID_ED25519,
+                ID_ED25519,
+                alg_id::ED25519,
+                alg_id::ED25519,
+            ),
+            (
+                &RsaPkcs1Sha256,
+                PK_RSA,
+                SIG_RSA_PKCS1_SHA256,
+                alg_id::RSA_ENCRYPTION,
+                alg_id::RSA_PKCS1_SHA256,
+            ),
+            (
+                &RsaPkcs1Sha384,
+                PK_RSA,
+                SIG_RSA_PKCS1_SHA384,
+                alg_id::RSA_ENCRYPTION,
+                alg_id::RSA_PKCS1_SHA384,
+            ),
+            (
+                &RsaPkcs1Sha512,
+                PK_RSA,
+                SIG_RSA_PKCS1_SHA512,
+                alg_id::RSA_ENCRYPTION,
+                alg_id::RSA_PKCS1_SHA512,
+            ),
+            (
+                &RsaPssSha256,
+                PK_RSA,
+                SIG_RSA_PSS_SHA256,
+                alg_id::RSA_ENCRYPTION,
+                alg_id::RSA_PSS_SHA256,
+            ),
+            (
+                &RsaPssSha384,
+                PK_RSA,
+                SIG_RSA_PSS_SHA384,
+                alg_id::RSA_ENCRYPTION,
+                alg_id::RSA_PSS_SHA384,
+            ),
+            (
+                &RsaPssSha512,
+                PK_RSA,
+                SIG_RSA_PSS_SHA512,
+                alg_id::RSA_ENCRYPTION,
+                alg_id::RSA_PSS_SHA512,
+            ),
+        ];
+        for (v, pk, sig, pk_const, sig_const) in cases {
+            assert_eq!(
+                v.public_key_alg_id().as_ref(),
+                *pk,
+                "{v:?} public_key_alg_id"
+            );
+            assert_eq!(
+                v.signature_alg_id().as_ref(),
+                *sig,
+                "{v:?} signature_alg_id"
+            );
+            assert_eq!(
+                v.public_key_alg_id(),
+                *pk_const,
+                "{v:?} public_key_alg_id vs pki-types 常量"
+            );
+            assert_eq!(
+                v.signature_alg_id(),
+                *sig_const,
+                "{v:?} signature_alg_id vs pki-types 常量"
+            );
+        }
+    }
+
+    /// verifier 的 `fips()` 恒 false（规则 3：认证前；默认实现在
+    /// pki-types 1.15 返回 false，此处显式锚定我们覆写后的语义）。
+    #[test]
+    fn verifier_fips_is_false_before_validation() {
+        for v in ALL_VERIFIERS {
+            assert!(!v.fips(), "认证前 fips() 恒 false");
+        }
+    }
+}

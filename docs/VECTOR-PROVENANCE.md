@@ -27,6 +27,10 @@
 | `schedule_rfc8448.rs` | RFC 8448 §3 官方轨迹 | **程序化提取**（tools/extract_rfc8448.py，脚本内含 Python 独立复算比对） |
 | `wycheproof.rs` | C2SP/wycheproof testvectors_v1（裁剪入库） | 文件级入库，见 tests/vectors/README.md；AEAD 两文件（aes_gcm/chacha20_poly1305，2026-10 入库）按参数空间裁组后与上游原文逐字段核对 198/198 |
 | `ferritls-rustls/src/quic_vectors.rs`（M8.5） | **RFC 9001 附录 A 原文**（rfc-editor.org，2026-09-15 下载）：§A.1 密钥与掩码（client/server hp + sample→mask）、§A.2 客户端 Initial 完整包（AES-128-GCM，1162 B 载荷 = 245 B CRYPTO 帧 + 917 B 零 PADDING，1200 B 受保护包）、§A.3 服务端 Initial 完整包（99 B 载荷，135 B 受保护包）、§A.5 ChaCha20 短头包（key/iv/hp/sample/mask/最终 21 B 包）；另 picoquic `multipath_test.c` 经 rustls 测试转引的 multipath 向量因 rustls `KeyBuilder` 为 `pub(crate)`（第三方无法从 secret 经公开 API 重建 PacketKey）**未采用**，`for_path` 以 rustls 公开 `Nonce::for_path` 同式 + 往返/非碰撞测试覆盖 | **程序化提取 + 派生关系校验**（python 脚本从 RFC 文本按行提取 hex 并验证：nonce = iv⊕pn、掩码位应用后包头、sample 取位 `[pn_offset+4 .. +16]` 全部闭合）；§A.2/A.3 测试经公开 `quic::Suite::keys` 路径运行，覆盖 HKDF/HMAC + "quic key/iv/hp" 派生全链 |
+| `sha2.rs` / `sha3.rs`（SHAVS/SHA3VS 完整导入，2026-11-05） | **NIST CAVP 官方字节导向 zip 原件**（csrc.nist.gov CAVP secure-hashing 页，2026-11-05 下载，zip SHA-256：shabytetestvectors `929ef80b7b3418aca026643f6f248815913b60e01741a44bba9e118067f4c9b8`、sha-3bytetestvectors `cd07701af2e47f5cc889d642528b4bf11f8b6eb55797c7307a96828ed8d8fc8c`、shakebytetestvectors `debfebc3157b3ceea002b84ca38476420389a3bf7e97dc5f53ea4689a16de4c7`）：SHA-256/384/512 LongMsg + Monte、SHA3-256/384/512 LongMsg + Monte、SHAKE128/256 LongMsg；落盘 `tests/vectors/shs/`（长消息 ≤512 B 全保留 + 其余 1/4 确定性抽样 + 恒保留最大长度；Monte 全量 100 检查点） | **程序化提取**（tools/extract_shavs.py）：脚本内以 python hashlib 对**全部** LongMsg 用例独立复算并逐字节比对官方值（不一致即中止）；Monte 按官方算法完整复算 100 检查点核对——SHA-2 = SHAVS §4.3 三摘要滚动拼接 `MD = H(MD_{i-3}‖MD_{i-2}‖MD_{i-1})`、每检查点 1000 次迭代；SHA-3 = SHA3VS Figure 1 单摘要链（与 SHA-2 不同，已核实），两族均 100/100 命中官方检查点 |
+| `wycheproof.rs`（新模块，2026-11-05） | C2SP/wycheproof testvectors_v1 **master 快照**（tarball SHA-256 `33f8042214bc36a0133356285c1a44900b4093389609aa6d43ad968a7090bd83`，2026-11-05 经 codeload 下载；与既有 10 文件同上游）：`hmac_sha{256,384,512}`（全量 174×3）、`hkdf_sha{256,384,512}`（全量；invalid = size 恰为 255·HashLen+1）、`aes_ccm`（keySize=128 全组 184）、`rsa_signature_{3072,4096}_sha{256,384}`、`rsa_pss_misc`（mgfSha==sha 且 SHA-2 组 18 例）、`rsa_pkcs1_{2048,3072,4096}_sig_gen`（签名侧 KAT，均衡素数 CRT 形状过滤） | 增量裁剪（tools/trim_wycheproof.py 新增 SPECS，既有 10 文件未触碰）；结果映射与例外见 wycheproof.rs 文件头——HMAC invalid = 同长篡改 tag → 前缀区分断言；pss_misc 全 valid 于**任意盐长语义**（见下方修订说明）；sig_gen 的 WeakHash/SmallPublicKey 组（acceptable）按本实现装载下限排除 |
+| `ccm.rs`（CCMVS 补齐，2026-11-05） | **NIST SP800-38C CAVS 官方向量**，经 OpenSSL master `test/recipes/30-test_evp_data/evpciph_aes_ccm_cavs.txt` 转载（文件头注明 "Tests from NIST CCM Test Vectors (SP800-38C)"，Apache-2.0）：aes-128-ccm 955 块——14 个 (nonce 7–13, tag 4–16 偶数) 形状的 Variable Tag/Nonce/Plaintext/AAD 加密用例 + 477 个 Decryption-Verification 失败用例；落盘 `tests/vectors/ccm/ccmvs_aes128.json`（每形状 ≤2 加密 + 失败 1/4 抽样，共 68） | 程序化提取（tools/extract_ccmvs.py）：官方期望值原样搬运为数据文件；ENCRYPT → seal 逐字节 + 往返，DECRYPT(CIPHERUPDATE_ERROR) → open 必须拒绝（tests/ccm.rs `ccmvs_nist_aes128_official_vectors`）。2026-09-07 修订所记 "CCMVS 未实际引入" 至此由官方转载件补齐（直接 URL 已失效，转载链路注明） |
+| `attacker_corpus.rs`（2026-11-05） | OpenSSL master `test/d2i-tests/` 10 文件（Apache-2.0；CVE-2016-2108/2109/7053 官方回归 + 非最小 INTEGER 双符号 + 高 tag 号）→ `tests/vectors/d2i/`；BoringSSL master `fuzz/{pkcs8,privkey,spki,cert,der_roundtrip}_corpus` 精选 31 文件（ISC License / OpenSSL dual，LibFuzzer 演化语料）→ `tests/vectors/corpus/` | 一次性全量烟测（2026-11-05）：BoringSSL 7 语料目录 **438 文件**喂全部解析/验证入口（PKCS#8/SPKI/裸 RSA/EC 点/Ed25519/ECDH 对端/三 AEAD open/DER 原语）**零 panic**；入库子集逐文件钉住解析结果（3 个合法 PKCS#8 + 其余 Err），防"静默从拒绝变接受"回归 |
 
 ## 2026-09-07 修订说明
 
@@ -37,6 +41,49 @@
 - 新增 GCM 边界、HMAC 超长密钥、SHA-2 填充边界、Ed25519 TEST 1024、
   HKDF 前缀性质/超长拒绝等测试（非向量类自洽性质测试不入表）。
 
+## 2026-11-05 修订说明（测试完备性轮）
+
+- **Wycheproof/HMAC 映射**：`valid` + 全长标签 → verify Ok；截断标签
+  （tagSize = 半摘要）→ one_shot 截断逐字节一致（本实现 `verify` 按
+  长度精确比较，截断验证不在 API 面——与上游 compute-only 先例一致
+  而断言更强）。`invalid`（同长篡改）→ 计算前缀必须区分（全长时另
+  断言 verify Err）。
+- **RSA-PSS 盐长语义变更**：`verify_pss` 由"盐长 = 哈希长度"放宽为
+  按 RFC 8017 编码严格解码任意盐长（PS 全零、首个非零字节必须为
+  0x01 分隔符，salt 为其后任意长度尾段；MGF1 哈希仍固定与消息哈希
+  相同）。`rsa_pss_2048_sha256_mgf1_32_test.json` 的 tcId 67–72
+  （"s_len changed to …"，ModifiedSignature）在该语义下是同一消息的
+  真实有效签名——Wycheproof 判 invalid 相对的是组声明的 sLen 参数
+  （验证方被假定钉死盐长）；本 API 无盐长参数，接受属既定分歧（同
+  OpenSSL 默认行为），测试对这一类不做拒绝断言。
+- **sha2.rs:78 TODO 完成**：完整 CAVP SHAVS 长消息/蒙特卡洛向量经
+  tools/extract_shavs.py 导入（SHA-2/SHA-3/SHAKE 共 14 文件），脚本内
+  hashlib 逐字节核对全部用例；SHA-2 与 SHA-3 的 Monte 算法差异
+  （三摘要滚动 vs 单摘要链）已分别按 SHAVS §4.3 与 SHA3VS Figure 1
+  核实并 100/100 复算命中。
+- **与权威实现的校验语义对照**（research 记录，2026-11-05）：
+  - RSA 装载校验对齐 BoringSSL 解析期层级：新增 CRT 分量下界
+    （dp/dq/qInv ≥ 2）、d ↔ CRT 一致（d mod (p−1) == dp 且
+    d mod (q−1) == dq，等式强制完全约简）、e·d ≡ 1 mod (p−1) 与
+    mod (q−1)（合成为 e·d ≡ 1 mod λ(n)）；素性、√2 下界、|p−q| 距离
+    与 n 小因子检验属 SP 800-56B 生成期层级，不在装载路径（同
+    OpenSSL 非认证校验分层）。CRT limb 形状约束（p、q ≤ ⌈n_len/2⌉
+    limb）导致非均衡素数密钥（如 Wycheproof sig_gen 的 1368/688 位
+    拆分）被拒——既定设计约束，sig_gen 裁剪按形状过滤。
+  - EC 点：仅未压缩形态（较 BoringSSL/aws-lc 的"接受压缩点"更严，
+    刻意分歧）；X/Y < p 规范性、不在曲线、无穷远点拒绝与权威一致；
+    X25519 低阶/全零拒绝（权威实现在代码内强制但缺 KAT，本实现有
+    直接测试）。
+  - 指数上限：本实现 e < 2^64（BoringSSL 默认 e ≤ 33 bits 为 DoS
+    缓解；8 字节上限为本实现的同类缓解，刻意分歧）。
+  - GCM nonce 固定 96 位、CCM nonce 7..13/tag 4..16 偶数（类型级/
+    运行时参数校验，OpenSSL 的可变 IV 面不在 API 内）。
+  - HKDF-Expand 新增 PRK < HashLen → InvalidInput（RFC 5869 §2.3
+    强制，此前静默接受）。
+  - fields `from_bytes_le_mod` 条件减修复：旧实现漏掉倍增移位出
+    carry 的归约分支（BE 版正确、LE 版遗漏；超长导入 oracle 拦截，
+    定长 oracle 触发窗口 ~2⁻²⁴/步故此前未暴露）。
+
 ## 再核对指引
 
 1. RFC 类：从 rfc-editor.org 取原文，比对测试常量。
@@ -45,6 +92,14 @@
 3. RFC 8448：`tools/extract_rfc8448.py <rfc8448.txt>` 一键重提取并
    重新生成测试文件（生成器内含 Python 独立复算，输出确定）。
 4. Wycheproof：`tools/trim_wycheproof.py`（策略见 tests/vectors/README.md）。
+5. SHAVS/SHA3VS：`tools/extract_shavs.py <官方.rsp>...`（字节导向 zip
+   从 csrc.nist.gov CAVP secure-hashing 页下载，sha256 记于上表；
+   脚本内 hashlib 复算全部用例 + Monte 官方算法全检查点复算）。
+6. CCMVS：`tools/extract_ccmvs.py <evpciph_aes_ccm_cavs.txt>`（NIST
+   SP800-38C 经 OpenSSL 转载；直接 CCMVS URL 已失效）。
+7. 语料子集：`tests/vectors/d2i/`（OpenSSL d2i-tests）与
+   `tests/vectors/corpus/`（BoringSSL fuzz corpus 精选）按
+   `tests/attacker_corpus.rs` 表格核对；全量烟测一次性执行不入库。
 5. fuzz 种子（`fuzz/corpus/mlkem-decaps/`）：由
    `tools/gen_mlkem_fuzz_seeds.py` 从上表 `mlkem.rs` 行的 ACVP 解封装
    用例（同一案例的 dk/c 真值对，每参数集 valid + modified-ct 各一）

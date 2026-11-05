@@ -152,3 +152,71 @@ fn ctr_drbg_mixed_path_differs_from_plain() {
     // 生产实例化（OS 熵 + 健康测试）可用
     let _ = CtrDrbg::instantiate_from_os(b"tls13").unwrap();
 }
+
+/// 实例化熵材料不足必须显式拒绝（SP 800-90A：seedlen = 48 字节）：
+/// 47 字节与 0 字节一律 `InvalidInput`——不得补零静默实例化。
+#[test]
+fn ctr_drbg_rejects_short_entropy_input() {
+    let e47: Vec<u8> = (0..47u8).collect();
+    assert_eq!(
+        CtrDrbg::new(&e47, b"").map(|_| ()),
+        Err(ferritls_core::Error::InvalidInput),
+        "47-byte entropy input must be InvalidInput"
+    );
+    assert_eq!(
+        CtrDrbg::new(&[], b"").map(|_| ()),
+        Err(ferritls_core::Error::InvalidInput),
+        "empty entropy input must be InvalidInput"
+    );
+}
+
+/// 重播种熵材料不足必须拒绝，且**失败路径不得改动任何状态**：
+/// reseed 的长度校验先于 Update——同种子双实例对照，失败重播种后
+/// 的 generate 输出必须与从未尝试重播种的孪生实例完全一致。
+#[test]
+fn ctr_drbg_failed_reseed_leaves_state_unchanged() {
+    let e: Vec<u8> = (0..48u8).collect();
+    let mut d = CtrDrbg::new(&e, b"").unwrap();
+    let mut twin = CtrDrbg::new(&e, b"").unwrap();
+
+    let (mut first, mut twin_first) = ([0u8; 32], [0u8; 32]);
+    d.generate(&mut first).unwrap();
+    twin.generate(&mut twin_first).unwrap();
+    assert_eq!(first, twin_first, "same seed ⇒ same first output");
+
+    // 47 字节与 0 字节的重播种一律 InvalidInput
+    assert_eq!(
+        d.reseed(&e[..47], b"").map(|_| ()),
+        Err(ferritls_core::Error::InvalidInput)
+    );
+    assert_eq!(
+        d.reseed(&[], b"").map(|_| ()),
+        Err(ferritls_core::Error::InvalidInput)
+    );
+
+    // 失败重播种后序列必须与孪生实例继续推进的结果一致
+    let (mut second, mut twin_second) = ([0u8; 32], [0u8; 32]);
+    d.generate(&mut second).unwrap();
+    twin.generate(&mut twin_second).unwrap();
+    assert_eq!(second, twin_second, "failed reseed must not mutate state");
+    assert_ne!(second, first, "sequence must still advance");
+}
+
+/// 空 additional input 与 None 语义等价（SP 800-90A：Null；实现按
+/// `additional_filter` 归一）：同种子双实例，`Some(&[])` 与无 AI 的
+/// generate 输出必须逐字节一致（末次 Update 的 provided_data 同为
+/// 0^seedlen）。
+#[test]
+fn ctr_drbg_empty_ai_equivalent_to_none() {
+    let e: Vec<u8> = (0..48u8).collect();
+    let mut a = CtrDrbg::new(&e, b"").unwrap();
+    let mut b = CtrDrbg::new(&e, b"").unwrap();
+
+    let (mut with_empty_ai, mut without_ai) = ([0u8; 32], [0u8; 32]);
+    a.generate_with_ai(&mut with_empty_ai, Some(b"")).unwrap();
+    b.generate(&mut without_ai).unwrap();
+    assert_eq!(
+        with_empty_ai, without_ai,
+        "Some(empty AI) must be equivalent to None"
+    );
+}

@@ -39,10 +39,9 @@ fn x25519_rfc7748_diffie_hellman() {
 
 /// RFC 7748 §5.2 迭代测试（1000 轮，实现正确性金标准）。
 ///
-/// 慢测试：已实现并手动验证通过（2026-09-07）；因 debug 构建耗时
-/// 较长保留 `#[ignore]`，按需 `-- --ignored` 运行或接入 CI nightly。
+/// debug 构建 ~1.6 s（2026-11 实测），直接常跑——曾因耗时长被
+/// `#[ignore]` 并交由 CI 慢测试 job 按需运行，该 job 随之取消。
 #[test]
-#[ignore = "慢测试（1000 轮阶梯），已手动验证通过；按需 --ignored 运行"]
 fn x25519_rfc7748_iterated() {
     // k、u 初始均为 9（32 字节 LE 编码）；每轮 k ← X25519(k, u)，
     // u ← 旧 k；最终结果为 k（RFC 7748 §5.2 原文核对 2026-09-07）。
@@ -92,4 +91,66 @@ fn x25519_low_order_points_rejected() {
             "{what} must be rejected with VerificationFailed, got {got:?}"
         );
     }
+}
+
+/// 对端公钥长度非法（0/31/33 字节）必须返回 `InvalidInput`（ecdh.rs
+/// 的 `try_into::<[u8; 32]>` 守护）：错误变体钉死——既不得放宽为
+/// `VerificationFailed`，也不得 panic（AGENTS §5.2：TLS 层两种非法
+/// 编码都要终止握手）。
+#[test]
+fn x25519_peer_key_wrong_length_rejected() {
+    let alice_seed = hex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a");
+    let alice = x25519::SecretKey::from_seed(alice_seed.as_slice().try_into().unwrap());
+
+    for len in [0usize, 31, 33] {
+        let peer = vec![0x09u8; len];
+        assert_eq!(
+            alice.diffie_hellman(&peer).map(|_| ()),
+            Err(ferritls_core::Error::InvalidInput),
+            "peer key len {len} must be InvalidInput"
+        );
+    }
+}
+
+/// RFC 7748 §5 钳制钉子：`from_seed` 必须清除字节 0 的低 3 位与
+/// 字节 31 的最高位、置位字节 31 的 bit 6——同一标量在脏位/清位两
+/// 种种子形态下必须导出同一公钥，并与手工钳制结果一致。公钥同时
+/// 锚定 RFC 7748 §6.1 的 Alice 官方值（钳制语义被绕过时立即暴露）。
+#[test]
+fn x25519_from_seed_clamps_dirty_bits() {
+    let alice_seed = hex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a");
+
+    // 脏位种子：字节 0 低 3 位、字节 31 最高位置 1（均属钳制清除域）；
+    // 清位种子：同两处清 0。
+    let mut dirty = alice_seed.clone();
+    dirty[0] |= 0x07;
+    dirty[31] |= 0x80;
+    let mut clean = alice_seed.clone();
+    clean[0] &= !0x07;
+    clean[31] &= !0x80;
+
+    // 手工钳制（RFC 7748 §5 的逐位定义）
+    let mut manual = dirty.clone();
+    manual[0] &= 248;
+    manual[31] &= 127;
+    manual[31] |= 64;
+
+    let via_dirty = x25519::SecretKey::from_seed(dirty.as_slice().try_into().unwrap()).public_key();
+    let via_clean = x25519::SecretKey::from_seed(clean.as_slice().try_into().unwrap()).public_key();
+    let via_manual =
+        x25519::SecretKey::from_seed(manual.as_slice().try_into().unwrap()).public_key();
+
+    assert_eq!(
+        via_dirty, via_manual,
+        "dirty seed must clamp to the same scalar"
+    );
+    assert_eq!(
+        via_clean, via_manual,
+        "clean seed must clamp to the same scalar"
+    );
+    assert_hex(
+        &via_dirty,
+        "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+        "clamped RFC 7748 §6.1 Alice public key",
+    );
 }

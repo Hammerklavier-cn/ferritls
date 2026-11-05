@@ -36,3 +36,21 @@ pub enum Approval {
 pub fn fips_mode_enabled() -> bool {
     cfg!(feature = "fips")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 钉住批准模式开关与 feature 的对应关系（ops::install 的拒绝
+    /// 分支与套件装配都依赖此谓词，漂移即静默改变批准面）。
+    #[test]
+    fn fips_mode_matches_build_feature() {
+        assert_eq!(fips_mode_enabled(), cfg!(feature = "fips"));
+    }
+
+    /// Approval 语义锚：两态可区分（套件装配按此过滤批准清单）。
+    #[test]
+    fn approval_states_distinct() {
+        assert_ne!(Approval::Approved, Approval::NonApproved);
+    }
+}

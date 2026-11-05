@@ -10,7 +10,9 @@ use std::sync::Arc;
 
 use common::handshake_ping_pong;
 use rustls::crypto::CryptoProvider;
-use rustls::{AlertDescription, CipherSuite, ClientConnection, ServerConnection};
+use rustls::{
+    AlertDescription, CipherSuite, ClientConnection, Error, PeerIncompatible, ServerConnection,
+};
 
 const AES128: CipherSuite = CipherSuite::TLS13_AES_128_GCM_SHA256;
 const AES256: CipherSuite = CipherSuite::TLS13_AES_256_GCM_SHA384;
@@ -153,6 +155,90 @@ fn fips_provider_rejects_non_approved_suite() {
     match server.join() {
         Ok(Ok(())) => panic!("server handshake completed — fips negotiation surface was breached"),
         Ok(Err(_)) => {}
+        Err(panic) => std::panic::panic_any(panic),
+    }
+}
+
+/// TLS 1.2-only 客户端（ring provider 装配——ferritls 无 TLS 1.2 套件）
+/// vs ferritls 服务端：服务端版本配置含 TLS 1.2（safe defaults）但
+/// provider 套件面仅 TLS 1.3，rustls 的 `supports_version` 以套件
+/// 可用性为准 → TLS 1.2 未启用。rustls 服务端在 ClientHello 上立刻
+/// 以 protocol_version alert 拒绝（vendored hs.rs：
+/// `Tls12NotOfferedOrEnabled`），钉扎 provider 的 TLS 1.3-only 协商面。
+#[test]
+fn tls12_only_client_rejected_by_tls13_only_server() {
+    let server_cfg =
+        common::server_config(ferritls_rustls::default_provider()).expect("server config");
+    let client_cfg =
+        common::client_config_tls12_only(Arc::new(rustls::crypto::ring::default_provider()));
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server_io = std::net::TcpStream::connect(addr).expect("connect");
+    let client_io = listener
+        .incoming()
+        .next()
+        .expect("incoming")
+        .expect("accept");
+    // 读超时兜底（阻塞读 200ms 返回 WouldBlock，由下方重试上限消化）。
+    server_io
+        .set_read_timeout(Some(std::time::Duration::from_millis(200)))
+        .expect("server read timeout");
+    client_io
+        .set_read_timeout(Some(std::time::Duration::from_millis(200)))
+        .expect("client read timeout");
+
+    let server = std::thread::spawn(move || -> Result<(), Error> {
+        let mut conn = ServerConnection::new(Arc::new(server_cfg))?;
+        let mut io = server_io;
+        let mut waits = 0u32;
+        while conn.is_handshaking() {
+            match conn.complete_io(&mut io) {
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    waits += 1;
+                    assert!(waits < 10_000, "timeout driving server handshake");
+                }
+                Err(e) => return Err(common::unpack_tls_error(e)),
+                Ok(_) => {}
+            }
+        }
+        Err(Error::General(
+            "server handshake completed — TLS 1.2 negotiation surface was breached".into(),
+        ))
+    });
+
+    let mut conn = ClientConnection::new(
+        Arc::new(client_cfg),
+        rustls::pki_types::ServerName::try_from("localhost".to_string()).expect("name"),
+    )
+    .expect("client conn");
+    let mut io = client_io;
+    let mut waits = 0u32;
+    let client_err = loop {
+        match conn.complete_io(&mut io) {
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                waits += 1;
+                assert!(waits < 10_000, "timeout waiting for server alert");
+            }
+            Err(e) => break common::unpack_tls_error(e),
+            Ok(_) if conn.is_handshaking() => {}
+            Ok(_) => {
+                panic!("client handshake completed — TLS 1.2 negotiation surface was breached")
+            }
+        }
+    };
+    assert_eq!(
+        client_err,
+        Error::AlertReceived(AlertDescription::ProtocolVersion),
+        "TLS 1.2-only client must be rejected with protocol_version alert"
+    );
+
+    match server.join() {
+        Ok(Ok(())) => {
+            panic!("server handshake completed — TLS 1.2 negotiation surface was breached")
+        }
+        Ok(Err(Error::PeerIncompatible(PeerIncompatible::Tls12NotOfferedOrEnabled))) => {}
+        Ok(Err(other)) => panic!("server rejected with unexpected error: {other:?}"),
         Err(panic) => std::panic::panic_any(panic),
     }
 }

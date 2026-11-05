@@ -23,3 +23,9 @@ default = ["simd"]
 simd = ["ferritls-core/simd"]
 # 转发到 ferritls-core 的批准模式门控（见 ferritls-core Cargo.toml 注释）。
 fips = ["ferritls-core/fips"]
+
+# Ni 后端测试钩子（仅 x86_64）：tests/common 的 FERRITLS_TEST_NI 预 main
+# 安装经此引入 backend + ctor；dev-deps 不受边界白名单约束（AGENTS §6.1）。
+[target.'cfg(target_arch = "x86_64")'.dev-dependencies]
+ferritls-backend-x86_64.workspace = true
+ctor.workspace = true

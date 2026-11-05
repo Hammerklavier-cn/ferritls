@@ -739,6 +739,15 @@ pub mod rsa {
 
         /// 解析 PKCS#1 RSAPrivateKey DER 并做结构一致性校验
         ///（rustls KeyProvider 的 PKCS#1 入口）。
+        ///
+        /// 装载期校验层级（对齐 BoringSSL 解析期检查 / RFC 8017）：
+        /// 模长 2048..=4096 字节、n/e/p/q 奇、e ∈ [3, 2^64)、
+        /// p·q = n、CRT 分量范围（dp < p、dq < q、qInv < p、全部
+        /// ≥ 2）、d ↔ CRT 一致（d mod (p−1) == dp 且 d mod (q−1) ==
+        /// dq，等式强制完全约简）、e·d ≡ 1 mod lcm(p−1, q−1)、
+        /// q·qInv ≡ 1 mod p。素性、√2 下界、|p−q| 距离与 n 小因子
+        /// 检验属 SP 800-56B 密钥生成层级，不在装载路径（见
+        /// docs/VECTOR-PROVENANCE.md 的权威实现校验语义对照）。
         pub fn from_pkcs1_der(der: &[u8]) -> Result<Self, crate::Error> {
             let (seq, rest) = crate::der::sequence(der)?;
             if !rest.is_empty() {
@@ -752,7 +761,7 @@ pub mod rsa {
             //   d mod p-1, d mod q-1, qInv, otherPrimeInfos [0] OPTIONAL }
             let (n_b, rest) = crate::der::integer(rest)?;
             let (e_b, rest) = crate::der::integer(rest)?;
-            let (_d_b, rest) = crate::der::integer(rest)?; // CRT 路径不使用 d
+            let (d_b, rest) = crate::der::integer(rest)?;
             let (p_b, rest) = crate::der::integer(rest)?;
             let (q_b, rest) = crate::der::integer(rest)?;
             let (dp_b, rest) = crate::der::integer(rest)?;
@@ -829,6 +838,71 @@ pub mod rsa {
             if pq[..n_len] != n[..] || pq[n_len..].iter().any(|&x| x != 0) {
                 return Err(crate::Error::InvalidInput);
             }
+
+            // CRT 分量下界：dp、dq、qInv ≥ 2（0/1 不可能满足同余合同；
+            // 与上方上界一起构成完整的范围检查，对齐 BoringSSL 解析期
+            // `RSA_check_key` 层级的"每个 CRT 分量 +1 必失败"）。
+            for v in [&dp, &dq, &qinv] {
+                if v[0] < 2 && v[1..].iter().all(|&x| x == 0) {
+                    return Err(crate::Error::InvalidInput);
+                }
+            }
+
+            // d ↔ CRT 一致性 + 私钥指数合同（装载期一次；对齐
+            // BoringSSL 解析期"d+1 / d 垃圾值必拒绝"与 RFC 8017 的
+            // d·e ≡ 1 mod λ(n) 定义）：
+            //   d mod (p−1) == dp 且 d mod (q−1) == dq（等式同时强制
+            //   完全约简：dP + (p−1) 形态的未约简编码在 dp < p 下仍会
+            //   被等式拒绝）；
+            //   e·d ≡ 1 (mod lcm(p−1, q−1)) —— 由 mod (p−1) 与 mod
+            //   (q−1) 两个检查合成（x ≡ 1 mod lcm ⟺ x ≡ 1 mod 两者），
+            //   无需实现大数长除。
+            // 时机说明：本块操作密钥文件材料、装载时一次，不涉消息级
+            // 秘密（与 OpenSSL 非认证校验层级同级；常数时间纪律针对
+            // 每消息秘密运算，见 §5.1）。
+            if d_b.len() > n_bytes + 8 {
+                // d0 < λ < n 需 n_bytes 字节；+8 容纳 d0 + k·λ 的合理
+                // 表示（k < 2^64），更长必然是垃圾或放大输入。
+                return Err(crate::Error::InvalidInput);
+            }
+            let mut d = vec![0u64; n_len + 1];
+            rsabig::os2ip_be(d_b, &mut d);
+
+            // p、q 为奇 → p−1 / q−1 仅需清 limb0 最低位
+            let mut pm1 = p.clone();
+            pm1[0] &= !1u64;
+            let mut qm1 = q.clone();
+            qm1[0] &= !1u64;
+
+            let mut rem = vec![0u64; pl];
+            rsabig::reduce_limbs(&d, &pm1, &mut rem);
+            if rem != dp {
+                return Err(crate::Error::InvalidInput);
+            }
+            rsabig::reduce_limbs(&d, &qm1, &mut rem);
+            if rem != dq {
+                return Err(crate::Error::InvalidInput);
+            }
+
+            let mut e_ext = vec![0u64; d.len()];
+            e_ext[0] = e[0];
+            let mut prod = rsabig::mul_full(&d, &e_ext);
+            rsabig::reduce_limbs(&prod, &pm1, &mut rem);
+            if rem[0] != 1 || rem[1..].iter().any(|&x| x != 0) {
+                return Err(crate::Error::InvalidInput);
+            }
+            rsabig::reduce_limbs(&prod, &qm1, &mut rem);
+            if rem[0] != 1 || rem[1..].iter().any(|&x| x != 0) {
+                return Err(crate::Error::InvalidInput);
+            }
+            // 校验缓冲全部派生自密钥材料，离开前零化（错误路径不在此
+            // 处理，与上方 pq 中间积的既有层级一致）。
+            d.zeroize();
+            e_ext.zeroize();
+            prod.zeroize();
+            rem.zeroize();
+            pm1.zeroize();
+            qm1.zeroize();
 
             // Montgomery 常数（CRT 侧 + 盲化用的 n 侧）
             let n0_p = rsabig::n0_inv(p[0]);
@@ -1321,7 +1395,10 @@ pub mod rsa {
     }
 
     impl VerifyKey {
-        /// 验证 RSA-PSS 签名（RFC 8017 §9.1，salt 长度 = 哈希长度）。
+        /// 验证 RSA-PSS 签名（RFC 8017 §9.1；盐长按编码严格解码——
+        /// PS 必须全零、终止于 0x01 分隔符，salt 为其后的任意长度
+        /// 尾部，包含 sLen = 0 与 sLen ≠ hLen 的合法编码；MGF1 哈希
+        /// 固定与消息哈希相同——TLS 1.3 与本实现 API 面的既定约定）。
         /// 重复验证同一把公钥时应复用 `VerifyKey`，模幂前的解析开销均摊。
         pub fn verify_pss(
             &self,
@@ -1334,7 +1411,7 @@ pub mod rsa {
             let hlen = mhash.len();
             let emlen = em.len();
             // 一切 padding 失败归一化为同一错误（不泄露失败阶段）
-            if emlen < 2 * hlen + 2 || em[emlen - 1] != 0xbc {
+            if emlen < hlen + 2 || em[emlen - 1] != 0xbc {
                 return Err(crate::Error::VerificationFailed);
             }
             if em[0] & !self.em_mask != 0 {
@@ -1349,12 +1426,17 @@ pub mod rsa {
                 db[i] ^= dbmask[i];
             }
             db[0] &= self.em_mask;
-            let ps_len = dblen - hlen - 1;
-            if db[..ps_len].iter().any(|&b| b != 0) || db[ps_len] != 0x01 {
-                return Err(crate::Error::VerificationFailed);
-            }
-            let salt = &db[ps_len + 1..];
-            let mut mprime = vec![0u8; 8 + 2 * hlen];
+            // 严格 RFC 8017 读法：DB = PS ‖ 0x01 ‖ salt，PS 全零 →
+            // 分隔符 = 首个非零字节，必须是 0x01；salt 为其后任意长度
+            // （Wycheproof rsa_pss_misc 的 sLen ∈ {0, 20, 28, 32, 48, 64}
+            // 参数变体在此全部可验证）。
+            let sep = db.iter().position(|&b| b != 0);
+            let sep = match sep {
+                Some(i) if db[i] == 0x01 => i,
+                _ => return Err(crate::Error::VerificationFailed),
+            };
+            let salt = &db[sep + 1..];
+            let mut mprime = vec![0u8; 8 + hlen + salt.len()];
             mprime[8..8 + hlen].copy_from_slice(&mhash);
             mprime[8 + hlen..].copy_from_slice(salt);
             let h2 = hash_msg(hash_bits, &mprime)?;

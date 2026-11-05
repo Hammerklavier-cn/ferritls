@@ -648,3 +648,252 @@ mod tests {
         assert_ne!(enc(2, 12345), enc(2, 12346));
     }
 }
+
+// ---------------------------------------------------------------------------
+// AES-256 包保护测试（RFC 9001 附录 A 只提供 AES-128 与 ChaCha20 的
+// Initial 向量，AES-256 无官方向量——以下按「同一 Suite::keys 推导链
+// 双向一致 + 直接构造密钥的自洽往返/篡改拒绝/nonce 分离 + HP 掩码
+// 确定性」锚定；密钥/IV 为测试自定，非官方向量。）
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod aes256_tests {
+    use rustls::Side;
+    use rustls::quic::{HeaderProtectionKey, PacketKey, Suite, Version};
+
+    use super::*;
+
+    fn hex(s: &str) -> Vec<u8> {
+        assert!(s.len().is_multiple_of(2));
+        (0..s.len() / 2)
+            .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn hex_arr<const N: usize>(s: &str) -> [u8; N] {
+        let v = hex(s);
+        let mut out = [0u8; N];
+        out.copy_from_slice(&v);
+        out
+    }
+
+    /// AES-256 packet key：seal/open 往返、密文/AAD/序号篡改拒绝、
+    /// 限制值与 tag 长度、nonce 递增性质（不同 pn → 不同密文）与
+    /// multipath for_path 的分离性质。
+    #[test]
+    fn aes256_packet_key_roundtrip_tamper_and_nonce_separation() {
+        let key: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_mul(37).wrapping_add(1));
+        let iv: [u8; 12] = core::array::from_fn(|i| 0xa0u8.wrapping_add(i as u8));
+        let pk = packet_key_aes256(&key, Iv::from(iv));
+
+        assert_eq!(pk.tag_len(), 16);
+        assert_eq!(
+            pk.confidentiality_limit(),
+            1 << 23,
+            "GCM 限制值同 RFC 9001 §B.1.1"
+        );
+        assert_eq!(pk.integrity_limit(), 1 << 52);
+
+        const HEADER: &[u8] = b"aes256 quic header";
+        const PAYLOAD: &[u8] = b"aes256 quic payload";
+
+        // 往返
+        let mut payload = PAYLOAD.to_vec();
+        let tag = pk.encrypt_in_place(1234, HEADER, &mut payload).unwrap();
+        assert_eq!(tag.as_ref().len(), 16);
+        let mut ct = payload;
+        ct.extend_from_slice(tag.as_ref());
+        assert_eq!(
+            pk.decrypt_in_place(1234, HEADER, &mut ct).unwrap(),
+            PAYLOAD,
+            "seal/open 往返"
+        );
+
+        // 密文篡改 → DecryptError
+        let mut ct = {
+            let mut p = PAYLOAD.to_vec();
+            let t = pk.encrypt_in_place(1234, HEADER, &mut p).unwrap();
+            p.extend_from_slice(t.as_ref());
+            p
+        };
+        ct[2] ^= 0x40;
+        assert!(matches!(
+            pk.decrypt_in_place(1234, HEADER, &mut ct),
+            Err(Error::DecryptError)
+        ));
+
+        // AAD（包头）篡改 → DecryptError
+        let mut ct = {
+            let mut p = PAYLOAD.to_vec();
+            let t = pk.encrypt_in_place(1234, HEADER, &mut p).unwrap();
+            p.extend_from_slice(t.as_ref());
+            p
+        };
+        assert!(matches!(
+            pk.decrypt_in_place(1234, b"HEADERR", &mut ct),
+            Err(Error::DecryptError)
+        ));
+
+        // 序号不符（nonce 错）→ DecryptError
+        let mut ct = {
+            let mut p = PAYLOAD.to_vec();
+            let t = pk.encrypt_in_place(1234, HEADER, &mut p).unwrap();
+            p.extend_from_slice(t.as_ref());
+            p
+        };
+        assert!(matches!(
+            pk.decrypt_in_place(1235, HEADER, &mut ct),
+            Err(Error::DecryptError)
+        ));
+
+        // nonce 递增性质：不同 pn → 不同密文（同密钥同明文）
+        let enc = |pn: u64| {
+            let mut p = PAYLOAD.to_vec();
+            let t = pk.encrypt_in_place(pn, HEADER, &mut p).unwrap();
+            let mut out = p;
+            out.extend_from_slice(t.as_ref());
+            out
+        };
+        assert_ne!(enc(1234), enc(1235), "不同包号 → 不同 nonce → 不同密文");
+        assert_ne!(enc(1234), enc(1233));
+
+        // multipath for_path：往返 + 篡改拒绝 + path/pn 任一不同 → 密文不同
+        let mut p = PAYLOAD.to_vec();
+        let t = pk
+            .encrypt_in_place_for_path(2, 12345, HEADER, &mut p)
+            .unwrap();
+        let mut ct = p;
+        ct.extend_from_slice(t.as_ref());
+        assert_eq!(
+            pk.decrypt_in_place_for_path(2, 12345, HEADER, &mut ct.clone())
+                .unwrap()
+                .to_vec(),
+            PAYLOAD,
+            "for_path 往返"
+        );
+        // 篡改密文 → 拒绝
+        ct[0] ^= 0x01;
+        assert!(
+            matches!(
+                pk.decrypt_in_place_for_path(2, 12345, HEADER, &mut ct),
+                Err(Error::DecryptError)
+            ),
+            "for_path 篡改拒绝"
+        );
+        let enc_path = |path: u32, pn: u64| {
+            let mut p = PAYLOAD.to_vec();
+            let t = pk
+                .encrypt_in_place_for_path(path, pn, HEADER, &mut p)
+                .unwrap();
+            let mut out = p;
+            out.extend_from_slice(t.as_ref());
+            out
+        };
+        assert_ne!(enc_path(2, 12345), enc_path(3, 12345));
+        assert_ne!(enc_path(2, 12345), enc_path(2, 12346));
+    }
+
+    /// AES-256 头保护密钥：掩码确定性、sample 长度校验、长/短头 ×
+    /// 包号长度 1/4 的应用与去除往返。
+    #[test]
+    fn aes256_hp_key_mask_properties() {
+        let key: [u8; 32] = core::array::from_fn(|i| (i as u8).wrapping_mul(53).wrapping_add(7));
+        let hp = hp_key_aes256(&key);
+
+        let sample: [u8; 16] = core::array::from_fn(|i| (i as u8).wrapping_mul(91).wrapping_add(3));
+        // 确定性：同 sample → 同掩码
+        let mask = hp.new_mask(&sample).unwrap();
+        assert_eq!(mask.len(), 5, "RFC 9001 §5.4.1：掩码 5 字节");
+        assert_eq!(hp.new_mask(&sample).unwrap(), mask);
+
+        // 不同 sample → 不同掩码（固定密钥下确定性成立）
+        let other: [u8; 16] =
+            core::array::from_fn(|i| (i as u8).wrapping_mul(17).wrapping_add(200));
+        assert_ne!(hp.new_mask(&other).unwrap(), mask);
+
+        // sample 长度必须恰 16
+        assert!(hp.new_mask(&[0u8; 15]).is_err());
+        assert!(hp.new_mask(&[0u8; 17]).is_err());
+
+        // 长头（0x80 位）× 包号长 1/4 与短头 × 包号长 1/4 的掩码应用 +
+        // 去除（decrypt_in_place）往返还原
+        for first0 in [0xc0u8, 0xc3, 0x30, 0x33] {
+            let mut first = first0;
+            let mut pn = [0x11u8, 0x22, 0x33, 0x44];
+            hp.encrypt_in_place(&sample, &mut first, &mut pn).unwrap();
+            hp.decrypt_in_place(&sample, &mut first, &mut pn).unwrap();
+            assert_eq!(first, first0, "首字节还原（first0 = {first0:#04x}）");
+            assert_eq!(pn, [0x11, 0x22, 0x33, 0x44], "包号还原");
+        }
+
+        // 包号最长 4 字节
+        let mut first = 0xc0u8;
+        let mut pn5 = [0u8; 5];
+        assert!(hp.encrypt_in_place(&sample, &mut first, &mut pn5).is_err());
+    }
+
+    /// AES-256 Initial 密钥全链：`Suite::keys`（HKDF-SHA-384 extract/
+    /// expand → "client in"/"server in" → "quic key/iv/hp"）推导出的
+    /// client.local 与 server.remote 属同一方向，seal/open 双向往返；
+    /// 篡改拒绝；反向（server.local ↔ client.remote）同样成立。
+    #[test]
+    fn aes256_initial_keys_full_chain_cross_direction() {
+        let dcid: [u8; 8] = hex_arr("00a1a2a3a4a5a6a7"); // 任意 DCID（非官方向量）
+        let client = Suite {
+            suite: &crate::cipher::TLS13_AES_256_GCM_SHA384,
+            quic: &QUIC_AES_256_GCM,
+        }
+        .keys(&dcid, Side::Client, Version::V1);
+        let server = Suite {
+            suite: &crate::cipher::TLS13_AES_256_GCM_SHA384,
+            quic: &QUIC_AES_256_GCM,
+        }
+        .keys(&dcid, Side::Server, Version::V1);
+
+        const HEADER: &[u8] = b"aes256 initial header";
+        const PAYLOAD: &[u8] = b"aes256 initial payload";
+
+        // client → server
+        let mut payload = PAYLOAD.to_vec();
+        let tag = client
+            .local
+            .packet
+            .encrypt_in_place(9, HEADER, &mut payload)
+            .unwrap();
+        let mut ct = payload;
+        ct.extend_from_slice(tag.as_ref());
+        assert_eq!(
+            server
+                .remote
+                .packet
+                .decrypt_in_place(9, HEADER, &mut ct.clone())
+                .unwrap()
+                .to_vec(),
+            PAYLOAD,
+            "client.local 加密必须由 server.remote 解开"
+        );
+        ct[0] ^= 0x01;
+        assert!(matches!(
+            server.remote.packet.decrypt_in_place(9, HEADER, &mut ct),
+            Err(Error::DecryptError)
+        ));
+
+        // server → client
+        let mut payload = PAYLOAD.to_vec();
+        let tag = server
+            .local
+            .packet
+            .encrypt_in_place(8, HEADER, &mut payload)
+            .unwrap();
+        let mut ct = payload;
+        ct.extend_from_slice(tag.as_ref());
+        assert_eq!(
+            client
+                .remote
+                .packet
+                .decrypt_in_place(8, HEADER, &mut ct)
+                .unwrap(),
+            PAYLOAD,
+            "server.local 加密必须由 client.remote 解开"
+        );
+    }
+}

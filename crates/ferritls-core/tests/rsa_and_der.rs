@@ -333,3 +333,746 @@ fn der_pkcs8_attributes_must_be_single_element() {
         other => panic!("trailing garbage after [0] must be rejected, got {other:?}"),
     }
 }
+
+// ---------------------------------------------------------------------------
+// 对抗性矩阵（扩展）：A. der 原语边界 / B. PKCS#8 分支矩阵 /
+// C. RSA 结构校验矩阵（R3 装载期校验的外科手术式变异）。
+// 全部输入为构造的畸形编码，只断言 Err/Ok 与已知错误变体；实现侧语义
+// 以 src/der.rs 与 src/sign.rs（rsa）当前代码为准，注释里逐点对应。
+// ---------------------------------------------------------------------------
+
+/// 最短 DER 长度编码（测试构造用）。字段最长 257 字节，两字节长形式
+///（0x82）足够。
+fn der_len(len: usize) -> Vec<u8> {
+    if len < 0x80 {
+        vec![len as u8]
+    } else if len < 0x100 {
+        vec![0x81, len as u8]
+    } else {
+        assert!(len < 0x1_00_00, "test fields never exceed two length bytes");
+        vec![0x82, (len >> 8) as u8, len as u8]
+    }
+}
+
+/// 组装单个 TLV（tag + 最短长度头 + 内容）。
+fn tlv(tag: u8, content: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(content.len() + 5);
+    out.push(tag);
+    out.extend_from_slice(&der_len(content.len()));
+    out.extend_from_slice(content);
+    out
+}
+
+/// 从 PKCS#8 剥出内层 PKCS#1 RSAPrivateKey 的**完整 DER**（含 SEQUENCE
+/// 头）——即 `der::octet_string` 返回的 privateKey 内容。
+fn extract_pkcs1(pkcs8: &[u8]) -> Vec<u8> {
+    let (content, rest) = der::sequence(pkcs8).expect("pkcs8 sequence");
+    assert!(rest.is_empty());
+    let (_version, rest) = der::integer(content).expect("pkcs8 version");
+    let (_alg, rest) = der::sequence(rest).expect("algorithm identifier");
+    let (pkcs1, rest) = der::octet_string(rest).expect("privateKey octet string");
+    assert!(rest.is_empty());
+    pkcs1.to_vec()
+}
+
+/// 将 PKCS#1 DER 重新包裹为 PKCS#8（version 0 + rsaEncryption/NULL），
+/// 供 from_pkcs8_der 路径的对照断言。
+fn wrap_pkcs8(pkcs1: &[u8]) -> Vec<u8> {
+    let alg = tlv(0x30, &hex("06092a864886f70d0101010500"));
+    let mut content = hex("020100");
+    content.extend_from_slice(&alg);
+    content.extend_from_slice(&tlv(0x04, pkcs1));
+    tlv(0x30, &content)
+}
+
+/// 定位内层 PKCS#1 RSAPrivateKey 各字段 TLV 的字节区间（相对完整
+/// PKCS#1 DER 的 [start, end)）。字段序：0=version 1=n 2=e 3=d 4=p
+/// 5=q 6=dp 7=dq 8=qInv。仅测试基建：调用方对区间做外科手术式变异。
+fn pkcs1_field_ranges(pkcs1: &[u8]) -> Vec<(usize, usize)> {
+    let (content, rest) = der::sequence(pkcs1).expect("pkcs1 outer sequence");
+    assert!(rest.is_empty(), "pkcs1 must not have trailing bytes");
+    let mut ranges = Vec::new();
+    let mut cur = content;
+    let mut base = pkcs1.len() - content.len(); // SEQUENCE 头长度
+    while !cur.is_empty() {
+        let before = cur.len();
+        let (_tag, _val, tail) = der::read_tlv(cur).expect("field TLV");
+        let consumed = before - tail.len();
+        ranges.push((base, base + consumed));
+        base += consumed;
+        cur = tail;
+    }
+    ranges
+}
+
+/// 取第 idx 个字段的**原始** INTEGER 内容字节（未去前导零的 DER 内容，
+/// 与 `der::integer` 的去零语义不同——变异时须知悉）。
+fn pkcs1_field_content<'a>(pkcs1: &'a [u8], ranges: &[(usize, usize)], idx: usize) -> &'a [u8] {
+    let (start, end) = ranges[idx];
+    let (tag, content, tail) = der::read_tlv(&pkcs1[start..end]).expect("field TLV");
+    assert_eq!(tag, 0x02, "field {idx} must be INTEGER");
+    assert!(tail.is_empty());
+    content
+}
+
+/// 将第 idx 个字段替换为内容为 new_content 的 INTEGER TLV 后重组
+/// PKCS#1（外层 SEQUENCE 长度头按新总长重编码；其余字段原样保留）。
+fn pkcs1_replace_field(
+    pkcs1: &[u8],
+    ranges: &[(usize, usize)],
+    idx: usize,
+    new_content: &[u8],
+) -> Vec<u8> {
+    let hdr = ranges[0].0; // 外层 SEQUENCE 头长度 = 首个字段 TLV 起点
+    let (start, end) = ranges[idx];
+    let mut content = pkcs1[hdr..start].to_vec();
+    content.extend_from_slice(&tlv(0x02, new_content));
+    content.extend_from_slice(&pkcs1[end..]);
+    tlv(0x30, &content)
+}
+
+/// 字段末字节的进位安全 ±2（能加则加 2，否则减 2）。对"乘积/同余"
+/// 类校验，任何非零 ±k（k < p−1）都必然破坏等式，方向只为避开字节
+/// 进位（实测末字节：dp=0xf1、dq=0x91、q=0x99，均走 +2）。
+fn bump_last_by_2(content: &[u8]) -> Vec<u8> {
+    let mut v = content.to_vec();
+    let last = v.len() - 1;
+    if v[last] <= 0xfd {
+        v[last] += 2;
+    } else {
+        v[last] -= 2;
+    }
+    v
+}
+
+// ---------------------------------------------------------------------------
+// A. der 原语边界矩阵（直接调用 ferritls_core::der 各 pub fn）
+// ---------------------------------------------------------------------------
+
+/// read_tlv 长形式长度矩阵：最短合法长形式（128 = 0x80）通过；
+/// 前导零、长度字节数 > 4、声明超界、内容短于声明一律 Err，绝不 panic。
+#[test]
+fn der_read_tlv_long_form_length_matrix() {
+    // `30 81 80` + 128 字节：128 恰为长形式下限，合法
+    let mut input = vec![0x30, 0x81, 0x80];
+    input.extend_from_slice(&[0xab; 128]);
+    let (tag, content, rest) = der::read_tlv(&input).expect("minimal long form");
+    assert_eq!(tag, 0x30);
+    assert_eq!(content.len(), 128);
+    assert!(rest.is_empty());
+
+    // `30 82 00 80`：长形式长度字节带前导零（非最短编码）→ Err
+    let mut input = vec![0x30, 0x82, 0x00, 0x80];
+    input.extend_from_slice(&[0xab; 128]);
+    assert!(der::read_tlv(&input).is_err());
+
+    // `30 85`：长形式长度字节数 n = 5 > 4 → Err（无论后续内容）
+    assert!(der::read_tlv(&[0x30, 0x85, 1, 2, 3, 4, 5, 6, 7]).is_err());
+
+    // `30 84 ff ff ff ff`：4 字节长度 0xffffffff 声明超界 → Err。
+    // 64 位 usize 下这是普通的"声明超界"拒绝；32 位 usize 下
+    // `rest_off + len` 会回绕、随后切片越界（潜在 panic，仅 32 位
+    // 目标受影响，见任务报告）——本仓库目标平台全为 64 位。
+    assert!(der::read_tlv(&[0x30, 0x84, 0xff, 0xff, 0xff, 0xff]).is_err());
+
+    // 声明长度 > 实际内容：`30 81 90`（144）只给 128 字节 → Err
+    let mut input = vec![0x30, 0x81, 0x90];
+    input.extend_from_slice(&[0xcd; 128]);
+    assert!(der::read_tlv(&input).is_err());
+
+    // 高位 tag 号形态 `1f 81 02 00`：read_tlv 不解析多字节 tag——
+    // 0x1f 视为单字节 tag，0x81 02 是"长形式但 len=2 < 0x80"的非最短
+    // 编码 → Err。钉住非 panic + Err（攻击者可控输入）。
+    assert!(der::read_tlv(&[0x1f, 0x81, 0x02, 0x00]).is_err());
+}
+
+/// der::integer 最短编码矩阵：负数（首字节高位）、非最短前导零、空
+/// 内容拒绝；零 / 一 / 多字节正数接受且去唯一合法前导零。
+#[test]
+fn der_integer_minimal_encoding_matrix() {
+    // 02 01 80：首字节高位为 1（负数）→ Err
+    assert!(der::integer(&hex("020180")).is_err());
+    // 02 02 00 01：前导 0x00 但次字节高位为 0（非最短编码）→ Err
+    assert!(der::integer(&hex("02020001")).is_err());
+    // 02 00：空内容 → Err
+    assert!(der::integer(&hex("0200")).is_err());
+    // 02 01 00：零（单字节 0x00 合法）→ Ok，内容 [0x00]
+    let zero = hex("020100");
+    let (v, rest) = der::integer(&zero).expect("zero");
+    assert_eq!(v, &[0x00]);
+    assert!(rest.is_empty());
+    // 02 01 01：一 → Ok
+    let one = hex("020101");
+    let (v, _) = der::integer(&one).expect("one");
+    assert_eq!(v, &[0x01]);
+    // 02 02 01 00：256（首字节 0x01，无前导零）→ Ok
+    let b256 = hex("02020100");
+    let (v, _) = der::integer(&b256).expect("256");
+    assert_eq!(v, &[0x01, 0x00]);
+}
+
+/// der::bit_string 未使用位数矩阵：首位 octet 必须为 0；连未使用位
+/// octet 都没有（03 00）拒绝；空位串 + 0 未使用位接受。
+#[test]
+fn der_bit_string_unused_bits_matrix() {
+    // 03 02 01 00：未使用位数 = 1 ≠ 0 → Err
+    assert!(der::bit_string(&hex("03020100")).is_err());
+    // 03 00：内容为空 → Err
+    assert!(der::bit_string(&hex("0300")).is_err());
+    // 03 01 00：空位串、0 未使用位 → Ok，载荷为空
+    let empty = hex("030100");
+    let (bits, rest) = der::bit_string(&empty).expect("empty bitstring");
+    assert!(bits.is_empty());
+    assert!(rest.is_empty());
+}
+
+/// der::object_identifier 对空内容 `06 00` 的原语语义：只做 tag 检查、
+/// 返回原始内容字节（无空内容校验）；未知/空 OID 由上层分派表
+///（parse_pkcs8_private_key 的算法分支）拒绝——钉住原语行为。
+#[test]
+fn der_object_identifier_empty_content_pinned() {
+    let empty = hex("0600");
+    let (oid, rest) = der::object_identifier(&empty).expect("empty OID accepted at primitive");
+    assert!(oid.is_empty());
+    assert!(rest.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// B. PKCS#8 分支矩阵（手拼 DER：EC / Ed25519 / 未知 OID / [0] 分派）
+// ---------------------------------------------------------------------------
+
+/// P-256 基点 G（SEC 2 prime256v1，未压缩编码）。parse_pkcs8 不验证
+/// 标量↔点对应关系，结构测试只需合法形态；常量本身由
+/// der_pkcs8_ec_public_key_both_forms_accepted 与 crate 曲线算术交叉核对。
+const P256_GENERATOR: &str = "\
+046b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296\
+4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5";
+
+/// 组装 EC PKCS#8（RFC 5480），负例旋钮即参数：
+/// - curve_oid_tlv：namedCurve 的完整 OID TLV hex（可注入未知曲线）；
+/// - sec1_version：SEC1 内层版本整数值（合法 = 1）；
+/// - scalar_len：SEC1 privateKey OCTET STRING 字节数（合法 = 32）；
+/// - pub1：完整 [1] TLV 字节（None = 不携带公钥）。
+fn ec_pkcs8(
+    curve_oid_tlv: &str,
+    sec1_version: u8,
+    scalar_len: usize,
+    pub1: Option<&[u8]>,
+) -> Vec<u8> {
+    let mut scalar = hex(P256_SCALAR); // 32 字节
+    scalar.resize(scalar_len, 0x5a);
+    let mut sec1 = tlv(0x02, &[sec1_version]);
+    sec1.extend_from_slice(&tlv(0x04, &scalar));
+    if let Some(p1) = pub1 {
+        sec1.extend_from_slice(p1);
+    }
+    let alg = tlv(
+        0x30,
+        &[hex("06072a8648ce3d0201"), hex(curve_oid_tlv)].concat(),
+    );
+    let mut content = hex("020100");
+    content.extend_from_slice(&alg);
+    // SEC1 ECPrivateKey 整体（SEQUENCE TLV）包进 privateKey OCTET STRING
+    content.extend_from_slice(&tlv(0x04, &tlv(0x30, &sec1)));
+    tlv(0x30, &content)
+}
+
+/// [1] 公钥的两种现实编码都接受：[1] EXPLICIT（内容 = 内层 BIT STRING
+/// TLV，openssl 产物形态）与 [1] IMPLICIT（内容 = 0x00 + 未压缩点），
+/// 解析出的点逐字节等于 SEC 2 基点 G（G 常量与 crate 曲线算术交叉核对）。
+#[test]
+fn der_pkcs8_ec_public_key_both_forms_accepted() {
+    // 标量 1 → 公钥 = G：把测试常量锚定到 crate 自身的曲线实现
+    let mut seed = [0u8; 32];
+    seed[31] = 1;
+    let g = ferritls_core::ecdh::p256::SecretKey::from_seed(seed)
+        .public_key()
+        .expect("derive G");
+    assert_eq!(
+        g.as_slice(),
+        hex(P256_GENERATOR).as_slice(),
+        "SEC2 G constant"
+    );
+
+    let point = hex(P256_GENERATOR);
+    // EXPLICIT：[1] 内容 = BIT STRING TLV（03 42 00 || point）
+    let explicit = tlv(0xa1, &tlv(0x03, &[&[0x00], point.as_slice()].concat()));
+    // IMPLICIT：[1] 内容 = 0x00（未使用位数）+ 未压缩点
+    let implicit = tlv(0xa1, &[&[0x00], point.as_slice()].concat());
+    for (form, pub1) in [
+        ("explicit", explicit.as_slice()),
+        ("implicit", implicit.as_slice()),
+    ] {
+        let der_bytes = ec_pkcs8("06082a8648ce3d030107", 1, 32, Some(pub1));
+        match der::parse_pkcs8_private_key(&der_bytes) {
+            Ok(der::ParsedPrivateKey::P256 {
+                scalar,
+                public_sec1,
+            }) => {
+                assert_eq!(scalar.as_slice(), hex(P256_SCALAR).as_slice());
+                assert_eq!(public_sec1.as_deref(), Some(point.as_slice()), "{form}");
+            }
+            other => panic!("EC PKCS#8 {form} [1] form must parse, got {other:?}"),
+        }
+    }
+}
+
+/// SEC1 内层负例矩阵：版本 ≠ 1、标量长度 31/33、[1] 标签 a2、压缩点
+/// 形态、点长度 64、内层非 BIT STRING、未使用位数 ≠ 0、空 [1]、[1]
+/// 后尾随——全部 Err(InvalidInput)，绝不 panic。
+#[test]
+fn der_pkcs8_ec_sec1_negative_matrix() {
+    let point = hex(P256_GENERATOR);
+    let explicit_content = tlv(0x03, &[&[0x00], point.as_slice()].concat());
+    let curve = "06082a8648ce3d030107";
+    let expect_reject = |der_bytes: &[u8], what: &str| match der::parse_pkcs8_private_key(der_bytes)
+    {
+        Err(ferritls_core::Error::InvalidInput) => {}
+        other => panic!("{what} must be rejected, got {other:?}"),
+    };
+    // SEC1 内层版本 1 → 2
+    expect_reject(&ec_pkcs8(curve, 2, 32, None), "SEC1 version 2");
+    // 标量 31 / 33 字节（P-256 必须 32）
+    expect_reject(&ec_pkcs8(curve, 1, 31, None), "scalar 31 bytes");
+    expect_reject(&ec_pkcs8(curve, 1, 33, None), "scalar 33 bytes");
+    // [1] 用 a2 标签（context tag 2 非法）
+    expect_reject(
+        &ec_pkcs8(curve, 1, 32, Some(&tlv(0xa2, &explicit_content))),
+        "[1] with a2 tag",
+    );
+    // [1] IMPLICIT 形态携带压缩点前缀（0x02）：形态不符
+    expect_reject(
+        &ec_pkcs8(
+            curve,
+            1,
+            32,
+            Some(&tlv(0xa1, &[&[0x00, 0x02], &point[1..33]].concat())),
+        ),
+        "[1] implicit compressed point",
+    );
+    // [1] 点长度 64（未压缩点少一字节）
+    expect_reject(
+        &ec_pkcs8(
+            curve,
+            1,
+            32,
+            Some(&tlv(0xa1, &tlv(0x03, &[&[0x00], &point[..64]].concat()))),
+        ),
+        "[1] point 64 bytes",
+    );
+    // [1] EXPLICIT 内层不是 BIT STRING（OCTET STRING 顶替）
+    expect_reject(
+        &ec_pkcs8(
+            curve,
+            1,
+            32,
+            Some(&tlv(
+                0xa1,
+                &tlv(0x04, &[&[0x00], point.as_slice()].concat()),
+            )),
+        ),
+        "[1] inner OCTET STRING",
+    );
+    // [1] EXPLICIT BIT STRING 未使用位数 ≠ 0
+    expect_reject(
+        &ec_pkcs8(
+            curve,
+            1,
+            32,
+            Some(&tlv(
+                0xa1,
+                &tlv(0x03, &[&[0x01], point.as_slice()].concat()),
+            )),
+        ),
+        "[1] BIT STRING unused bits",
+    );
+    // [1] 空内容
+    expect_reject(&ec_pkcs8(curve, 1, 32, Some(&tlv(0xa1, &[]))), "[1] empty");
+    // [1] 之后尾随 TLV（SEC1 内多一个元素）
+    let mut pub1_trailing = tlv(0xa1, &explicit_content);
+    pub1_trailing.extend_from_slice(&hex("0500"));
+    expect_reject(
+        &ec_pkcs8(curve, 1, 32, Some(&pub1_trailing)),
+        "trailing after [1]",
+    );
+}
+
+/// EC AlgId 携带未知 namedCurve（P-521，1.3.132.0.35 = 2b 81 04 00 23）：
+/// RFC 5480 分派只认 prime256v1 / secp384r1 → Err(InvalidInput)。
+#[test]
+fn der_pkcs8_ec_p521_curve_oid_rejected() {
+    let der_bytes = ec_pkcs8("06052b81040023", 1, 32, None);
+    match der::parse_pkcs8_private_key(&der_bytes) {
+        Err(ferritls_core::Error::InvalidInput) => {}
+        other => panic!("P-521 namedCurve must be rejected, got {other:?}"),
+    }
+}
+
+/// 组装 Ed25519 PKCS#8（RFC 8410 §7：parameters 缺席），负例旋钮：
+/// - seed_len：内层 OCTET STRING 字节数（合法 = 32）；
+/// - inner_tag：内层 TLV 标签（合法 = 0x04 OCTET STRING）；
+/// - inner_tail：内层 TLV 之后的尾随 TLV（外层 OCTET STRING 内容内）；
+/// - trailing：privateKey OCTET STRING 之后的尾随 TLV（PKCS#8 层）。
+fn ed25519_pkcs8(seed_len: usize, inner_tag: u8, inner_tail: &[u8], trailing: &[u8]) -> Vec<u8> {
+    let mut inner = tlv(inner_tag, &vec![0x5a; seed_len]);
+    inner.extend_from_slice(inner_tail);
+    let alg = tlv(0x30, &hex("06032b6570"));
+    let mut content = hex("020100");
+    content.extend_from_slice(&alg);
+    content.extend_from_slice(&tlv(0x04, &inner));
+    content.extend_from_slice(trailing);
+    tlv(0x30, &content)
+}
+
+/// Ed25519 分支负例矩阵：种子 31/33 字节、内层非 OCTET STRING、内层
+/// OCTET STRING 之后尾随 TLV——全部 Err(InvalidInput)；合法基线解析出
+/// 的种子逐字节往返。
+#[test]
+fn der_pkcs8_ed25519_negative_matrix() {
+    // 合法基线：32 字节种子
+    match der::parse_pkcs8_private_key(&ed25519_pkcs8(32, 0x04, &[], &[])) {
+        Ok(der::ParsedPrivateKey::Ed25519(seed)) => assert_eq!(seed, vec![0x5a; 32]),
+        other => panic!("baseline Ed25519 PKCS#8 must parse, got {other:?}"),
+    }
+    let expect_reject = |der_bytes: &[u8], what: &str| match der::parse_pkcs8_private_key(der_bytes)
+    {
+        Err(ferritls_core::Error::InvalidInput) => {}
+        other => panic!("{what} must be rejected, got {other:?}"),
+    };
+    // 种子 31 / 33 字节
+    expect_reject(&ed25519_pkcs8(31, 0x04, &[], &[]), "seed 31 bytes");
+    expect_reject(&ed25519_pkcs8(33, 0x04, &[], &[]), "seed 33 bytes");
+    // 内层不是 OCTET STRING（BIT STRING 顶替）
+    expect_reject(&ed25519_pkcs8(32, 0x03, &[], &[]), "inner BIT STRING");
+    // 内层 OCTET STRING 之后尾随 TLV（外层 OCTET STRING 内容内）
+    expect_reject(
+        &ed25519_pkcs8(32, 0x04, &hex("0500"), &[]),
+        "tail inside inner",
+    );
+}
+
+/// Ed448（1.3.101.113 = 2b 65 71）不在分派表（Ed25519/RSA/EC）内：
+/// parse_pkcs8_private_key 落到末尾的统一 Err(InvalidInput)。
+#[test]
+fn der_pkcs8_ed448_oid_rejected() {
+    let alg = tlv(0x30, &hex("06032b6571"));
+    let mut content = hex("020100");
+    content.extend_from_slice(&alg);
+    // Ed448 种子 57 字节；分派在内容检查前完成，形态无关紧要
+    content.extend_from_slice(&tlv(0x04, &tlv(0x04, &[0x11u8; 57])));
+    let der_bytes = tlv(0x30, &content);
+    match der::parse_pkcs8_private_key(&der_bytes) {
+        Err(ferritls_core::Error::InvalidInput) => {}
+        other => panic!("Ed448 OID must be rejected, got {other:?}"),
+    }
+}
+
+/// privateKey 之后直接跟垃圾（无 [0] 标签字节）：rest[0] != 0xa0 →
+/// Err(InvalidInput)（[0] attributes 分派分支）。
+#[test]
+fn der_pkcs8_garbage_after_private_key_without_attributes() {
+    // 05 00（NULL TLV）顶替 [0]：首字节 0x05 ≠ 0xa0
+    match der::parse_pkcs8_private_key(&ed25519_pkcs8(32, 0x04, &[], &hex("0500"))) {
+        Err(ferritls_core::Error::InvalidInput) => {}
+        other => panic!("garbage without [0] tag must be rejected, got {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C. RSA 结构校验矩阵（R3 装载期校验：CRT 分量范围与下界、d ↔ CRT
+//    一致、e·d ≡ 1 mod (p−1)/(q−1)、d 尺寸上界、p·q = n、奇偶与
+//    指数合同）。变异 = 外科手术式替换内层 PKCS#1 的单个字段。
+// ---------------------------------------------------------------------------
+
+/// 字段 walker 往返锚：剥出的内层 PKCS#1 可直接装载；重新包裹的
+/// PKCS#8 亦可装载；九个字段的原始内容长度逐一钉死（变异的手术前提，
+/// 由上方解码核对：qInv 无前导零 128 字节，其余秘密分量 00 || 128）。
+#[test]
+fn rsa_pkcs1_field_walker_round_trip_anchor() {
+    let pkcs8 = hex(KEY_PKCS8);
+    let pkcs1 = extract_pkcs1(&pkcs8);
+    assert!(
+        rsa::SigningKey::from_pkcs1_der(&pkcs1).is_ok(),
+        "extracted PKCS#1 must load"
+    );
+    assert!(
+        rsa::SigningKey::from_pkcs8_der(&wrap_pkcs8(&pkcs1)).is_ok(),
+        "rewrapped PKCS#8 must load"
+    );
+
+    let ranges = pkcs1_field_ranges(&pkcs1);
+    assert_eq!(ranges.len(), 9, "version + n/e/d/p/q/dp/dq/qInv");
+    let lens: Vec<usize> = (0..9)
+        .map(|i| pkcs1_field_content(&pkcs1, &ranges, i).len())
+        .collect();
+    assert_eq!(lens, [1, 257, 3, 255, 129, 129, 129, 129, 128]);
+    // 语义锚：version = 0、e = 65537、n 内容 0x00 前导（2048 位正整数）
+    assert_eq!(pkcs1_field_content(&pkcs1, &ranges, 0), &[0x00]);
+    assert_eq!(pkcs1_field_content(&pkcs1, &ranges, 2), &[0x01, 0x00, 0x01]);
+    assert_eq!(pkcs1_field_content(&pkcs1, &ranges, 1)[0], 0x00);
+}
+
+/// d 篡改矩阵：d ± 1 破坏 d mod (p−1) == dp 的完全约简等式（R3）；
+/// 同长全零 d 在 der::integer 的非最短编码检查即被拒；单字节 0x00 的
+/// d = 0 通过解析、走算术层（d mod (p−1) = 0 ≠ dp）被拒。
+#[test]
+fn rsa_pkcs1_d_tampering_rejected() {
+    let pkcs1 = extract_pkcs1(&hex(KEY_PKCS8));
+    let ranges = pkcs1_field_ranges(&pkcs1);
+    let expect_reject =
+        |mutated: Vec<u8>, what: &str| match rsa::SigningKey::from_pkcs1_der(&mutated) {
+            Err(ferritls_core::Error::InvalidInput) => {}
+            other => panic!("{what} must be InvalidInput, got {other:?}"),
+        };
+
+    // d 最低位翻转（d ± 1）
+    let mut d = pkcs1_field_content(&pkcs1, &ranges, 3).to_vec();
+    let last = d.len() - 1;
+    d[last] ^= 1;
+    expect_reject(pkcs1_replace_field(&pkcs1, &ranges, 3, &d), "d ± 1");
+
+    // 同长全零 d（多字节全零 = 非最短编码，der::integer 层拒绝）
+    let zero = vec![0u8; pkcs1_field_content(&pkcs1, &ranges, 3).len()];
+    expect_reject(pkcs1_replace_field(&pkcs1, &ranges, 3, &zero), "d all-zero");
+
+    // d = 0（单字节 0x00：过解析层，撞 d mod (p−1) == dp 等式）
+    expect_reject(pkcs1_replace_field(&pkcs1, &ranges, 3, &[0x00]), "d = 0");
+
+    // PKCS#8 路径同拒（重新包裹后走 from_pkcs8_der）
+    let mut d2 = pkcs1_field_content(&pkcs1, &ranges, 3).to_vec();
+    let last2 = d2.len() - 1;
+    d2[last2] ^= 1;
+    let wrapped = wrap_pkcs8(&pkcs1_replace_field(&pkcs1, &ranges, 3, &d2));
+    assert!(
+        rsa::SigningKey::from_pkcs8_der(&wrapped).is_err(),
+        "tampered d via PKCS#8 must be rejected"
+    );
+}
+
+/// CRT 分量篡改矩阵（R3 新增校验）：dp/dq ± 2 破坏 d mod (p−1)/(q−1)
+/// == dp/dq 完全约简等式；dp/dq/qInv = 1 与 dp = 0 撞下界 ≥ 2
+///（下界检查先于同余合同与 q·qInv ≡ 1 mod p 的 Montgomery 复核）。
+#[test]
+fn rsa_pkcs1_crt_component_tampering_rejected() {
+    let pkcs1 = extract_pkcs1(&hex(KEY_PKCS8));
+    let ranges = pkcs1_field_ranges(&pkcs1);
+    let expect_reject =
+        |mutated: Vec<u8>, what: &str| match rsa::SigningKey::from_pkcs1_der(&mutated) {
+            Err(ferritls_core::Error::InvalidInput) => {}
+            other => panic!("{what} must be InvalidInput, got {other:?}"),
+        };
+
+    // dp ± 2 / dq ± 2
+    let dp = bump_last_by_2(pkcs1_field_content(&pkcs1, &ranges, 6));
+    expect_reject(pkcs1_replace_field(&pkcs1, &ranges, 6, &dp), "dp ± 2");
+    let dq = bump_last_by_2(pkcs1_field_content(&pkcs1, &ranges, 7));
+    expect_reject(pkcs1_replace_field(&pkcs1, &ranges, 7, &dq), "dq ± 2");
+
+    // dp / dq / qInv = 1（下界 ≥ 2）
+    expect_reject(pkcs1_replace_field(&pkcs1, &ranges, 6, &[0x01]), "dp = 1");
+    expect_reject(pkcs1_replace_field(&pkcs1, &ranges, 7, &[0x01]), "dq = 1");
+    expect_reject(pkcs1_replace_field(&pkcs1, &ranges, 8, &[0x01]), "qInv = 1");
+    // dp = 0（02 01 00 单字节，过 der::integer，撞下界）
+    expect_reject(pkcs1_replace_field(&pkcs1, &ranges, 6, &[0x00]), "dp = 0");
+}
+
+/// 模数与公指数篡改矩阵：n 变偶、负数模数（符号位 INTEGER 在解析层
+/// 拒绝）、e < 3 / e 偶、p/q 置零、q ± 2 破坏 p·q = n——全部
+/// Err(InvalidInput)。
+#[test]
+fn rsa_pkcs1_modulus_and_exponent_tampering_rejected() {
+    let pkcs1 = extract_pkcs1(&hex(KEY_PKCS8));
+    let ranges = pkcs1_field_ranges(&pkcs1);
+    let expect_reject =
+        |mutated: Vec<u8>, what: &str| match rsa::SigningKey::from_pkcs1_der(&mutated) {
+            Err(ferritls_core::Error::InvalidInput) => {}
+            other => panic!("{what} must be InvalidInput, got {other:?}"),
+        };
+
+    // n 最低位翻转（末字节 0x01 → 0x00：n 变偶）
+    let mut n = pkcs1_field_content(&pkcs1, &ranges, 1).to_vec();
+    let last = n.len() - 1;
+    n[last] ^= 1;
+    expect_reject(pkcs1_replace_field(&pkcs1, &ranges, 1, &n), "even n");
+
+    // 负数模数：n 内容前加 0xff（首字节符号位为 1 的 INTEGER）——
+    // der::integer 在解析层直接拒绝，任何 os2ip/奇偶检查之前
+    let mut neg = vec![0xffu8];
+    neg.extend_from_slice(pkcs1_field_content(&pkcs1, &ranges, 1));
+    expect_reject(pkcs1_replace_field(&pkcs1, &ranges, 1, &neg), "negative n");
+
+    // e = 1（< 3）、e = 4（偶数）
+    expect_reject(pkcs1_replace_field(&pkcs1, &ranges, 2, &[0x01]), "e = 1");
+    expect_reject(
+        pkcs1_replace_field(&pkcs1, &ranges, 2, &[0x04]),
+        "e = 4 (even)",
+    );
+
+    // p / q 置零（单字节 0x00 过解析层，撞奇偶/零检查）
+    expect_reject(pkcs1_replace_field(&pkcs1, &ranges, 4, &[0x00]), "p = 0");
+    expect_reject(pkcs1_replace_field(&pkcs1, &ranges, 5, &[0x00]), "q = 0");
+
+    // q ± 2：p·q ≠ n（q 仍为奇，乘积错位）
+    let q = bump_last_by_2(pkcs1_field_content(&pkcs1, &ranges, 5));
+    expect_reject(pkcs1_replace_field(&pkcs1, &ranges, 5, &q), "p·q ≠ n");
+}
+
+/// d 尺寸上界（R3）：d 去前导零后超过 n_bytes + 8 = 264 字节必然是
+/// 垃圾或放大输入 → Err(InvalidInput)。266 字节原始内容（0x00 ‖ 0x80
+/// ‖ 0×264，合法最短编码正整数）去零后恰 265 字节 > 264。
+#[test]
+fn rsa_pkcs1_oversized_d_rejected() {
+    let pkcs1 = extract_pkcs1(&hex(KEY_PKCS8));
+    let ranges = pkcs1_field_ranges(&pkcs1);
+    let mut d = vec![0x00u8, 0x80];
+    d.extend_from_slice(&[0u8; 264]);
+    assert_eq!(d.len(), 266);
+    let mutated = pkcs1_replace_field(&pkcs1, &ranges, 3, &d);
+    match rsa::SigningKey::from_pkcs1_der(&mutated) {
+        Err(ferritls_core::Error::InvalidInput) => {}
+        other => panic!("oversized d must be InvalidInput, got {other:?}"),
+    }
+    // PKCS#8 路径同拒（重新包裹）
+    let wrapped = wrap_pkcs8(&mutated);
+    assert!(
+        rsa::SigningKey::from_pkcs8_der(&wrapped).is_err(),
+        "oversized d via PKCS#8 must be rejected"
+    );
+}
+
+/// 公钥路径负例矩阵：缺 e、e 超宽（9 字节）、2040 位模数（低于 2048
+/// 位下限 → Unsupported）、SPKI 换 OID、SPKI BIT STRING 未使用位数
+/// ≠ 0、SPKI 尾随垃圾。
+#[test]
+fn rsa_public_key_parse_negative_matrix() {
+    let pkcs1 = extract_pkcs1(&hex(KEY_PKCS8));
+    let ranges = pkcs1_field_ranges(&pkcs1);
+    let n_content = pkcs1_field_content(&pkcs1, &ranges, 1).to_vec();
+    let e_content = pkcs1_field_content(&pkcs1, &ranges, 2).to_vec();
+    let rsapub = |n_c: &[u8], e_c: &[u8]| {
+        let mut seq = tlv(0x02, n_c);
+        seq.extend_from_slice(&tlv(0x02, e_c));
+        tlv(0x30, &seq)
+    };
+    let expect_invalid = |out: Result<rsa::VerifyKey, ferritls_core::Error>, what: &str| match out {
+        Err(ferritls_core::Error::InvalidInput) => {}
+        other => panic!("{what} must be InvalidInput, got {other:?}"),
+    };
+
+    // 缺 e：n 之后 integer 落在空输入（read_tlv 要求 ≥ 2 字节）
+    expect_invalid(
+        rsa::VerifyKey::from_rsapublickey_der(&rsapub(&n_content, &[])),
+        "missing e",
+    );
+    // e 9 字节（> 8 字节上限）
+    let e9 = [0x01u8, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    expect_invalid(
+        rsa::VerifyKey::from_rsapublickey_der(&rsapub(&n_content, &e9)),
+        "e wider than 8 bytes",
+    );
+    // 2040 位模数（去掉 0x00 前导与最高字节 0xa8）：低于 2048 位下限
+    match rsa::VerifyKey::from_rsapublickey_der(&rsapub(&n_content[2..], &e_content)) {
+        Err(ferritls_core::Error::Unsupported) => {}
+        other => panic!("2040-bit modulus must be Unsupported, got {other:?}"),
+    }
+
+    // SPKI：AlgId 换成 id-ecPublicKey（OID 分派失败）
+    let alg_rsa = tlv(0x30, &hex("06092a864886f70d0101010500"));
+    let alg_ec = tlv(0x30, &hex("06072a8648ce3d0201"));
+    let keybits = tlv(
+        0x03,
+        &[&[0x00], rsapub(&n_content, &e_content).as_slice()].concat(),
+    );
+    let spki_with = |alg: &[u8], bitstr: &[u8], trailing: &[u8]| {
+        let mut content = alg.to_vec();
+        content.extend_from_slice(bitstr);
+        content.extend_from_slice(trailing);
+        tlv(0x30, &content)
+    };
+    expect_invalid(
+        rsa::VerifyKey::from_spki_der(&spki_with(&alg_ec, &keybits, &[])),
+        "SPKI with EC OID",
+    );
+    // SPKI BIT STRING 未使用位数 ≠ 0（bit_string 原语层拒绝）
+    let bad_bits = tlv(
+        0x03,
+        &[&[0x01], rsapub(&n_content, &e_content).as_slice()].concat(),
+    );
+    expect_invalid(
+        rsa::VerifyKey::from_spki_der(&spki_with(&alg_rsa, &bad_bits, &[])),
+        "SPKI BIT STRING unused bits",
+    );
+    // SPKI BIT STRING 之后尾随垃圾
+    expect_invalid(
+        rsa::VerifyKey::from_spki_der(&spki_with(&alg_rsa, &keybits, &hex("0500"))),
+        "SPKI trailing garbage",
+    );
+}
+
+/// 验证入口负例：签名长度 ≠ n_bytes（255/257，v1.5 与 PSS 共用
+/// public_exponentiate 的定长检查）→ InvalidInput；s ≥ n（s = n 本体
+/// 256 字节）→ VerificationFailed。
+#[test]
+fn rsa_verify_signature_length_and_s_bounds() {
+    let pk = rsa::VerifyKey::from_spki_der(&hex(PUB_SPKI)).expect("parse pubkey");
+    let sig15 = hex(SIG_V15_SHA256);
+    let sigpss = hex(SIG_PSS_SHA256);
+
+    // 长度 255 / 257：两个验证 API 同一入口、同一 InvalidInput
+    for (api, sig) in [("pkcs1v15", &sig15), ("pss", &sigpss)] {
+        for len in [sig.len() - 1, sig.len() + 1] {
+            let mut bad = sig.clone();
+            bad.resize(len, 0x00);
+            let out = match api {
+                "pkcs1v15" => pk.verify_pkcs1v15(256, MSG, &bad),
+                _ => pk.verify_pss(256, MSG, &bad),
+            };
+            match out {
+                Err(ferritls_core::Error::InvalidInput) => {}
+                other => panic!("{api} sig len {len} must be InvalidInput, got {other:?}"),
+            }
+        }
+    }
+
+    // s = n（内层 n 字段去 0x00 前导的 256 字节 BE 本体）：s < n 不成立
+    let pkcs1 = extract_pkcs1(&hex(KEY_PKCS8));
+    let ranges = pkcs1_field_ranges(&pkcs1);
+    let n_be = pkcs1_field_content(&pkcs1, &ranges, 1)[1..].to_vec();
+    assert_eq!(n_be.len(), 256);
+    match pk.verify_pss(256, MSG, &n_be) {
+        Err(ferritls_core::Error::VerificationFailed) => {}
+        other => panic!("s == n (pss) must be VerificationFailed, got {other:?}"),
+    }
+    match pk.verify_pkcs1v15(256, MSG, &n_be) {
+        Err(ferritls_core::Error::VerificationFailed) => {}
+        other => panic!("s == n (pkcs1v15) must be VerificationFailed, got {other:?}"),
+    }
+}
+
+/// 未支持哈希位宽 224：签名与验证两侧均 Err(Unsupported)
+///（hash_msg / digestinfo_prefix 的分派表只有 256/384/512）。
+#[test]
+fn rsa_hash_bits_224_unsupported_both_sides() {
+    let sk = rsa::SigningKey::from_pkcs8_der(&hex(KEY_PKCS8)).expect("parse key");
+    let pk = rsa::VerifyKey::from_spki_der(&hex(PUB_SPKI)).expect("parse pubkey");
+    let sig15 = hex(SIG_V15_SHA256);
+    let sigpss = hex(SIG_PSS_SHA256);
+    // 签名侧
+    for out in [sk.sign_pkcs1v15(224, MSG), sk.sign_pss(224, MSG)] {
+        match out {
+            Err(ferritls_core::Error::Unsupported) => {}
+            other => panic!("hash_bits 224 must be Unsupported, got {other:?}"),
+        }
+    }
+    // 验证侧：public_exponentiate（合法长度、s < n）先通过，Unsupported
+    // 来自其后的 hash_msg / digestinfo_prefix 分派
+    for out in [
+        pk.verify_pkcs1v15(224, MSG, &sig15),
+        pk.verify_pss(224, MSG, &sigpss),
+    ] {
+        match out {
+            Err(ferritls_core::Error::Unsupported) => {}
+            other => panic!("hash_bits 224 must be Unsupported, got {other:?}"),
+        }
+    }
+}

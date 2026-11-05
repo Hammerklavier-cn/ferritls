@@ -17,7 +17,9 @@ ferritls 是纯 Rust 的 [rustls](https://github.com/rustls/rustls)
 - **QUIC** 包保护（RFC 9001，GCM 与 ChaCha 套件）
 - **批准模式**（`fips` feature）：仅 NIST 批准算法 + SP 800-90A
   CTR-DRBG + 上电自检
-- 可选 **x86_64 硬件后端**（AES-NI / SHA-NI），独立 crate、运行时注册
+- 可选 **x86_64 硬件后端**（AES-NI / SHA-NI）：
+  [`ferritls-backend-x86_64`](https://crates.io/crates/ferritls-backend-x86_64)，
+  独立 crate、运行时注册（FIPS 边界外）
 - 测试面：NIST/RFC/CAVP 官方向量、Wycheproof 2300+ 用例、rustls-ring
   交叉互操作、持续 fuzz
 
@@ -50,8 +52,25 @@ let config = rustls::ClientConfig::builder_with_provider(provider)
     .with_no_client_auth();
 ```
 
-详细用法——服务端配置、批准模式、QUIC、reqwest 集成与硬件后端——见
+详细用法——服务端配置、批准模式、QUIC、reqwest 集成——见
 **[API 文档](https://docs.rs/ferritls-rustls)**。
+
+### 硬件后端（x86_64，可选）
+
+```toml
+[dependencies]
+ferritls-backend-x86_64 = "0.9"
+```
+
+```rust
+// 进程内一次，在构造任何密钥对象之前（仅 x86_64 有内容；
+// 其他目标上本 crate 为空，此块可直接裁掉）：
+#[cfg(target_arch = "x86_64")]
+ferritls_backend_x86_64::install()?;
+```
+
+细节——探测/KAT 失败语义、`fips` 构建拒绝、性能数字——见
+[`ferritls-backend-x86_64` README](crates/ferritls-backend-x86_64/README.md)。
 
 ## 构建要求
 
@@ -60,12 +79,49 @@ let config = rustls::ClientConfig::builder_with_provider(provider)
 `.cargo/config.toml` 已自动提供）：
 
 ```bash
-export RUSTC_BOOTSTRAP=1                                     # ① 保留 simd
-# 或在 Cargo.toml 中：                                        # ② 标量回退
+export RUSTC_BOOTSTRAP=1    # ① 保留 simd
+# 或在 Cargo.toml 中：      # ② 标量回退
 # ferritls-core = { version = "0.9", default-features = false }
 ```
 
 nightly 工具链无需该变量；portable_simd 稳定后此要求自动移除。
+
+## 测试
+
+```bash
+cargo test --workspace                 # 全量（加 --all-features 跑 ring 交叉互操作）
+cargo test -p ferritls-core --no-default-features   # 标量回退路径
+cargo test -p ferritls-core --features fips         # 批准模式门控
+FERRITLS_TEST_NI=1 cargo test -p ferritls-rustls -p ferritls-interop  # x86_64：在 AES-NI/SHA-NI 后端上重跑
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+`RUSTC_BOOTSTRAP=1` 已由 `.cargo/config.toml` 提供，stable 上上述命令
+可直接运行。完整测试矩阵与约定见 [AGENTS.md](AGENTS.md)。
+
+## 基准测试
+
+criterion 基准覆盖密码原语与进程内 TLS 1.3 全握手（含 rustls-ring 基线）：
+
+```bash
+cargo bench -p ferritls-core                         # 原语（aead/hash/ecdh/sign/drbg/kem）
+cargo bench -p ferritls-interop --bench handshake    # 全握手 vs ring 基线
+cargo bench -p ferritls-backend-x86_64               # 软/Ni 逐记录对照（x86_64）
+```
+
+要看三种部署配置——标量软件路径、`core::simd` 软件路径、simd + 已安装
+的 x86_64 硬件后端——与 OpenSSL 的差距，运行对照矩阵（Linux，需
+OpenSSL 开发库）：自动跑两条构建腿、跨实现逐字节核对输出，并输出
+Markdown 报告：
+
+```bash
+python3 tools/bench_matrix.py          # 全矩阵 + 报告（约 25 分钟）
+python3 tools/bench_matrix.py --quick  # 冒烟档
+```
+
+回归基线工作流、方法论（锚点比值、公平性形态）与平台说明见
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md)。CI 只对基准做编译冒烟，
+实际测量在本地进行。
 
 ## FIPS 140-3 状态
 

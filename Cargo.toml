@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 # MSRV 锚定标量回退路径（--no-default-features）：实测 1.88 全绿、
 # 1.85 死于 slice::as_chunks（1.88 稳定）/ is_multiple_of（1.87 稳定）。
@@ -39,6 +39,14 @@ rustls = { version = "0.23", default-features = false, features = ["std"] }
 getrandom = "0.2"
 subtle = { version = "2", default-features = false }
 zeroize = { version = "1", default-features = false }
+# ctor 仅供 rustls/interop 两处 tests/common 的 FERRITLS_TEST_NI 预 main
+# 安装钩子（纯测试基础设施，不进入 FIPS 边界，见 AGENTS.md §6.1）。
+ctor = "1"
 
 [profile.release]
 lto = "thin"
+
+[profile.bench]
+opt-level = 3
+lto = "fat"
+codegen-units = 1

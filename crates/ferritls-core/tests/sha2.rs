@@ -1,6 +1,8 @@
 //! SHA-256/384/512 向量测试（M1）。
 //!
-//! 来源：NIST CAVP "SHAVS" 短消息样例（"abc"、空串、两块消息）。
+//! 来源：NIST CAVP "SHAVS" 短消息样例（"abc"、空串、两块消息）；
+//! 完整 CAVP 长消息/蒙特卡洛向量见 `tests/vectors/shs/`（提取与
+//! 逐字节核对方式见 `tools/extract_shavs.py` 与 docs/VECTOR-PROVENANCE.md）。
 //! 向量为人工录入——**启用前必须与官方文档逐字节核对**
 //! （AGENTS.md 硬性规则 8）。
 
@@ -427,3 +429,100 @@ fn sha2_padding_boundary_lengths() {
         "SHA-512(len=129)",
     );
 }
+
+// ---------------------------------------------------------------------------
+// NIST CAVP SHAVS 完整导入：长消息 + 蒙特卡洛（原 tests/sha2.rs:78 的
+// TODO，2026-11 测试完备性轮完成）。JSON 在 tests/vectors/shs/，由
+// tools/extract_shavs.py 从官方 .rsp 提取——脚本内以 hashlib 逐字节
+// 复算全部用例核对后才落盘；Monte 的 100 个检查点按官方算法完整
+// 复算核对（SHAVS §4.3：MD = H(MD_{i-3}‖MD_{i-2}‖MD_{i-1})，每检查
+// 点 1000 次迭代、共 100 检查点）。
+// ---------------------------------------------------------------------------
+
+fn load_shs(name: &str) -> serde_json::Value {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/shs/").to_string() + name;
+    let data = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    serde_json::from_str(&data).unwrap_or_else(|e| panic!("parse {path}: {e}"))
+}
+
+fn shavs_str<'a>(v: &'a serde_json::Value, key: &str) -> &'a str {
+    v[key]
+        .as_str()
+        .unwrap_or_else(|| panic!("{key} not a string"))
+}
+
+/// 生成 SHAVS LongMsg 测试：全用例 one_shot 锚定；最大长度用例另做
+/// 流式（7 字节分块）一致性。
+macro_rules! shavs_long {
+    ($test:ident, $file:literal, $hash:ident) => {
+        #[test]
+        fn $test() {
+            let doc = load_shs($file);
+            let cases = doc["cases"].as_array().expect("cases array");
+            assert!(!cases.is_empty(), "no cases loaded");
+            let mut largest: Option<&serde_json::Value> = None;
+            for c in cases.iter() {
+                let msg = common::hex(shavs_str(c, "msg"));
+                assert_eq!(msg.len() * 8, c["len"].as_u64().unwrap_or(0) as usize);
+                let md = $hash::one_shot(&msg);
+                assert_hex(&md, shavs_str(c, "md"), "SHAVS LongMsg case");
+                if largest
+                    .map(|l| c["len"].as_u64().unwrap_or(0) > l["len"].as_u64().unwrap_or(0))
+                    .unwrap_or(true)
+                {
+                    largest = Some(c);
+                }
+            }
+            // 最大长度用例补流式一致性（缓冲/多块路径）。
+            let l = largest.expect("largest");
+            let msg = common::hex(shavs_str(l, "msg"));
+            let mut h = $hash::new();
+            for chunk in msg.chunks(7) {
+                h.update(chunk);
+            }
+            assert_eq!(h.finalize(), $hash::one_shot(&msg), "streaming == one_shot");
+        }
+    };
+}
+
+/// 生成 SHAVS Monte 测试：官方检查点算法完整复算（每检查点 1000 次
+/// 迭代、共 100 检查点，检查点间以最终 MD 作种子）。
+macro_rules! shavs_monte {
+    ($test:ident, $file:literal, $hash:ident, $md_len:literal) => {
+        #[test]
+        fn $test() {
+            let doc = load_shs($file);
+            let seed = common::hex(shavs_str(&doc, "seed"));
+            let mds = doc["mds"].as_array().expect("mds array");
+            assert_eq!(mds.len(), 100, "100 checkpoints");
+            let mut s = seed;
+            for (j, want) in mds.iter().enumerate() {
+                let mut a = s.clone();
+                let mut b = s.clone();
+                let mut c = s.clone();
+                let mut md = [0u8; $md_len];
+                for _ in 0..1000 {
+                    let mut m = a.clone();
+                    m.extend_from_slice(&b);
+                    m.extend_from_slice(&c);
+                    md = $hash::one_shot(&m);
+                    a = b;
+                    b = c;
+                    c = md.to_vec();
+                }
+                s = md.to_vec();
+                let want = want
+                    .as_str()
+                    .unwrap_or_else(|| panic!("checkpoint {j} not a string"));
+                assert_hex(&md, want, "SHAVS Monte checkpoint {j}");
+            }
+        }
+    };
+}
+
+shavs_long!(shavs_sha256_long_messages, "SHA256LongMsg.json", Sha256);
+shavs_long!(shavs_sha384_long_messages, "SHA384LongMsg.json", Sha384);
+shavs_long!(shavs_sha512_long_messages, "SHA512LongMsg.json", Sha512);
+shavs_monte!(shavs_sha256_monte_carlo, "SHA256Monte.json", Sha256, 32);
+shavs_monte!(shavs_sha384_monte_carlo, "SHA384Monte.json", Sha384, 48);
+shavs_monte!(shavs_sha512_monte_carlo, "SHA512Monte.json", Sha512, 64);

@@ -19,8 +19,9 @@ cmake, slow builds) and the unmaintained `rustls-rustcrypto`.
 - **QUIC** packet protection (RFC 9001) for the GCM and ChaCha suites
 - **Approved mode** (`fips` feature): NIST-approved algorithms only,
   SP 800-90A CTR-DRBG, power-on self-tests
-- Optional **x86_64 hardware backend** (AES-NI / SHA-NI), a separate
-  crate registered at runtime
+- Optional **x86_64 hardware backend** (AES-NI / SHA-NI):
+  [`ferritls-backend-x86_64`](https://crates.io/crates/ferritls-backend-x86_64),
+  a separate crate registered at runtime (outside the FIPS boundary)
 - Tested against NIST/RFC/CAVP vectors, 2,300+ Wycheproof cases,
   cross-interop with rustls-ring, and continuous fuzzing
 
@@ -54,8 +55,25 @@ let config = rustls::ClientConfig::builder_with_provider(provider)
 ```
 
 Detailed usage — server configuration, approved mode, QUIC, reqwest
-integration, and the hardware backend — lives in the
-**[API documentation](https://docs.rs/ferritls-rustls)**.
+integration — lives in the **[API documentation](https://docs.rs/ferritls-rustls)**.
+
+### Hardware backend (x86_64, optional)
+
+```toml
+[dependencies]
+ferritls-backend-x86_64 = "0.9"
+```
+
+```rust
+// Once per process, before constructing any key object (x86_64 only;
+// elsewhere this crate is empty and the block compiles away):
+#[cfg(target_arch = "x86_64")]
+ferritls_backend_x86_64::install()?;
+```
+
+Details — probe/KAT failure modes, the `fips`-build refusal, and
+performance numbers — are in the
+[`ferritls-backend-x86_64` README](crates/ferritls-backend-x86_64/README.md).
 
 ## Build requirements
 
@@ -65,13 +83,54 @@ The default `simd` feature uses the standard library's `core::simd`
 sets it):
 
 ```bash
-export RUSTC_BOOTSTRAP=1                                     # (a) keep simd
-# or, in your Cargo.toml:                                    # (b) scalar fallback
+export RUSTC_BOOTSTRAP=1    # (a) keep simd
+# or, in your Cargo.toml:   # (b) scalar fallback
 # ferritls-core = { version = "0.9", default-features = false }
 ```
 
 Nightly toolchains need no variable; the requirement goes away once
 portable_simd stabilizes.
+
+## Testing
+
+```bash
+cargo test --workspace                 # full suite (add --all-features for the ring cross-interop)
+cargo test -p ferritls-core --no-default-features   # scalar fallback path
+cargo test -p ferritls-core --features fips         # approved-mode gates
+FERRITLS_TEST_NI=1 cargo test -p ferritls-rustls -p ferritls-interop  # x86_64: re-run on the AES-NI/SHA-NI backend
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+`RUSTC_BOOTSTRAP=1` is already set by `.cargo/config.toml`, so the
+commands above run as-is on stable. The full test matrix and
+conventions live in [AGENTS.md](AGENTS.md).
+
+## Benchmarks
+
+Criterion benchmarks cover the cryptographic primitives and in-process
+TLS 1.3 handshakes (with a rustls-ring baseline):
+
+```bash
+cargo bench -p ferritls-core                         # primitives (aead/hash/ecdh/sign/drbg/kem)
+cargo bench -p ferritls-interop --bench handshake    # full TLS 1.3 handshake vs ring
+cargo bench -p ferritls-backend-x86_64               # software vs Ni per record (x86_64)
+```
+
+To see where the three deployment configurations — scalar software,
+`core::simd` software, and simd plus the installed x86_64 hardware
+backend — stand against OpenSSL, run the comparison matrix (Linux,
+OpenSSL development headers required). It measures both build
+configurations, cross-checks ferritls and OpenSSL outputs byte-for-byte,
+and prints a Markdown report:
+
+```bash
+python3 tools/bench_matrix.py          # full matrix + report (~25 min)
+python3 tools/bench_matrix.py --quick  # shortened smoke run
+```
+
+Regression baselines, methodology (anchor ratios, fairness shapes) and
+platform notes are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). CI only
+compile-checks the benches; measurements run locally.
 
 ## FIPS 140-3 status
 

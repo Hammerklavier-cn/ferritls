@@ -638,3 +638,155 @@ fn ccm8_tls_rejects_tampered_inputs() {
         );
     }
 }
+
+/// M=4 / M=6 弱标签参数集的空明文往返：`seal(b"")` 产出恰为 M 字节
+/// 的"仅标签"密文，`open` 还原为空明文（含带 AAD 形态——AAD 参与
+/// CBC-MAC 而明文贡献零块）。M<16 的截断先于 S0 异或语义在此直接
+/// 暴露（标签 ≠ M=16 标签前缀）。
+#[test]
+fn ccm_any_m4_m6_empty_plaintext_round_trip() {
+    let nonce13 = [
+        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+    ];
+    for m in [4usize, 6] {
+        let any = Aes128CcmAny::new(&KEY, m).expect("M=4/6 are valid tag lengths");
+
+        // 空明文 + 空 AAD：仅标签
+        let sealed = any
+            .seal(&nonce13, b"", b"")
+            .expect("empty PT within length domain");
+        assert_eq!(sealed.len(), m, "empty PT → tag only (M={m})");
+        let opened = any.open(&nonce13, b"", &sealed).expect("round trip");
+        assert!(opened.is_empty(), "M={m} empty PT round trip");
+
+        // 空明文 + AAD：AAD 跨入 MAC、密文仍仅标签
+        let sealed_aad = any.seal(&nonce13, AAD, b"").expect("empty PT + AAD");
+        assert_eq!(sealed_aad.len(), m, "empty PT + AAD → tag only (M={m})");
+        assert_eq!(
+            any.open(&nonce13, AAD, &sealed_aad).expect("round trip"),
+            Vec::<u8>::new(),
+            "M={m} empty PT + AAD round trip"
+        );
+
+        // 错误 AAD 必须拒绝（弱标签同样走完整认证路径）
+        assert_eq!(
+            any.open(&nonce13, b"other", &sealed_aad),
+            Err(Error::VerificationFailed),
+            "M={m} wrong AAD must fail"
+        );
+    }
+}
+
+/// L=2 长度域上边界（RFC 3610 §2.2：明文 < 2^(8L) = 65536）：恰
+/// 65535 字节 = 2^16 − 1 必须成功且往返一致（合法上限的端到端钉子，
+/// 与 `ccm_length_domain_rejected` 的超限拒绝构成完整边界对）。
+#[test]
+fn ccm_l2_boundary_65535_round_trip() {
+    let ccm = Aes128Ccm::new(&KEY);
+    let nonce = [0u8; 13]; // L = 2
+    let big = pt(65535);
+    assert_eq!(big.len(), 65535);
+
+    let sealed = ccm
+        .seal(&nonce, b"", &big)
+        .expect("65535 = 2^16 − 1 is the exact L=2 maximum");
+    assert_eq!(sealed.len(), 65535 + 16);
+    let opened = ccm.open(&nonce, b"", &sealed).expect("boundary round trip");
+    assert_eq!(opened, big, "L=2 maximum-length round trip");
+}
+
+/// L=2 open 侧长度域拒绝：密文 ≥ 2^(8L) = 65536 字节必非本模块
+/// 产物——open 侧按 `open_core` 的守护统一返回 `VerificationFailed`
+///（先于任何 AES 运算；与 seal 侧的 `InvalidInput` 形成两方向各自的
+/// 错误契约）。恰过界的最小输入 = 65536 字节密文 + 16 字节标签。
+#[test]
+fn ccm_l2_open_rejects_over_limit_ciphertext() {
+    let ccm = Aes128Ccm::new(&KEY);
+    let nonce = [0u8; 13]; // L = 2
+
+    // 恰过界：ct 65536（= 2^16，超出合法上限 65535）+ tag 16
+    let over = vec![0u8; 65536 + 16];
+    assert_eq!(
+        ccm.open(&nonce, b"", &over),
+        Err(Error::VerificationFailed),
+        "ct len 65536 >= 2^(8L) must be rejected before any AES work"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// NIST SP800-38C CAVS 官方向量（2026-11 测试完备性轮；经 OpenSSL master
+// evpciph_aes_ccm_cavs.txt 转载，见 docs/VECTOR-PROVENANCE.md）。14 个
+// (nonce, tag) 形状的加密期望值逐字节锚定 + 解密-验证失败用例抽样。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ccmvs_nist_aes128_official_vectors() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/vectors/ccm/ccmvs_aes128.json"
+    );
+    let data = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    let doc: serde_json::Value =
+        serde_json::from_str(&data).unwrap_or_else(|e| panic!("parse {path}: {e}"));
+    let cases = doc["cases"].as_array().expect("cases array");
+    assert!(cases.len() >= 60, "ccmvs: too few cases: {}", cases.len());
+    let (mut n_enc, mut n_dec_fail) = (0u32, 0u32);
+    for (i, c) in cases.iter().enumerate() {
+        let key_hex = c["key"].as_str().expect("key");
+        let iv = common::hex(c["iv"].as_str().unwrap_or(""));
+        let aad = common::hex(c["aad"].as_str().unwrap_or(""));
+        let pt = common::hex(c["pt"].as_str().unwrap_or(""));
+        let ct = common::hex(c["ct"].as_str().unwrap_or(""));
+        let tag = common::hex(c["tag"].as_str().unwrap_or(""));
+        let op = c["op"].as_str().expect("op");
+        // 参数空间契约（提取侧已过滤）：nonce 7..13、tag 4..16 偶数。
+        assert!(
+            (7..=13).contains(&iv.len()),
+            "case {i}: nonce len {}",
+            iv.len()
+        );
+        assert!(
+            (4..=16).contains(&tag.len()) && tag.len().is_multiple_of(2),
+            "case {i}: tag len {}",
+            tag.len()
+        );
+        let key: [u8; 16] = common::hex(key_hex).try_into().expect("AES-128 key");
+        let aead = Aes128CcmAny::new(&key, tag.len()).unwrap_or_else(|e| panic!("case {i}: {e:?}"));
+        let mut nonce = [0u8; 13];
+        nonce[..iv.len()].copy_from_slice(&iv);
+        let nonce = &nonce[..iv.len()];
+        match op {
+            "ENCRYPT" => {
+                // 官方期望：seal 密文‖标签逐字节一致；open 还原明文。
+                let mut expect = ct.clone();
+                expect.extend_from_slice(&tag);
+                let sealed = aead
+                    .seal(nonce, &aad, &pt)
+                    .unwrap_or_else(|e| panic!("case {i}: seal got {e:?}"));
+                assert_eq!(sealed, expect, "case {i} ({:?})", c["title"]);
+                let opened = aead
+                    .open(nonce, &aad, &expect)
+                    .unwrap_or_else(|e| panic!("case {i}: open got {e:?}"));
+                assert_eq!(opened, pt, "case {i}: roundtrip");
+                n_enc += 1;
+            }
+            "DECRYPT" => {
+                // 解密-验证失败用例（NIST DV 过程测试）：必须统一拒绝。
+                let mut ct_tag = ct.clone();
+                ct_tag.extend_from_slice(&tag);
+                assert!(
+                    aead.open(nonce, &aad, &ct_tag).is_err(),
+                    "case {i} ({:?}): tampered input must be rejected",
+                    c["title"]
+                );
+                n_dec_fail += 1;
+            }
+            other => panic!("case {i}: unexpected op {other}"),
+        }
+    }
+    assert!(n_enc >= 20, "ccmvs: encrypt coverage {n_enc}");
+    assert!(
+        n_dec_fail >= 30,
+        "ccmvs: decrypt-fail coverage {n_dec_fail}"
+    );
+}

@@ -1,7 +1,8 @@
 # ferritls 基准测试指南
 
 基准体系回答一个问题：**当前实现到底多慢、慢在哪、改动后有没有回归**
-——AGENTS.md §5.5「先正确，后快」纪律的度量前提。工具为
+——AGENTS.md §5.5「先正确，后快」纪律的度量前提；§8 的跨后端矩阵
+在此之上补第三问：**离 OpenSSL 的绝对差距还有多远**。工具为
 [criterion](https://github.com/bheisler/criterion.rs)（0.8），以
 dev-dependency 挂在 `ferritls-core` / `ferritls-interop` /
 `ferritls-backend-x86_64` 上（dev 目标不进入 FIPS 边界）。CI 只做
@@ -21,6 +22,7 @@ dev-dependency 挂在 `ferritls-core` / `ferritls-interop` /
 | `aead_ni` | ferritls-backend-x86_64 | 软/Ni 逐记录对照：AES-128/256-GCM seal/open（Ni 侧经 token 直构，两路径同进程独立测） | Bytes |
 | `hash_ni` | ferritls-backend-x86_64 | SHA-256 软/Ni 对照（同 core `hash` 案例，分安装前后） | Bytes |
 | `handshake_ni` | ferritls-interop | 与 `handshake` 同法，**启动时安装 AES-NI 后端**（仅 x86_64；分属二进制，互不污染） | Elements |
+| `openssl_matrix` | ferritls-interop | 跨后端 × OpenSSL 原语对照（§8）：AEAD/哈希/ECDH/签名 33 案例 × {标量, simd, simd+Ni, openssl 锚点}；simd 与 simd+Ni 经组间安装桥同进程测，标量腿由 `tools/bench_matrix.py` 以 `--no-default-features` 驱动；启动时跨实现交叉自检 | Bytes / Elements |
 
 要点：密钥/输入固定种子确定性构造，bench 循环内不调 OS 熵（唯一例外
 `drbg/generate-32b` 的重播种——那是被测语义的一部分）；`handshake`
@@ -211,3 +213,85 @@ exit 1 无诊断）：`export PATH="/c/msys64/ucrt64/bin:$PATH"`。
 5. 新文件在 crate `Cargo.toml` 登记 `[[bench]] … harness = false`。
 6. clippy `--all-targets -D warnings` 覆盖 benches，同样是硬门。
 7. §1 清单表随新基准同步更新（AGENTS.md 规则 9 文档先行）。
+
+## 8. 跨后端 × OpenSSL 矩阵（openssl_matrix / tools/bench_matrix.py）
+
+回答基准体系的第三个问题：**ferritls 的三种部署配置离 OpenSSL——
+当前这些原语的事实性能边界——还有多远**。ring 基线在握手层回答
+「作为 rustls provider 是否可换」（§1 `handshake`）；本矩阵在原语层
+回答「密码内核本身的绝对差距」，两者互补、不可互相替代（握手层的
+openssl 对照是整栈对比而非 provider 对比，故不放进 `handshake`）。
+
+### 8.1 三配置 × 每腿 openssl 锚点
+
+| 列 | 构建/形态 | 对应下游场景 |
+|---|---|---|
+| ferritls-标量 | `--no-default-features` | MSRV 可复现构建 / 不设 `RUSTC_BOOTSTRAP` |
+| ferritls-simd | 默认构建 | 可移植默认路径（无边界外依赖） |
+| ferritls-simd+Ni | 默认构建 + `install()`/`install_hash()` | x86_64 应用侧装硬件后端；未加速原语仍走 simd 软件路径（内含 SHA-256 的签名消息哈希亦走 Ni，故本列全量重测、不做「复制 simd」省略） |
+| openssl | 系统 libcrypto（linux 门控 dev-dep） | 锚点 |
+
+标量与 simd 是编译期 feature、无法同进程共存 → 分两条腿；simd 与
+simd+Ni 用组间安装桥（`hash_ni` 同款）**同进程先后测**（AEAD 实例
+保持构造时执行核心，SHA-256 压缩经注册表分发），直接可比。openssl
+锚点**每腿都测**：跨腿比较只认「对本腿锚点的比值」——绝对值跨腿
+（隔着一次 feature 全量重建）不可比，锚点比值可比（§3 纪律延伸）。
+
+### 8.2 运行
+
+```bash
+python3 tools/bench_matrix.py              # 一键两腿 + Markdown 报告（默认档约 20 分钟）
+python3 tools/bench_matrix.py --quick      # 冒烟档（采样缩短，统计强度降低）
+python3 tools/bench_matrix.py --skip-run   # 只解析既有 criterion 数据再渲染
+# 手动单腿（脚本内部即此两条）：
+cargo bench -p ferritls-interop --bench openssl_matrix --no-default-features  # 腿 A
+cargo bench -p ferritls-interop --bench openssl_matrix                        # 腿 B
+```
+
+数据落盘 `target/criterion/matrix-*`（脚本启动时清空该组，防陈旧数据
+混入报告）；脚本解析 `estimates.json`——**criterion 0.8 的内部格式、
+非官方 API**，格式漂移即显式报错。脚本用例清单与 bench 登记严格
+同步（改 bench 必须同步 `tools/bench_matrix.py` 的 `CASES`）。
+
+### 8.3 两侧公平性形态
+
+- **AES-GCM / ChaCha20-Poly1305**：openssl 走 CipherCtx 复用形态
+  （密钥编排一次摊销、每记录仅重设 IV）——与 ferritls 预展开密钥
+  实例的 seal/open 路径同构；「IV-only 重设正确重置 GCM/Poly1305
+  运行态」这一 EVP 语义由每次启动的交叉自检钉死。
+- **CCM / HMAC / HKDF / 签名**：one-shot 形态（每次完整构建上下文），
+  对 openssl 偏保守——openssl 侧 HMAC/HKDF 显著慢于 Ni 列时，先看
+  形态差异再下结论。
+- **CCM 的 EVP ctrl 顺序陷阱**（3.5.9 实测钉死，bench 源码注释同）：
+  `SET_TAG` 必须先于 key init——provider 的 `setkey` 会把 tag 长度
+  快照进 CCM128 内核上下文，晚置的 `SET_TAG` 只改 PROV 层 `m`、
+  内核不变，`GET_TAG` 按 `len > 内核 m` 静默拒绝（ErrorStack 为空）。
+  openssl crate 自带的 `encrypt_aead`/`decrypt_aead` 把 tag ctrl 放在
+  key init 之后，对本版 provider 的 **CCM M=16 结构性不可用**，故
+  矩阵直接走 `CipherCtx` 复刻正确序列（TLS 12 字节 nonce 亦需显式
+  `SET_IVLEN`，默认 13）。
+
+### 8.4 跨实现交叉自检
+
+每次启动（linux）先于测量执行：相同密钥材料下 ferritls ↔ openssl 的
+确定性输出**逐字节核对**（GCM-128/256 复用形态含连续两记录重置性、
+CCM、ChaCha、SHA-256/512、HMAC、HKDF、RSA-PKCS1v15、Ed25519、
+X25519 同对共享秘密），随机 nonce 原语（ECDSA、RSA-PSS）双向互验。
+任何失败即 panic——基准失效不得静默（与 perf.rs 同一纪律），报告头
+亦标注自检结果。
+
+### 8.5 已知边界
+
+- **ML-KEM 不在矩阵**：openssl crate（0.10.82）未暴露 encapsulate/
+  decapsulate 绑定（上游 rust-openssl 尚未封装 EVP_PKEY_encapsulate），
+  无法对称测量；绑定落地后再补。
+- openssl 数字按**被测机的 OpenSSL 运行库版本**解读——报告头打印
+  链接库版本（注意 `openssl` CLI 与链接库版本可能不同）；跨机器/
+  跨发行版绝对值无可比性，同机两配置的**锚点比值**才是有效结论。
+- 自洽性提醒：未加速原语 simd vs simd+Ni 的 95% CI 不相交会被单独
+  列出——良性解释是腿内测量顺序/热漂移（--quick 档尤甚），默认档
+  复跑仍不相交才值得怀疑与安装桥的意外耦合。
+- CI 只做编译冒烟（ubuntu-latest 预装 libssl-dev；windows/macos 的
+  测试腿不编译 openssl——依赖按 `target_os = "linux"` 门控，该平台
+  矩阵无 openssl 列，bench 以空组降级）。
+
