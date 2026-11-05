@@ -45,3 +45,8 @@ ctor = "1"
 
 [profile.release]
 lto = "thin"
+
+[profile.bench]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
