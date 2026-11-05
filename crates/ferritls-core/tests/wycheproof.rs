@@ -17,11 +17,21 @@
 //!   `valid` → seal 密文‖标签逐字节一致且 open 还原明文；`invalid` →
 //!   open 返回 Err。文件的参数空间已在裁剪时限定到本实现的 API 面
 //!   （GCM：AES-128/256 × nonce-96 × tag-128；ChaCha：256 × 96 × 128）。
+//! - HMAC：`valid` → one_shot 截断到 tagSize 一致（全标签另断言
+//!   verify Ok）；`invalid`（同长篡改）→ 计算前缀必须区分。
+//! - HKDF：`valid` → extract+expand 逐字节一致；`invalid`（size >
+//!   255·HashLen）→ expand 返回 Err。
+//! - AES-CCM：nonce/tag 运行时参数空间内按 AEAD 映射；空间外组
+//!   （nonce 非 7..13、tag 非 4..16 偶数）断言参数拒绝 Err。
+//! - RSA 扩展：3072/4096 模数验证（映射同 2048 族）；rsa_pss_misc
+//!   仅保留 mgfSha==sha 的 SHA-2 组，`valid` → verify_pss Ok（盐长
+//!   0/20/28/32/48/64 全变体，按编码严格解码）；sig_gen 为签名侧
+//!   KAT：core 签名输出与官方向量逐字节一致（PKCS#1 v1.5 确定性）。
 
 mod common;
 
 use common::{assert_hex, hex, to_hex};
-use ferritls_core::{chacha20poly1305, ecdh, gcm, sign};
+use ferritls_core::{ccm, chacha20poly1305, ecdh, gcm, hkdf, hmac, sign};
 
 const ZERO32: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 const ZERO48: &str = concat!(
@@ -503,4 +513,402 @@ fn wycheproof_aead_chacha20_poly1305() {
         ))
     }
     aead_suite("chacha20_poly1305_test.json", make, 50, 45);
+}
+
+// ---------------------------------------------------------------------------
+// HMAC（Wycheproof MacTest 模块，2026-11 测试完备性轮引入）
+// ---------------------------------------------------------------------------
+
+/// HMAC 驱动的实例级验证函数类型：返回 None 表示标签非全长、
+/// API 不支持截断验证。
+type HmacVerify = fn(&[u8], &[u8], &[u8]) -> Option<Result<(), ferritls_core::Error>>;
+
+/// HKDF 驱动的 Expand 函数类型。
+type HkdfExpand = fn(&[u8], &[u8], &mut [u8]) -> Result<(), ferritls_core::Error>;
+
+/// HMAC 驱动：`mac` = one_shot（返回全摘要），`verify` = 实例级验证。
+fn hmac_suite(
+    file: &str,
+    mac: fn(&[u8], &[u8]) -> Vec<u8>,
+    verify: HmacVerify,
+    min_valid: u32,
+    min_invalid: u32,
+) {
+    let doc = load(file);
+    let (mut n_ok, mut n_err) = (0u32, 0u32);
+    for group in arr(&doc, "testGroups") {
+        let tag_len = group["tagSize"].as_u64().unwrap_or(0) as usize / 8;
+        for t in arr(group, "tests") {
+            let id = tcid(t);
+            let comment = str_field(t, "comment");
+            let key = hex(str_field(t, "key"));
+            let msg = hex(str_field(t, "msg"));
+            let tag = hex(str_field(t, "tag"));
+            assert_eq!(tag.len(), tag_len, "tcId {id}: tag length vs group tagSize");
+            let computed = mac(&key, &msg);
+            match str_field(t, "result") {
+                "valid" => {
+                    assert_hex(
+                        &computed[..tag.len()],
+                        &to_hex(&tag),
+                        &format!("tcId {id} ({comment}) truncated tag"),
+                    );
+                    if tag.len() == computed.len() {
+                        verify(&key, &msg, &tag)
+                            .expect("tcId {id}: full-length verify")
+                            .unwrap_or_else(|e| panic!("tcId {id} ({comment}): verify got {e:?}"));
+                    }
+                    n_ok += 1;
+                }
+                _ => {
+                    assert_ne!(
+                        &computed[..tag.len()],
+                        &tag[..],
+                        "tcId {id} ({comment}): mutated tag must differ"
+                    );
+                    if tag.len() == computed.len() {
+                        assert!(
+                            verify(&key, &msg, &tag)
+                                .expect("tcId {id}: full-length verify")
+                                .is_err(),
+                            "tcId {id} ({comment}): expected rejection"
+                        );
+                    }
+                    n_err += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        n_ok >= min_valid && n_err >= min_invalid,
+        "{file}: coverage too low: ok={n_ok} err={n_err}"
+    );
+}
+
+#[test]
+fn wycheproof_hmac_sha256() {
+    hmac_suite(
+        "hmac_sha256_test.json",
+        |k, m| hmac::HmacSha256::one_shot(k, m).to_vec(),
+        |k, m, t| {
+            let mut h = hmac::HmacSha256::new(k);
+            h.update(m);
+            Some(h.verify(t))
+        },
+        60,
+        100,
+    );
+}
+
+#[test]
+fn wycheproof_hmac_sha384() {
+    hmac_suite(
+        "hmac_sha384_test.json",
+        |k, m| hmac::HmacSha384::one_shot(k, m).to_vec(),
+        |k, m, t| {
+            let mut h = hmac::HmacSha384::new(k);
+            h.update(m);
+            Some(h.verify(t))
+        },
+        60,
+        100,
+    );
+}
+
+#[test]
+fn wycheproof_hmac_sha512() {
+    hmac_suite(
+        "hmac_sha512_test.json",
+        |k, m| hmac::HmacSha512::one_shot(k, m).to_vec(),
+        |k, m, t| {
+            let mut h = hmac::HmacSha512::new(k);
+            h.update(m);
+            Some(h.verify(t))
+        },
+        60,
+        100,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// HKDF（Wycheproof HKDF 模块）：invalid = size 恰为 255·HashLen + 1
+// ---------------------------------------------------------------------------
+
+fn hkdf_suite(file: &str, extract: fn(&[u8], &[u8]) -> Vec<u8>, expand: HkdfExpand) {
+    let doc = load(file);
+    let (mut n_ok, mut n_err) = (0u32, 0u32);
+    for group in arr(&doc, "testGroups") {
+        for t in arr(group, "tests") {
+            let id = tcid(t);
+            let comment = str_field(t, "comment");
+            let salt = hex(str_field(t, "salt"));
+            let ikm = hex(str_field(t, "ikm"));
+            let info = hex(str_field(t, "info"));
+            let size = t["size"].as_u64().unwrap_or(0) as usize;
+            let okm = hex(str_field(t, "okm"));
+            let prk = extract(&salt, &ikm);
+            let mut got = vec![0u8; size];
+            let res = expand(&prk, &info, &mut got);
+            match str_field(t, "result") {
+                "valid" => {
+                    res.unwrap_or_else(|e| panic!("tcId {id} ({comment}): expand got {e:?}"));
+                    assert_eq!(got, okm, "tcId {id} ({comment}): okm");
+                    n_ok += 1;
+                }
+                _ => {
+                    assert!(
+                        res.is_err(),
+                        "tcId {id} ({comment}): oversized output must be rejected"
+                    );
+                    n_err += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        n_ok >= 60 && n_err >= 2,
+        "{file}: coverage too low: ok={n_ok} err={n_err}"
+    );
+}
+
+#[test]
+fn wycheproof_hkdf_sha256() {
+    hkdf_suite(
+        "hkdf_sha256_test.json",
+        |s, i| hkdf::extract_sha256(s, i).to_vec(),
+        hkdf::expand_sha256,
+    );
+}
+
+#[test]
+fn wycheproof_hkdf_sha384() {
+    hkdf_suite(
+        "hkdf_sha384_test.json",
+        |s, i| hkdf::extract_sha384(s, i).to_vec(),
+        hkdf::expand_sha384,
+    );
+}
+
+#[test]
+fn wycheproof_hkdf_sha512() {
+    hkdf_suite(
+        "hkdf_sha512_test.json",
+        |s, i| hkdf::extract_sha512(s, i).to_vec(),
+        hkdf::expand_sha512,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// AES-CCM（Wycheproof CCM 模块）：nonce/tag 为运行时参数，空间外组
+// 断言参数拒绝；AES-192/256 组已在裁剪时滤除（keySize==128 契约）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn wycheproof_aead_aes_ccm() {
+    let doc = load("aes_ccm_test.json");
+    let (mut n_ok, mut n_err, mut n_param) = (0u32, 0u32, 0u32);
+    for group in arr(&doc, "testGroups") {
+        assert_eq!(
+            group["keySize"].as_u64(),
+            Some(128),
+            "aes_ccm: AES-128-only trim contract"
+        );
+        let nonce_len = group["ivSize"].as_u64().unwrap_or(0) as usize / 8;
+        let tag_len = group["tagSize"].as_u64().unwrap_or(0) as usize / 8;
+        let in_space = (7..=13).contains(&nonce_len)
+            && (4..=16).contains(&tag_len)
+            && tag_len.is_multiple_of(2);
+        if !in_space {
+            // 参数空间外：构造/封密必须拒绝（nonce 非 7..13 或 tag 非
+            // 4..16 偶数），无任何成功路径。
+            n_param += group["tests"].as_array().map(|t| t.len()).unwrap_or(0) as u32;
+            for t in arr(group, "tests") {
+                let id = tcid(t);
+                let key = hex(str_field(t, "key"));
+                let nonce = hex(str_field(t, "iv"));
+                let aad = hex(str_field(t, "aad"));
+                let msg = hex(str_field(t, "msg"));
+                if !(4..=16).contains(&tag_len) || !tag_len.is_multiple_of(2) {
+                    assert!(
+                        ccm::Aes128CcmAny::new(key.as_slice().try_into().unwrap(), tag_len)
+                            .is_err(),
+                        "tcId {id}: tag_len {tag_len} must be rejected at construction"
+                    );
+                    continue;
+                }
+                let aead = ccm::Aes128CcmAny::new(key.as_slice().try_into().unwrap(), tag_len)
+                    .unwrap_or_else(|e| panic!("tcId {id}: {e:?}"));
+                assert!(
+                    aead.seal(&nonce, &aad, &msg).is_err(),
+                    "tcId {id}: nonce_len {nonce_len} must be rejected"
+                );
+                assert!(aead.open(&nonce, &aad, &vec![0u8; tag_len]).is_err());
+            }
+            continue;
+        }
+        for t in arr(group, "tests") {
+            let id = tcid(t);
+            let comment = str_field(t, "comment");
+            let key = hex(str_field(t, "key"));
+            let nonce = hex(str_field(t, "iv"));
+            let aad = hex(str_field(t, "aad"));
+            let msg = hex(str_field(t, "msg"));
+            let ct = hex(str_field(t, "ct"));
+            let tag = hex(str_field(t, "tag"));
+            assert_eq!(tag.len(), tag_len, "tcId {id}: tag length vs group tagSize");
+            let aead = ccm::Aes128CcmAny::new(key.as_slice().try_into().unwrap(), tag_len)
+                .unwrap_or_else(|e| panic!("tcId {id}: {e:?}"));
+            match str_field(t, "result") {
+                "valid" => {
+                    let mut expect = ct.clone();
+                    expect.extend_from_slice(&tag);
+                    let sealed = aead
+                        .seal(&nonce, &aad, &msg)
+                        .unwrap_or_else(|e| panic!("tcId {id} ({comment}): seal got {e:?}"));
+                    assert_hex(&sealed, &to_hex(&expect), &format!("tcId {id} ({comment})"));
+                    let opened = aead
+                        .open(&nonce, &aad, &expect)
+                        .unwrap_or_else(|e| panic!("tcId {id} ({comment}): open got {e:?}"));
+                    assert_eq!(opened, msg, "tcId {id} ({comment}): opened plaintext");
+                    n_ok += 1;
+                }
+                _ => {
+                    let mut ct_tag = ct.clone();
+                    ct_tag.extend_from_slice(&tag);
+                    assert!(
+                        aead.open(&nonce, &aad, &ct_tag).is_err(),
+                        "tcId {id} ({comment}): expected rejection"
+                    );
+                    n_err += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        n_ok >= 40 && n_err >= 20,
+        "aes_ccm: coverage too low: ok={n_ok} err={n_err}"
+    );
+    assert!(
+        n_param >= 20,
+        "aes_ccm: parameter-space rejection coverage too low: {n_param}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// RSA 扩展面：3072/4096 模数验证（复用 2048 族驱动）、PSS 参数变体
+// （盐长按编码严格解码）、PKCS#1 v1.5 签名侧 KAT（确定性输出）。
+// ---------------------------------------------------------------------------
+
+#[test]
+fn wycheproof_rsa_pkcs1v15_sha256_3072() {
+    rsa_pkcs1_suite("rsa_signature_3072_sha256_test.json", 256);
+}
+
+#[test]
+fn wycheproof_rsa_pkcs1v15_sha384_3072() {
+    rsa_pkcs1_suite("rsa_signature_3072_sha384_test.json", 384);
+}
+
+#[test]
+fn wycheproof_rsa_pkcs1v15_sha256_4096() {
+    rsa_pkcs1_suite("rsa_signature_4096_sha256_test.json", 256);
+}
+
+#[test]
+fn wycheproof_rsa_pkcs1v15_sha384_4096() {
+    rsa_pkcs1_suite("rsa_signature_4096_sha384_test.json", 384);
+}
+
+#[test]
+fn wycheproof_rsa_pss_misc_parameter_variants() {
+    let doc = load("rsa_pss_misc_test.json");
+    let mut n_ok = 0u32;
+    let mut salt_lens = std::collections::BTreeSet::new();
+    for group in arr(&doc, "testGroups") {
+        let hash_bits: u16 = match str_field(group, "sha") {
+            "SHA-256" => 256,
+            "SHA-384" => 384,
+            "SHA-512" => 512,
+            other => panic!("pss_misc: unexpected trimmed hash {other}"),
+        };
+        assert_eq!(
+            str_field(group, "mgfSha"),
+            str_field(group, "sha"),
+            "pss_misc trim contract: mgfSha == sha (API surface)"
+        );
+        let s_len = group["sLen"].as_u64().unwrap_or(0) as usize;
+        salt_lens.insert(s_len);
+        let spki = hex(str_field(group, "publicKeyDer"));
+        let pk = sign::rsa::VerifyKey::from_spki_der(&spki)
+            .unwrap_or_else(|e| panic!("group pubkey parse: {e:?}"));
+        for t in arr(group, "tests") {
+            let id = tcid(t);
+            let msg = hex(str_field(t, "msg"));
+            let sig = hex(str_field(t, "sig"));
+            // Wycheproof 该文件全为 valid：任意合法盐长（含 sLen = 0
+            // 与 sLen ≠ hLen）必须通过严格 RFC 8017 验证。
+            pk.verify_pss(hash_bits, &msg, &sig)
+                .unwrap_or_else(|e| panic!("tcId {id} (sLen {s_len}): verify_pss got {e:?}"));
+            n_ok += 1;
+        }
+    }
+    assert_eq!(
+        salt_lens,
+        [0, 20, 28, 32, 48, 64].into_iter().collect(),
+        "pss_misc trim contract: all salt-length variants present"
+    );
+    assert!(n_ok >= 12, "pss_misc: ok={n_ok}");
+}
+
+/// PKCS#1 v1.5 签名侧 KAT：core 签名（CRT + 盲化路径）输出与官方
+/// 向量逐字节一致（确定性 padding；盲化不影响输出）。
+fn rsa_sig_gen_suite(file: &str) {
+    let doc = load(file);
+    let mut n_ok = 0u32;
+    for group in arr(&doc, "testGroups") {
+        let hash_bits: u16 = match str_field(group, "sha") {
+            "SHA-256" => 256,
+            "SHA-384" => 384,
+            "SHA-512" => 512,
+            other => panic!("{file}: unexpected trimmed hash {other}"),
+        };
+        let pkcs8 = hex(str_field(group, "privateKeyPkcs8"));
+        let sk = sign::rsa::SigningKey::from_pkcs8_der(&pkcs8)
+            .unwrap_or_else(|e| panic!("{file}: private key parse: {e:?}"));
+        let spki = hex(str_field(group, "keyDer"));
+        let pk = sign::rsa::VerifyKey::from_spki_der(&spki)
+            .unwrap_or_else(|e| panic!("{file}: public key parse: {e:?}"));
+        for t in arr(group, "tests") {
+            let id = tcid(t);
+            let msg = hex(str_field(t, "msg"));
+            let sig = hex(str_field(t, "sig"));
+            let signed = sk
+                .sign_pkcs1v15(hash_bits, &msg)
+                .unwrap_or_else(|e| panic!("tcId {id}: sign got {e:?}"));
+            assert_hex(
+                &signed,
+                &to_hex(&sig),
+                &format!("tcId {id}: deterministic sig"),
+            );
+            pk.verify_pkcs1v15(hash_bits, &msg, &sig)
+                .unwrap_or_else(|e| panic!("tcId {id}: verify got {e:?}"));
+            n_ok += 1;
+        }
+    }
+    assert!(n_ok >= 5, "{file}: sig_gen coverage too low: {n_ok}");
+}
+
+#[test]
+fn wycheproof_rsa_sig_gen_pkcs1_2048() {
+    rsa_sig_gen_suite("rsa_pkcs1_2048_sig_gen_test.json");
+}
+
+#[test]
+fn wycheproof_rsa_sig_gen_pkcs1_3072() {
+    rsa_sig_gen_suite("rsa_pkcs1_3072_sig_gen_test.json");
+}
+
+#[test]
+fn wycheproof_rsa_sig_gen_pkcs1_4096() {
+    rsa_sig_gen_suite("rsa_pkcs1_4096_sig_gen_test.json");
 }
