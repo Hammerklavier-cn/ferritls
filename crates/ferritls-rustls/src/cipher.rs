@@ -778,3 +778,161 @@ mod extract_keys_tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Hash / Hmac 适配测试：HMAC 为私有适配类型（`HmacSha256Impl` 等），
+// 只能在本模块内经 rustls trait 面（`Hmac::with_key` / `Key::
+// sign_concat`）测试；KAT 为 RFC 4231 官方向量（Test Case 1/2，已与
+// RFC 原文逐字节核对）。Hash 侧锚定 SHA-256/384("abc")（NIST FIPS
+// 180-4 示例）与 Context fork/fork_finish 语义。
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod hmac_hash_tests {
+    use super::*;
+
+    fn hex(s: &str) -> Vec<u8> {
+        assert!(s.len().is_multiple_of(2));
+        (0..s.len() / 2)
+            .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// RFC 4231 Test Case 1（key = 0x0b × 20，data = "Hi There"）与
+    /// Test Case 2（key = "Jefe"，data = "what do ya want for
+    /// nothing?"）的 HMAC-SHA-256/384 官方摘要。
+    #[test]
+    fn hmac_rfc4231_tc1_tc2_known_answers() {
+        // TC1
+        let key = [0x0bu8; 20];
+        let data = b"Hi There".as_slice();
+        let tag = HMAC_SHA256_IMPL.with_key(&key).sign_concat(&[], &[], data);
+        assert_eq!(
+            tag.as_ref(),
+            &hex("b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7")[..],
+            "RFC 4231 TC1 HMAC-SHA-256"
+        );
+        assert_eq!(tag.as_ref().len(), 32, "tag_len = 哈希输出长");
+
+        let tag = HMAC_SHA384_IMPL.with_key(&key).sign_concat(&[], &[], data);
+        assert_eq!(
+            tag.as_ref(),
+            &hex(
+                "afd03944d84895626b0825f4ab46907f15f9dadbe4101ec682aa034c7cebc59c\
+                 faea9ea9076ede7f4af152e8b2fa9cb6"
+            )[..],
+            "RFC 4231 TC1 HMAC-SHA-384"
+        );
+        assert_eq!(tag.as_ref().len(), 48);
+
+        // TC2
+        let key = b"Jefe".as_slice();
+        let data = b"what do ya want for nothing?".as_slice();
+        let tag = HMAC_SHA256_IMPL.with_key(key).sign_concat(&[], &[], data);
+        assert_eq!(
+            tag.as_ref(),
+            &hex("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843")[..],
+            "RFC 4231 TC2 HMAC-SHA-256"
+        );
+        let tag = HMAC_SHA384_IMPL.with_key(key).sign_concat(&[], &[], data);
+        assert_eq!(
+            tag.as_ref(),
+            &hex(
+                "af45d2e376484031617f78d2b58a6b1b9c7ef464f5a01b47e42ec3736322445e\
+                 8e2240ca5e69e2c78b3239ecfab21649"
+            )[..],
+            "RFC 4231 TC2 HMAC-SHA-384"
+        );
+    }
+
+    /// `sign_concat` 的拼接契约：HMAC 的输入 = first ‖ middle... ‖
+    /// last（HkdfUsingHmac 的 TLS 密钥调度依赖此语义），与 core
+    /// `one_shot` 对显式拼接输入的结果一致。
+    #[test]
+    fn hmac_sign_concat_matches_explicit_concatenation() {
+        let key = [0x0bu8; 20];
+        let expected = ferritls_core::hmac::HmacSha256::one_shot(
+            &key,
+            b"tls13 outer prefixkey part-1key part-2",
+        );
+        let tag = HMAC_SHA256_IMPL.with_key(&key).sign_concat(
+            b"tls13 outer prefix",
+            &[b"key part-1", b"key part-2"],
+            b"",
+        );
+        assert_eq!(tag.as_ref(), &expected[..]);
+
+        let expected = ferritls_core::hmac::HmacSha384::one_shot(&key, b"firstmid-1mid-2last");
+        let tag =
+            HMAC_SHA384_IMPL
+                .with_key(&key)
+                .sign_concat(b"first", &[b"mid-1", b"mid-2"], b"last");
+        assert_eq!(tag.as_ref(), &expected[..]);
+    }
+
+    /// `hash_output_len` 与各 Key 的 `tag_len` 契约。
+    #[test]
+    fn hmac_lengths() {
+        assert_eq!(HMAC_SHA256_IMPL.hash_output_len(), 32);
+        assert_eq!(HMAC_SHA384_IMPL.hash_output_len(), 48);
+        assert_eq!(HMAC_SHA256_IMPL.with_key(&[0u8; 1]).tag_len(), 32);
+        assert_eq!(HMAC_SHA384_IMPL.with_key(&[0u8; 1]).tag_len(), 48);
+    }
+
+    /// SHA-256/384("abc") 官方值（NIST FIPS 180-4 示例，与 openssl
+    /// `dgst` 交叉核对）+ Context 增量/fork/fork_finish 语义：
+    /// 增量 = 一次性；fork 快照独立；fork_finish 不消费原上下文。
+    #[test]
+    fn hash_context_fork_and_incremental_match_one_shot() {
+        let abc256 = hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+        let abc384 = hex(
+            "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed\
+             8086072ba1e7cc2358baeca134c825a7",
+        );
+
+        // 一次性 == 官方值
+        assert_eq!(SHA256_HASH.hash(b"abc").as_ref(), &abc256[..]);
+        assert_eq!(SHA384_HASH.hash(b"abc").as_ref(), &abc384[..]);
+
+        // 增量 == 一次性（跨 update 边界切分）
+        for (hash, expected) in [(&SHA256_HASH, &abc256[..]), (&SHA384_HASH, &abc384[..])] {
+            let mut ctx = hash.start();
+            ctx.update(b"ab");
+            ctx.update(b"c");
+            assert_eq!(ctx.finish().as_ref(), expected, "增量 == 一次性");
+
+            // fork：中途快照独立推进
+            let mut ctx = hash.start();
+            ctx.update(b"a");
+            let mut forked = ctx.fork();
+            ctx.update(b"bc");
+            assert_eq!(ctx.finish().as_ref(), expected);
+            forked.update(b"b");
+            assert_eq!(
+                forked.finish().as_ref(),
+                hash.hash(b"ab").as_ref(),
+                "fork 快照止于快照点输入"
+            );
+
+            // fork_finish：快照终止且不影响原上下文
+            let mut ctx = hash.start();
+            ctx.update(b"abc");
+            assert_eq!(ctx.fork_finish().as_ref(), expected);
+            ctx.update(b"extra");
+            assert_eq!(
+                ctx.finish().as_ref(),
+                hash.hash(b"abcextra").as_ref(),
+                "fork_finish 后原上下文仍可继续 update"
+            );
+        }
+    }
+
+    /// `output_len` / `algorithm()` 契约（rustls 套件装配依赖）。
+    #[test]
+    fn hash_output_len_and_algorithm() {
+        use rustls::crypto::hash::HashAlgorithm;
+        assert_eq!(SHA256_HASH.output_len(), 32);
+        assert_eq!(SHA256_HASH.algorithm(), HashAlgorithm::SHA256);
+        assert_eq!(SHA384_HASH.output_len(), 48);
+        assert_eq!(SHA384_HASH.algorithm(), HashAlgorithm::SHA384);
+    }
+}
