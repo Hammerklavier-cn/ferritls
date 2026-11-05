@@ -98,8 +98,9 @@ docs/VECTOR-PROVENANCE.md「2026-11-05 修订说明」），补齐测试面并�
   常数时间化）。
 - crates.io 发布自动化：推 tag `v*`（或手动 dispatch）→ 全量门禁 →
   单次 `cargo publish`（cargo 1.90 起 workspace 一次发布，core →
-  rustls 拓扑序）；前置 = 仓库 secrets 的 CARGO_REGISTRY_TOKEN；
-  v0.1.0–v0.6.0 已经 tag 触发发布。
+  backend → rustls 拓扑序）；前置 = 仓库 secrets 的 CARGO_REGISTRY_TOKEN；
+  v0.1.0–v0.6.0 已经 tag 触发发布；硬件后端 `ferritls-backend-x86_64`
+  自 v0.9.0 起纳入发布（与 core/rustls 同版本号、同 tag）。
 
 ## P1/P1.5 — 性能轮：stable 自动向量化（完成 2026-09-08）
 
@@ -207,6 +208,8 @@ unsafe 限于唯一叶子模块 + kernel 单点 trampoline，零依赖）+
 feature 上下文调用不得内联，103 处真实 callq 吃光收益）；直调化后
 GCM 原语再提 5.2–6.6×。数字见 BENCHMARKS §5.1/§5.2（Ni 对软件路径
 ~750–980×）。CCM/ChaCha/P-256/Ed25519 加速与 aarch64 不在本节范围。
+随 v0.9.0 起纳入 crates.io 发布（与 core/rustls 同版本号、同 tag；
+发布不改变 FIPS 边界，见 docs/FIPS.md §1）。
 
 ### M8.2 SHA-NI 后端（完成 2026-09-13）
 

@@ -257,8 +257,10 @@ jobs:
         working-directory: fuzz
       - run: cargo audit --file fuzz/Cargo.lock
 
-  # 公开 API 兼容性门禁：两个发布 crate 的 semver 违例在 PR 阶段拦截
-  # （baseline 默认取最近的版本 tag）。
+  # 公开 API 兼容性门禁：三个发布 crate 的 semver 违例在 PR 阶段拦截
+  # （baseline 默认取最近的版本 tag）。backend 暂不在扫描范围：它随
+  # v0.9.0 首次发布，registry 尚无 baseline 可比——首发落地后删掉本
+  # exclude 即可。
   semver-checks:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -267,6 +269,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: obi1kenobi/cargo-semver-checks-action@v2
+        # with:
+        #   exclude: ferritls-backend-x86_64
 
   # 文档门禁：intra-doc 链接与 rustdoc 警告按错误处理（密码库的文档
   # 即安全说明的一部分）。
@@ -283,13 +287,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --locked --no-deps --all-features
 
-  # 发布（M7）：推 tag v*（或手动 dispatch 填 tag）→ 全量门禁 → 发布
-  # crates.io → 创建同名 GitHub Release（附上一 tag 以来的提交变动）。
+  # 发布（M7；backend 自 v0.9.0 起纳入）：推 tag v*（或手动 dispatch
+  # 填 tag）→ 全量门禁 → 发布 crates.io → 创建同名 GitHub Release
+  # （附上一 tag 以来的提交变动）。
   # 单次 `cargo publish` 即可：cargo 1.90（2025-09 stable）起支持
-  # workspace 一次性发布——按依赖拓扑排序（core → rustls）依次打包、
-  # 验证、上传，验证阶段经本地 registry overlay 解析同批发布的依赖，
-  # 无需等待 crates.io 索引传播（rust-lang/cargo#1169）。interop 为
-  # publish=false，自动跳过。前置：仓库 secrets 配置 CARGO_REGISTRY_TOKEN。
+  # workspace 一次性发布——按依赖拓扑排序（core → backend → rustls）
+  # 依次打包、验证、上传，验证阶段经本地 registry overlay 解析同批发布
+  # 的依赖，无需等待 crates.io 索引传播（rust-lang/cargo#1169）。interop
+  # 为 publish=false，自动跳过。前置：仓库 secrets 配置
+  # CARGO_REGISTRY_TOKEN。
   publish:
     # 全量门禁通过才可发布：格式/clippy、三平台测试、MSRV、fuzz 冒烟、
     # deny（许可+供应链）、audit（RustSec 公告）、文档零警告。
@@ -324,7 +330,7 @@ jobs:
           fi
           VERSION="${TAG#v}"
           echo "Tag: ${TAG} / version: ${VERSION}"
-          for crate in ferritls-core ferritls-rustls; do
+          for crate in ferritls-core ferritls-backend-x86_64 ferritls-rustls; do
             CRATE_VERSION=$(cargo metadata --locked --no-deps --format-version 1 | jq -r --arg c "$crate" '.packages[] | select(.name == $c) | .version')
             echo "${crate}: ${CRATE_VERSION}"
             if [ "${CRATE_VERSION}" != "${VERSION}" ]; then
@@ -335,9 +341,9 @@ jobs:
       - name: Publish to crates.io
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        # 上传阶段非原子：若 core 已上传而 rustls 失败，重跑本 job 会因
-        # core 版本已存在而报错——此时改用 `cargo publish -p
-        # ferritls-rustls` 单发补齐即可。--locked：发布产物必须与仓库
+        # 上传阶段非原子：若 core 已上传而后续 crate 失败，重跑本 job 会因
+        # 已上传版本已存在而报错——此时改用 `cargo publish -p <crate>`
+        # 单发补齐即可。--locked：发布产物必须与仓库
         # 提交的 Cargo.lock 一致（发布是 lock 组合的出口，不是重新解析）。
         run: cargo publish --locked
       # crates.io 发布成功后创建同名 GitHub Release，正文列出上一个
@@ -360,8 +366,8 @@ jobs:
           {
             printf '## Changes in %s\n\n' "${TAG}"
             git log --no-merges --pretty='- %s (%h)' "${RANGE}"
-            printf '\n[crates.io: ferritls-core %s · ferritls-rustls %s](https://crates.io/crates/ferritls-core/%s)\n' \
-              "${TAG#v}" "${TAG#v}" "${TAG#v}"
+            printf '\n[crates.io: ferritls-core %s · ferritls-backend-x86_64 %s · ferritls-rustls %s](https://crates.io/crates/ferritls-core/%s)\n' \
+              "${TAG#v}" "${TAG#v}" "${TAG#v}" "${TAG#v}"
           } > release-notes.md
           cat release-notes.md
           gh release create "${TAG}" --title "${TAG}" --notes-file release-notes.md \

@@ -19,8 +19,9 @@ cmake, slow builds) and the unmaintained `rustls-rustcrypto`.
 - **QUIC** packet protection (RFC 9001) for the GCM and ChaCha suites
 - **Approved mode** (`fips` feature): NIST-approved algorithms only,
   SP 800-90A CTR-DRBG, power-on self-tests
-- Optional **x86_64 hardware backend** (AES-NI / SHA-NI), a separate
-  crate registered at runtime
+- Optional **x86_64 hardware backend** (AES-NI / SHA-NI):
+  [`ferritls-backend-x86_64`](https://crates.io/crates/ferritls-backend-x86_64),
+  a separate crate registered at runtime (outside the FIPS boundary)
 - Tested against NIST/RFC/CAVP vectors, 2,300+ Wycheproof cases,
   cross-interop with rustls-ring, and continuous fuzzing
 
@@ -54,8 +55,25 @@ let config = rustls::ClientConfig::builder_with_provider(provider)
 ```
 
 Detailed usage — server configuration, approved mode, QUIC, reqwest
-integration, and the hardware backend — lives in the
-**[API documentation](https://docs.rs/ferritls-rustls)**.
+integration — lives in the **[API documentation](https://docs.rs/ferritls-rustls)**.
+
+### Hardware backend (x86_64, optional)
+
+```toml
+[dependencies]
+ferritls-backend-x86_64 = "0.9"
+```
+
+```rust
+// Once per process, before constructing any key object (x86_64 only;
+// elsewhere this crate is empty and the block compiles away):
+#[cfg(target_arch = "x86_64")]
+ferritls_backend_x86_64::install()?;
+```
+
+Details — probe/KAT failure modes, the `fips`-build refusal, and
+performance numbers — are in the
+[`ferritls-backend-x86_64` README](crates/ferritls-backend-x86_64/README.md).
 
 ## Build requirements
 

@@ -17,7 +17,9 @@ ferritls 是纯 Rust 的 [rustls](https://github.com/rustls/rustls)
 - **QUIC** 包保护（RFC 9001，GCM 与 ChaCha 套件）
 - **批准模式**（`fips` feature）：仅 NIST 批准算法 + SP 800-90A
   CTR-DRBG + 上电自检
-- 可选 **x86_64 硬件后端**（AES-NI / SHA-NI），独立 crate、运行时注册
+- 可选 **x86_64 硬件后端**（AES-NI / SHA-NI）：
+  [`ferritls-backend-x86_64`](https://crates.io/crates/ferritls-backend-x86_64)，
+  独立 crate、运行时注册（FIPS 边界外）
 - 测试面：NIST/RFC/CAVP 官方向量、Wycheproof 2300+ 用例、rustls-ring
   交叉互操作、持续 fuzz
 
@@ -50,8 +52,25 @@ let config = rustls::ClientConfig::builder_with_provider(provider)
     .with_no_client_auth();
 ```
 
-详细用法——服务端配置、批准模式、QUIC、reqwest 集成与硬件后端——见
+详细用法——服务端配置、批准模式、QUIC、reqwest 集成——见
 **[API 文档](https://docs.rs/ferritls-rustls)**。
+
+### 硬件后端（x86_64，可选）
+
+```toml
+[dependencies]
+ferritls-backend-x86_64 = "0.9"
+```
+
+```rust
+// 进程内一次，在构造任何密钥对象之前（仅 x86_64 有内容；
+// 其他目标上本 crate 为空，此块可直接裁掉）：
+#[cfg(target_arch = "x86_64")]
+ferritls_backend_x86_64::install()?;
+```
+
+细节——探测/KAT 失败语义、`fips` 构建拒绝、性能数字——见
+[`ferritls-backend-x86_64` README](crates/ferritls-backend-x86_64/README.md)。
 
 ## 构建要求
 

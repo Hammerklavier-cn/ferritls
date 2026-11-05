@@ -5,10 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-keywords.workspace = true
+readme = "README.md"
+# 独立 keywords：继承 workspace 会带上 `fips`，但本 crate 明确在 FIPS
+# 边界外（AGENTS.md 硬性规则 3 的措辞纪律），故单独声明。
+keywords = ["cryptography", "tls", "aes", "x86-64", "sha"]
 categories.workspace = true
 authors.workspace = true
-publish = false
 description = "AES-NI + CLMUL + SHA-NI execution core for ferritls-core (out of the FIPS boundary, x86_64 only)"
 
 [dependencies]
