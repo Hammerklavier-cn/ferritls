@@ -83,8 +83,8 @@ The default `simd` feature uses the standard library's `core::simd`
 sets it):
 
 ```bash
-export RUSTC_BOOTSTRAP=1                                     # (a) keep simd
-# or, in your Cargo.toml:                                    # (b) scalar fallback
+export RUSTC_BOOTSTRAP=1    # (a) keep simd
+# or, in your Cargo.toml:   # (b) scalar fallback
 # ferritls-core = { version = "0.9", default-features = false }
 ```
 
@@ -104,6 +104,33 @@ cargo clippy --workspace --all-targets -- -D warnings
 `RUSTC_BOOTSTRAP=1` is already set by `.cargo/config.toml`, so the
 commands above run as-is on stable. The full test matrix and
 conventions live in [AGENTS.md](AGENTS.md).
+
+## Benchmarks
+
+Criterion benchmarks cover the cryptographic primitives and in-process
+TLS 1.3 handshakes (with a rustls-ring baseline):
+
+```bash
+cargo bench -p ferritls-core                         # primitives (aead/hash/ecdh/sign/drbg/kem)
+cargo bench -p ferritls-interop --bench handshake    # full TLS 1.3 handshake vs ring
+cargo bench -p ferritls-backend-x86_64               # software vs Ni per record (x86_64)
+```
+
+To see where the three deployment configurations — scalar software,
+`core::simd` software, and simd plus the installed x86_64 hardware
+backend — stand against OpenSSL, run the comparison matrix (Linux,
+OpenSSL development headers required). It measures both build
+configurations, cross-checks ferritls and OpenSSL outputs byte-for-byte,
+and prints a Markdown report:
+
+```bash
+python3 tools/bench_matrix.py          # full matrix + report (~25 min)
+python3 tools/bench_matrix.py --quick  # shortened smoke run
+```
+
+Regression baselines, methodology (anchor ratios, fairness shapes) and
+platform notes are in [docs/BENCHMARKS.md](docs/BENCHMARKS.md). CI only
+compile-checks the benches; measurements run locally.
 
 ## FIPS 140-3 status
 

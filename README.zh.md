@@ -79,8 +79,8 @@ ferritls_backend_x86_64::install()?;
 `.cargo/config.toml` 已自动提供）：
 
 ```bash
-export RUSTC_BOOTSTRAP=1                                     # ① 保留 simd
-# 或在 Cargo.toml 中：                                        # ② 标量回退
+export RUSTC_BOOTSTRAP=1    # ① 保留 simd
+# 或在 Cargo.toml 中：      # ② 标量回退
 # ferritls-core = { version = "0.9", default-features = false }
 ```
 
@@ -98,6 +98,30 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 `RUSTC_BOOTSTRAP=1` 已由 `.cargo/config.toml` 提供，stable 上上述命令
 可直接运行。完整测试矩阵与约定见 [AGENTS.md](AGENTS.md)。
+
+## 基准测试
+
+criterion 基准覆盖密码原语与进程内 TLS 1.3 全握手（含 rustls-ring 基线）：
+
+```bash
+cargo bench -p ferritls-core                         # 原语（aead/hash/ecdh/sign/drbg/kem）
+cargo bench -p ferritls-interop --bench handshake    # 全握手 vs ring 基线
+cargo bench -p ferritls-backend-x86_64               # 软/Ni 逐记录对照（x86_64）
+```
+
+要看三种部署配置——标量软件路径、`core::simd` 软件路径、simd + 已安装
+的 x86_64 硬件后端——与 OpenSSL 的差距，运行对照矩阵（Linux，需
+OpenSSL 开发库）：自动跑两条构建腿、跨实现逐字节核对输出，并输出
+Markdown 报告：
+
+```bash
+python3 tools/bench_matrix.py          # 全矩阵 + 报告（约 25 分钟）
+python3 tools/bench_matrix.py --quick  # 冒烟档
+```
+
+回归基线工作流、方法论（锚点比值、公平性形态）与平台说明见
+[docs/BENCHMARKS.md](docs/BENCHMARKS.md)。CI 只对基准做编译冒烟，
+实际测量在本地进行。
 
 ## FIPS 140-3 状态
 

@@ -39,6 +39,13 @@ simd = ["ferritls-core/simd", "ferritls-rustls/simd"]
 ferritls-backend-x86_64.workspace = true
 ctor.workspace = true
 
+# openssl 对照（openssl_matrix 基准，BENCHMARKS §8）：仅 linux 门控——
+# windows/macos 的 CI 测试腿会编译 dev-deps，而 openssl-sys 在这两类
+# runner 上无可用开发库；linux（含 ubuntu-latest 的 libssl-dev）开箱即用。
+# 链接的是系统 libcrypto，数字随被测机 OpenSSL 版本解读（报告打印版本）。
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+openssl = "0.10"
+
 # 全握手基准（含 ring 基线对照；软件路径，不安装后端）。
 [[bench]]
 name = "handshake"
@@ -47,4 +54,11 @@ harness = false
 # AES-NI 路径对照基准（启动时 install；仅 x86_64 有内容）。
 [[bench]]
 name = "handshake_ni"
+harness = false
+
+# 跨后端 × OpenSSL 对照矩阵（三配置 vs openssl 锚点；simd 与 simd+Ni 经
+# 组间安装桥同进程测，标量腿由 tools/bench_matrix.py 以
+# --no-default-features 驱动——见 BENCHMARKS §8）。
+[[bench]]
+name = "openssl_matrix"
 harness = false

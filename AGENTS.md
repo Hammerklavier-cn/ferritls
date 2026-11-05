@@ -368,7 +368,9 @@ cargo deny check                       # 需已安装 cargo-deny
 cargo run -p ferritls-interop --release --example perf # 基准（同机前后对比）
 RUSTFLAGS="-C target-feature=+avx2" cargo test --workspace          # AVX2 档
 cargo bench -p ferritls-core           # criterion 基准（aead/hash/ecdh/sign/drbg/kem）
-cargo bench -p ferritls-interop        # 全握手基准（含 ring 基线）
+cargo bench -p ferritls-interop        # 全部 interop 基准（握手 ring 基线 + openssl 矩阵腿 B）
+python3 tools/bench_matrix.py          # 三配置（标量/simd/simd+Ni）× openssl 原语矩阵
+                                       #   + Markdown 报告（详见 docs/BENCHMARKS.md §8）
 cargo bench -p ferritls-backend-x86_64 # 软/Ni 逐记录 A/B（aead_ni）
 ```
 
