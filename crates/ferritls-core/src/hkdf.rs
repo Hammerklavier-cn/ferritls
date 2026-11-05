@@ -31,12 +31,14 @@ macro_rules! hkdf_impl {
 
         #[doc = concat!(
             "HKDF-Expand（", $name, "）：PRK + info → OKM（写入 `okm`）。",
-            "\n\nRFC 5869 §2.3：OKM 长度不得超过 255×", stringify!($len),
-            " 字节，超限返回 [`Error::InvalidInput`](crate::Error)——",
+            "\n\nRFC 5869 §2.3：PRK 必须至少 `", stringify!($len),
+            "` 字节（HashLen），不足返回 [`Error::InvalidInput`](crate::Error)——",
+            "短 PRK 会削弱密钥材料的熵边界；OKM 长度不得超过 255×", stringify!($len),
+            " 字节，超限同样返回 [`Error::InvalidInput`](crate::Error)——",
             "Expand 计数器只有 8 位，绝不能回绕后产出错误密钥材料。"
         )]
         pub fn $expand(prk: &[u8], info: &[u8], okm: &mut [u8]) -> Result<(), crate::Error> {
-            if okm.len() > 255 * $len {
+            if prk.len() < $len || okm.len() > 255 * $len {
                 return Err(crate::Error::InvalidInput);
             }
             let mut t = [0u8; $len];
