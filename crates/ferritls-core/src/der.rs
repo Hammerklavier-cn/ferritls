@@ -48,7 +48,11 @@ pub fn read_tlv(input: &[u8]) -> Result<(u8, &[u8], &[u8]), Error> {
         }
         (len, 2 + n)
     };
-    if rest_off + len > input.len() {
+    // 长度比较不得先加后比：4 字节长形式在 32 位 usize 目标上
+    // `rest_off + len` 会回绕（近 u32::MAX 的 0x84 长度），debug 断言
+    // 与溢出切片皆 panic——改为减法方向比较（2026-11 修复；64 位上
+    // 行为不变，`30 84 ff ff ff ff` 仍为 Err）。
+    if len > input.len() - rest_off {
         return Err(Error::InvalidInput);
     }
     Ok((
