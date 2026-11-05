@@ -18,15 +18,27 @@ mod common;
 
 use common::{assert_handshake, cross_handshake, ferritls_pinned, ring_pinned};
 use rustls::crypto::CryptoProvider;
+use std::sync::OnceLock;
+
+/// 安装结果进程级缓存：首个测试执行 `install()`，后续测试复用其结果。
+/// core 对重复安装返回 `Err(Unsupported)`，不能与"CPU 不支持"混同
+/// （否则每个二进制只有单个测试真正走 Ni 路径）。
+static NI_INSTALLED: OnceLock<bool> = OnceLock::new();
 
 fn setup() -> bool {
-    match ferritls_backend_x86_64::install() {
-        Ok(()) => true,
+    *NI_INSTALLED.get_or_init(|| match ferritls_backend_x86_64::install() {
+        Ok(()) => {
+            assert!(
+                ferritls_core::ops::installed_aead().is_some(),
+                "installed AES backend must be observable via the core ops registry"
+            );
+            true
+        }
         Err(e) => {
             eprintln!("aesni backend unavailable ({e:?}); skipping Ni interop matrix");
             false
         }
-    }
+    })
 }
 
 // ---------- ferritls(Ni) ↔ ferritls(Ni) ----------

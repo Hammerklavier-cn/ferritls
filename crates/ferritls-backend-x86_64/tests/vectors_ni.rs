@@ -15,15 +15,27 @@ mod common;
 
 use common::{assert_hex, hex};
 use ferritls_core::gcm::{Aes128Gcm, Aes256Gcm};
+use std::sync::OnceLock;
+
+/// 安装结果进程级缓存：首个测试执行 `install()`，后续测试复用其结果。
+/// core 对重复安装返回 `Err(Unsupported)`——此前 `setup()` 把该错误与
+/// "CPU 不支持"混同而跳过，导致每个二进制只有单个测试真正走 Ni 路径。
+static NI_INSTALLED: OnceLock<bool> = OnceLock::new();
 
 fn setup() -> bool {
-    match ferritls_backend_x86_64::install() {
-        Ok(()) => true,
+    *NI_INSTALLED.get_or_init(|| match ferritls_backend_x86_64::install() {
+        Ok(()) => {
+            assert!(
+                ferritls_core::ops::installed_aead().is_some(),
+                "installed AES backend must be observable via the core ops registry"
+            );
+            true
+        }
         Err(e) => {
             eprintln!("backend unavailable ({e:?}); skipping Ni vector tests");
             false
         }
-    }
+    })
 }
 
 /// TC1：全零密钥/nonce、空明文（tag-only）。
@@ -166,6 +178,25 @@ fn ni_roundtrip_and_tamper_negatives() {
             Err(ferritls_core::Error::VerificationFailed)
         );
     }
+}
+
+/// 进程级单次安装合同（core `ops.rs` 文档）：已安装后再次 `install()`
+/// 以 `Unsupported` 拒绝，且拒绝不影响已注册后端继续工作。
+#[test]
+fn ni_double_install_rejected_and_backend_unaffected() {
+    if !setup() {
+        return;
+    }
+    assert_eq!(
+        ferritls_backend_x86_64::install(),
+        Err(ferritls_core::Error::Unsupported)
+    );
+    let aead = Aes128Gcm::new(&[0u8; 16]);
+    assert_hex(
+        &aead.seal(&[0u8; 12], b"", b""),
+        "58e2fccefa7e3061367f1d57a4e7455a",
+        "TC1 after double-install attempt",
+    );
 }
 
 /// Clone 的实例与原实例行为一致（clone_box 路径）。

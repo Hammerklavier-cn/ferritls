@@ -11,15 +11,27 @@ mod common;
 
 use common::assert_hex;
 use ferritls_core::sha2::Sha256;
+use std::sync::OnceLock;
+
+/// 安装结果进程级缓存：首个测试执行 `install_hash()`，后续测试复用其
+/// 结果——core 对重复安装返回 `Err(Unsupported)`，不能与"CPU 不支持"
+/// 混同（此前会导致每个二进制只有单个测试真正走 SHA-NI 路径）。
+static SHA_NI_INSTALLED: OnceLock<bool> = OnceLock::new();
 
 fn setup() -> bool {
-    match ferritls_backend_x86_64::install_hash() {
-        Ok(()) => true,
+    *SHA_NI_INSTALLED.get_or_init(|| match ferritls_backend_x86_64::install_hash() {
+        Ok(()) => {
+            assert!(
+                ferritls_core::ops::installed_hash().is_some(),
+                "installed hash backend must be observable via the core ops registry"
+            );
+            true
+        }
         Err(e) => {
             eprintln!("sha-ni backend unavailable ({e:?}); skipping");
             false
         }
-    }
+    })
 }
 
 /// 著名向量经公开 API（Ni 压缩路径）。
@@ -121,4 +133,22 @@ fn ni_streaming_consistency() {
         h.update(&d);
         assert_eq!(h.finalize(), Sha256::one_shot(&d), "boundary {len}");
     }
+}
+
+/// 进程级单次安装合同（core `ops.rs` 文档）：已安装后再次
+/// `install_hash()` 以 `Unsupported` 拒绝，且公开 API 仍走 Ni 路径。
+#[test]
+fn ni_double_install_hash_rejected_and_backend_unaffected() {
+    if !setup() {
+        return;
+    }
+    assert_eq!(
+        ferritls_backend_x86_64::install_hash(),
+        Err(ferritls_core::Error::Unsupported)
+    );
+    assert_hex(
+        &Sha256::one_shot(b"abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        "sha256(abc) after double-install attempt",
+    );
 }
