@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 # MSRV 锚定标量回退路径（--no-default-features）：实测 1.88 全绿、
 # 1.85 死于 slice::as_chunks（1.88 稳定）/ is_multiple_of（1.87 稳定）。
