@@ -166,6 +166,18 @@ pub fn client_config(provider: CryptoProvider) -> ClientConfig {
         .with_no_client_auth()
 }
 
+/// 版本面收窄到 TLS 1.2 的客户端配置：provider 必须自带 TLS 1.2 套件
+/// （ferritls 只有 TLS 1.3，此类客户端用 ring 装配）。用于钉扎
+/// ferritls 服务端「无任何 TLS 1.2 套件 → 协商层拒绝」的协议版本面。
+pub fn client_config_tls12_only(provider: Arc<CryptoProvider>) -> ClientConfig {
+    ClientConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS12])
+        .expect("provider 必须提供 TLS 1.2 套件")
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AcceptAll))
+        .with_no_client_auth()
+}
+
 /// 跑一次完整握手 + ping/pong；断言协商出的套件。
 pub fn handshake_ping_pong(
     server_cfg: ServerConfig,
@@ -345,6 +357,62 @@ pub fn unpack_tls_error(e: std::io::Error) -> rustls::Error {
         return tls.clone();
     }
     rustls::Error::General(format!("io: {e}"))
+}
+
+/// 建立一对原始 TCP 套接字（`server_io` 由服务端驱动、`client_io` 由
+/// 客户端驱动），双侧读超时已设——complete_io 的阻塞读最多 200ms
+/// 返回 WouldBlock，与 [`step_connection`] 的轮数上限共同保证测试不挂死。
+/// 供失败注入类测试绕过 rustls 直接写裸记录字节。
+pub fn raw_tcp_pair() -> (std::net::TcpStream, std::net::TcpStream) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server_io = std::net::TcpStream::connect(addr).expect("connect");
+    let client_io = listener
+        .incoming()
+        .next()
+        .expect("incoming")
+        .expect("accept");
+    let timeout = Some(std::time::Duration::from_millis(200));
+    server_io
+        .set_read_timeout(timeout)
+        .expect("server read timeout");
+    client_io
+        .set_read_timeout(timeout)
+        .expect("client read timeout");
+    (server_io, client_io)
+}
+
+/// 单步 complete_io：WouldBlock（读超时到期/对端尚未就绪）视为本步
+/// 推进终点；TLS 层错误经 [`unpack_tls_error`] 还原后返回。
+pub fn step_connection(
+    conn: &mut rustls::Connection,
+    io: &mut std::net::TcpStream,
+) -> Result<(), rustls::Error> {
+    match conn.complete_io(io) {
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(()),
+        Err(e) => Err(unpack_tls_error(e)),
+    }
+}
+
+/// 无线程顺序驱动两侧直至握手完成：每轮各推进一次
+/// [`step_connection`]。正常流约 2–3 轮收口；轮数上限（×200ms 读
+/// 超时）兜底防挂死。测试随后可继续用 [`step_connection`] 驱动任意
+/// 一侧（如注入畸形记录后等错误浮出）。
+pub fn drive_handshake_pair(
+    client: &mut rustls::Connection,
+    client_io: &mut std::net::TcpStream,
+    server: &mut rustls::Connection,
+    server_io: &mut std::net::TcpStream,
+) -> Result<(), rustls::Error> {
+    let mut rounds = 0u32;
+    while client.is_handshaking() || server.is_handshaking() {
+        rounds += 1;
+        assert!(rounds < 100, "handshake did not settle within round cap");
+        step_connection(client, client_io)?;
+        step_connection(server, server_io)?;
+    }
+    Ok(())
 }
 
 /// 从 rustls reader 读满 `buf`（解密后的流没有消息边界；
