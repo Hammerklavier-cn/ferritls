@@ -1080,4 +1080,38 @@ mod failure_injection {
         }
         assert_eq!(status(), SelfTestStatus::Passed);
     }
+
+    /// NotRun 态下 `ensure_passed` 直接触发自检并通过（顺序单线程
+    /// 版；并发路径由上一测试覆盖）。
+    #[test]
+    fn ensure_passed_triggers_run_from_not_run() {
+        let _g = STATE_LOCK.lock().unwrap();
+        reset_for_tests();
+        assert_eq!(status(), SelfTestStatus::NotRun);
+        assert_eq!(ensure_passed(), Ok(()));
+        assert_eq!(status(), SelfTestStatus::Passed);
+    }
+
+    /// 失败 KAT 名传播：注入的失败名必须原样出现在 `ensure_passed`
+    /// 错误与 `status()` 里——对应 aws-lc/BoringSSL break-KAT 负测试
+    /// 传统的 Rust 等价物（按 KAT 名定位失败源）。
+    #[test]
+    fn failed_kat_name_propagates() {
+        let _g = STATE_LOCK.lock().unwrap();
+        reset_for_tests();
+        force_fail_for_tests("injected-kat-name");
+        assert_eq!(status(), SelfTestStatus::Failed("injected-kat-name"));
+        match ensure_passed() {
+            Err(crate::Error::SelfTestFailed(which)) => {
+                assert_eq!(which, "injected-kat-name");
+            }
+            other => panic!("expected SelfTestFailed(\"injected-kat-name\"), got {other:?}"),
+        }
+        // 失败态在复位前持续拒绝服务。
+        assert_eq!(
+            ensure_passed(),
+            Err(crate::Error::SelfTestFailed("injected-kat-name"))
+        );
+        reset_for_tests();
+    }
 }

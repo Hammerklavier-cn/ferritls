@@ -104,8 +104,13 @@ fn dispatch_and_install_semantics() {
         b"secret".to_vec()
     );
 
-    // 2) 安装 mock 后端 → 新实例分发可观测。
+    // 2) 安装 mock 后端 → 新实例分发可观测；注册表可观测为已安装。
     ops::install(&MOCK_AEAD).expect("first install succeeds");
+    assert!(
+        ops::installed_aead().is_some(),
+        "installed AEAD backend observable"
+    );
+    assert_eq!(ops::installed_aead().unwrap().name(), "mock-aead");
     let mock_g = Aes128Gcm::new(&[0x07; 16]);
     let mock_sealed = mock_g.seal(&[0x01; 12], b"aad", b"xy");
     assert_eq!(
@@ -119,6 +124,20 @@ fn dispatch_and_install_semantics() {
         Err(ferritls_core::Error::VerificationFailed)
     );
 
+    // 2b) 已构造实例保持其构造时的执行核心（ops.rs 文档契约：安装
+    //     应在进程初始化阶段完成，安装不得影响既有实例）——安装前
+    //     构造的软件实例在安装后仍产出与安装前逐字节一致的软核密文。
+    let sealed_again = g.seal(&[0x01; 12], b"aad", b"secret");
+    assert_eq!(
+        sealed_again, sealed,
+        "pre-install instance must keep its software core after install"
+    );
+    assert_eq!(
+        g.open(&[0x01; 12], b"aad", &sealed_again).unwrap(),
+        b"secret".to_vec(),
+        "pre-install instance still decrypts after install"
+    );
+
     // 3) 二次安装（含同一后端）拒绝。
     assert_eq!(
         ops::install(&MOCK_AEAD),
@@ -127,6 +146,11 @@ fn dispatch_and_install_semantics() {
 
     // 4) 哈希注册独立于 AEAD：安装后 one_shot 走 mock 压缩函数。
     ops::install_hash(&MOCK_HASH).expect("hash install succeeds");
+    assert!(
+        ops::installed_hash().is_some(),
+        "installed hash backend observable"
+    );
+    assert_eq!(ops::installed_hash().unwrap().name(), "mock-hash");
     assert_eq!(
         Sha256::one_shot(b"abc"),
         [0xEE; 32],
@@ -150,6 +174,9 @@ fn fips_refuses_install() {
         ops::install_hash(&MOCK_HASH),
         Err(ferritls_core::Error::Unsupported)
     );
+    // 注册表保持为空（批准模式固定软件路径的观测面）。
+    assert!(ops::installed_aead().is_none());
+    assert!(ops::installed_hash().is_none());
     // 软件路径仍然可用。
     let d = Sha256::one_shot(b"abc");
     common::assert_hex(
