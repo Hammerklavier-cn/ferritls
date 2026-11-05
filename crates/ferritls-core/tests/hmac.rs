@@ -175,3 +175,79 @@ fn hmac_verify_rejects_wrong_length_and_wrong_tag() {
         assert!(m.verify(&flipped).is_err(), "flip byte {i} must fail");
     }
 }
+
+/// 密钥长度边界矩阵（RFC 2104 §2 的三种密钥形态）：空密钥、恰短于
+/// 块长、恰等块长、恰长于块长——三个实例（SHA-256 块长 64、
+/// SHA-384/512 块长 128）逐一验证：一次性计算确定性、流式与一次性
+/// 入口恒等（BLOCK_LEN 边界即 `new` 的补零/先哈希分岔点，身份性质
+/// 钉死）、验证通过、标签翻转单字节失败。全程不得 panic。
+#[test]
+fn hmac_key_length_boundaries_all_instances() {
+    use ferritls_core::hmac::{HmacSha256, HmacSha384, HmacSha512};
+    use ferritls_core::sha2::{Sha256, Sha384, Sha512};
+
+    macro_rules! boundary_matrix {
+        ($mac:ident, $hash:ident, $name:expr) => {{
+            let data = b"boundary matrix payload";
+            let block = $mac::BLOCK_LEN;
+            for key_len in [0usize, block - 1, block, block + 1] {
+                let key = vec![0xaau8; key_len];
+                let tag = $mac::one_shot(&key, data);
+
+                // 确定性：两次一次性计算逐字节一致
+                assert_eq!(
+                    $mac::one_shot(&key, data),
+                    tag,
+                    "{} key len {key_len}: one_shot must be deterministic",
+                    $name
+                );
+
+                // 流式 == 一次性（同一密钥两条入口恒等）
+                let mut m = $mac::new(&key);
+                m.update(data);
+                assert_eq!(
+                    m.finalize(),
+                    tag,
+                    "{} key len {key_len}: streaming must equal one_shot",
+                    $name
+                );
+
+                // 正确标签验证通过
+                let mut m = $mac::new(&key);
+                m.update(data);
+                assert!(
+                    m.verify(&tag).is_ok(),
+                    "{} key len {key_len}: correct tag must verify",
+                    $name
+                );
+
+                // 翻转标签单字节必须失败（错误变体钉死）
+                let mut flipped = tag;
+                flipped[0] ^= 0x01;
+                let mut m = $mac::new(&key);
+                m.update(data);
+                assert_eq!(
+                    m.verify(&flipped),
+                    Err(ferritls_core::Error::VerificationFailed),
+                    "{} key len {key_len}: flipped tag must fail",
+                    $name
+                );
+            }
+
+            // 结构性质（RFC 2104：密钥长于块长先哈希再填充）——
+            // BLOCK_LEN + 1 的 HMAC 必须等于以"哈希后的密钥"重入 HMAC
+            let long_key = vec![0xaau8; block + 1];
+            let hashed = $hash::one_shot(&long_key);
+            assert_eq!(
+                $mac::one_shot(&long_key, b"data"),
+                $mac::one_shot(&hashed, b"data"),
+                "{}: key longer than block must be hashed first",
+                $name
+            );
+        }};
+    }
+
+    boundary_matrix!(HmacSha256, Sha256, "HmacSha256");
+    boundary_matrix!(HmacSha384, Sha384, "HmacSha384");
+    boundary_matrix!(HmacSha512, Sha512, "HmacSha512");
+}

@@ -194,3 +194,99 @@ fn ed25519_rfc8032_test1024_large_message() {
     vk.verify(&msg, &sig_bytes)
         .expect("TEST1024 official signature verifies");
 }
+
+/// 公钥长度非法（0/31/33 字节）必须返回 `InvalidInput`——长度守护
+/// 先于任何点解码，错误变体钉死，不得放宽为 `VerificationFailed`
+/// 或 panic。
+#[test]
+fn ed25519_verify_key_wrong_length_rejected() {
+    for len in [0usize, 31, 33] {
+        assert_eq!(
+            ed25519::VerifyKey::from_raw_bytes(&vec![0x01u8; len]).map(|_| ()),
+            Err(ferritls_core::Error::InvalidInput),
+            "public key len {len} must be InvalidInput"
+        );
+    }
+}
+
+/// 签名切片长度非法（0/63/65 字节）必须返回 `InvalidInput`——
+/// 64 字节长度守护先于 R 点解码与标量检查（63/65 形态若被当作
+/// 截断签名处理会构成 malleability 面）。
+#[test]
+fn ed25519_verify_rejects_wrong_signature_length() {
+    let seed = [
+        0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec, 0x2c,
+        0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae,
+        0x7f, 0x60,
+    ];
+    let sk = ed25519::SigningKey::from_seed(seed);
+    let sig = sk.sign(b"");
+    assert_eq!(sig.len(), ed25519::SIGNATURE_LEN);
+
+    for len in [0usize, 63] {
+        let vk = ed25519::VerifyKey::from_raw_bytes(&sk.public_key()).expect("pubkey");
+        assert_eq!(
+            vk.verify(b"", &sig[..len]).map(|_| ()),
+            Err(ferritls_core::Error::InvalidInput),
+            "signature len {len} must be InvalidInput"
+        );
+    }
+    // 65 字节：合法签名 + 1 个尾随字节（不能从 64 字节数组切片出来）
+    let mut overlong = vec![0u8; 65];
+    overlong[..64].copy_from_slice(&sig);
+    let vk = ed25519::VerifyKey::from_raw_bytes(&sk.public_key()).expect("pubkey");
+    assert_eq!(
+        vk.verify(b"", &overlong).map(|_| ()),
+        Err(ferritls_core::Error::InvalidInput),
+        "signature len 65 must be InvalidInput"
+    );
+}
+
+/// S == L 边界拒绝（RFC 8032 §5.1.6 步骤 3：S 必须严格小于群阶 L）：
+/// 以 RFC 8032 §7.1 TEST 1 的合法签名为骨架，仅把 S 段换成 L 的
+/// LE 字节（edd3f55c…0010，与 sign.rs 内 `l_bytes` 常量逐字节一致，
+/// 另经群阶整数换算核对）——`s < L` 判定必须把 S == L 与 S == L+1
+/// 一并拒绝（等值/超出均非法），错误变体为 `VerificationFailed`。
+#[test]
+fn ed25519_verify_rejects_s_equal_group_order() {
+    let seed = [
+        0x9d, 0x61, 0xb1, 0x9d, 0xef, 0xfd, 0x5a, 0x60, 0xba, 0x84, 0x4a, 0xf4, 0x92, 0xec, 0x2c,
+        0xc4, 0x44, 0x49, 0xc5, 0x69, 0x7b, 0x32, 0x69, 0x19, 0x70, 0x3b, 0xac, 0x03, 0x1c, 0xae,
+        0x7f, 0x60,
+    ];
+    let sk = ed25519::SigningKey::from_seed(seed);
+    let vk = ed25519::VerifyKey::from_raw_bytes(&sk.public_key()).expect("pubkey");
+    let valid = sk.sign(b"");
+
+    // L = 2^252 + 27742317777372353535851937790883648493 的 LE 编码
+    let l_le: [u8; 32] = [
+        0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde,
+        0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10,
+    ];
+
+    // S = L：R 段保持合法（TEST 1 官方 R），仅替换 S 段
+    let mut s_eq_l = valid;
+    s_eq_l[32..].copy_from_slice(&l_le);
+    assert_eq!(
+        vk.verify(b"", &s_eq_l).map(|_| ()),
+        Err(ferritls_core::Error::VerificationFailed),
+        "S == L must be rejected (s < L is strict)"
+    );
+
+    // S = L + 1（最低字节进位：ed → ee）同样必须拒绝
+    let mut s_gt_l = valid;
+    let mut s_bytes = l_le;
+    s_bytes[0] += 1;
+    s_gt_l[32..].copy_from_slice(&s_bytes);
+    assert_eq!(
+        vk.verify(b"", &s_gt_l).map(|_| ()),
+        Err(ferritls_core::Error::VerificationFailed),
+        "S == L + 1 must be rejected"
+    );
+
+    // 阳性对照：同一骨架的合法签名必须通过（证明替换逻辑无误）
+    assert!(
+        vk.verify(b"", &valid).is_ok(),
+        "untouched TEST1 signature must verify"
+    );
+}

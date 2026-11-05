@@ -46,3 +46,22 @@ only one tip for the future, sunscreen would be it.";
         Err(ferritls_core::Error::VerificationFailed)
     );
 }
+
+/// open() 鲁棒性（对齐 tests/aes_gcm.rs 的同名负用例，补齐本 AEAD
+/// 缺失的负面路径）：密文+标签总长不足 16 字节（0/1/15）统一返回
+/// `VerificationFailed`——标签域不足即视为认证失败，绝不 panic、
+/// 绝不越界读。
+#[test]
+fn chacha20poly1305_rejects_short_ciphertext_and_tag() {
+    let key = hex("808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f");
+    let nonce = hex("070000004041424344454647");
+    let aead = ChaCha20Poly1305::new(key.as_slice().try_into().unwrap());
+
+    for n in [0usize, 1, 15] {
+        assert_eq!(
+            aead.open(nonce.as_slice().try_into().unwrap(), b"", &vec![0u8; n]),
+            Err(ferritls_core::Error::VerificationFailed),
+            "ct_and_tag len {n} must fail"
+        );
+    }
+}
